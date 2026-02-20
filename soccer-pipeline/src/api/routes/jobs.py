@@ -46,7 +46,7 @@ def _get_store():
 @router.post("/", status_code=201, include_in_schema=False)
 def submit_job(request: SubmitJobRequest):
     """Submit a match video for processing. Idempotent: same file returns existing job."""
-    import src.config as cfg
+    from src.config import config as cfg
     from src.config import config as dyn_cfg
     from src.ingestion.job import JobStore, create_job
 
@@ -55,7 +55,7 @@ def submit_job(request: SubmitJobRequest):
     if invalid:
         raise HTTPException(400, f"Invalid reel types: {invalid}. Valid: {sorted(valid_reels)}")
 
-    full_path = str(Path("/mnt/nas/source") / request.nas_path.lstrip("/"))
+    full_path = str(Path(dyn_cfg.NAS_MOUNT_PATH) / request.nas_path.lstrip("/"))
     if not Path(full_path).exists():
         raise HTTPException(404, f"Video file not found: {full_path}")
 

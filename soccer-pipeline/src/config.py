@@ -156,7 +156,7 @@ class _Config:
             "PRE_EVENT_PAD_SEC": ("PRE_EVENT_PAD_SEC", "3.0"),
             "POST_EVENT_PAD_SEC": ("POST_EVENT_PAD_SEC", "5.0"),
             "MIN_EVENT_CONFIDENCE": ("MIN_EVENT_CONFIDENCE", "0.65"),
-            "YOLO_MODEL_PATH": ("YOLO_MODEL_PATH", "/models/yolov8m.pt"),
+            "YOLO_MODEL_PATH": ("YOLO_MODEL_PATH", "/tmp/soccer-pipeline/yolov8m.pt"),
             "ACTION_MODEL_PATH": ("ACTION_MODEL_PATH", "/models/videomae-soccer.pt"),
             "USE_GPU": ("USE_GPU", "false"),
             "YOLO_INFERENCE_SIZE": ("YOLO_INFERENCE_SIZE", "1280"),

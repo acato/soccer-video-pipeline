@@ -1,0 +1,12 @@
+version: "3.9"
+# Minimal stack for integration tests (Redis only, no GPU, no NAS)
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

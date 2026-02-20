@@ -1,0 +1,100 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - nas_source:/mnt/nas/source:ro
+      - nas_output:/mnt/nas/output
+      - working_dir:/tmp/soccer-pipeline
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.worker
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - nas_source:/mnt/nas/source:ro
+      - nas_output:/mnt/nas/output
+      - working_dir:/tmp/soccer-pipeline
+      - model_weights:/models:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      replicas: 2          # scale based on GPU count
+    # Uncomment for GPU access:
+    # runtime: nvidia
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+
+  flower:
+    image: mher/flower:2.0
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:
+  model_weights:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./models          # local model weight storage
+
+  # NAS mounts — configure these to point at your actual NAS
+  # For NFS: set type: nfs, device: 192.168.1.x:/path
+  # For SMB: pre-mount on host and use bind mount
+  nas_source:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${NAS_MOUNT_PATH}
+
+  nas_output:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${NAS_OUTPUT_PATH}
+
+  working_dir:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WORKING_DIR}
