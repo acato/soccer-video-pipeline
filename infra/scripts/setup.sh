@@ -98,13 +98,18 @@ fi
 
 # Check Apple Silicon MPS (macOS with M-series chip)
 if [ "$MODE" = "cpu" ] && [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-    # Verify PyTorch can see MPS
+    # Verify PyTorch can see MPS — check project venv first, then system pythons
     MPS_OK=false
-    if python3 -c "import torch; assert torch.backends.mps.is_available()" 2>/dev/null; then
+    MPS_CHECK="import torch; assert torch.backends.mps.is_available()"
+    if [ -x "$ROOT_DIR/.venv/bin/python" ] && "$ROOT_DIR/.venv/bin/python" -c "$MPS_CHECK" 2>/dev/null; then
         MPS_OK=true
-    elif python3.11 -c "import torch; assert torch.backends.mps.is_available()" 2>/dev/null; then
+    elif python3 -c "$MPS_CHECK" 2>/dev/null; then
         MPS_OK=true
-    elif python3.12 -c "import torch; assert torch.backends.mps.is_available()" 2>/dev/null; then
+    elif python3.11 -c "$MPS_CHECK" 2>/dev/null; then
+        MPS_OK=true
+    elif python3.12 -c "$MPS_CHECK" 2>/dev/null; then
+        MPS_OK=true
+    elif python3.13 -c "$MPS_CHECK" 2>/dev/null; then
         MPS_OK=true
     fi
 
@@ -222,6 +227,21 @@ get_lan_ip() {
 
 if [ "$MODE" = "mps" ]; then
     # ── MPS mode: Redis in Docker, worker + API native ───────────────────
+
+    # FFmpeg is needed natively in MPS mode (Docker mode bundles it in the image)
+    if ! command -v ffprobe &>/dev/null || ! command -v ffmpeg &>/dev/null; then
+        echo "FFmpeg not found — required for video processing."
+        if command -v brew &>/dev/null; then
+            echo "Installing via Homebrew..."
+            brew install ffmpeg
+        else
+            echo "FATAL: FFmpeg not found and Homebrew not available."
+            echo "Install FFmpeg manually: https://ffmpeg.org/download.html"
+            exit 1
+        fi
+    fi
+    echo "FFmpeg: $(ffprobe -version 2>&1 | head -1)"
+
     echo "Starting Redis in Docker..."
     $COMPOSE_CMD -f "$COMPOSE_REDIS" up -d
 
@@ -239,10 +259,13 @@ if [ "$MODE" = "mps" ]; then
     pkill -f "uvicorn.*src.api.app" 2>/dev/null || true
     sleep 1
 
-    # Find the right python
+    # Find the right python — check project venv first, then system pythons
     PYTHON=""
-    for py in python3.11 python3.12 python3.13 python3; do
-        if command -v "$py" &>/dev/null && "$py" -c "import torch" 2>/dev/null; then
+    for py in "$ROOT_DIR/.venv/bin/python" python3.11 python3.12 python3.13 python3; do
+        if [ -x "$py" ] && "$py" -c "import torch" 2>/dev/null; then
+            PYTHON="$py"
+            break
+        elif command -v "$py" &>/dev/null && "$py" -c "import torch" 2>/dev/null; then
             PYTHON="$py"
             break
         fi
