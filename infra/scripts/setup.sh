@@ -113,6 +113,26 @@ if [ "$MODE" = "cpu" ] && [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm
         MPS_OK=true
     fi
 
+    # Auto-create venv and install deps if MPS not yet available
+    if [ "$MPS_OK" = "false" ]; then
+        echo ""
+        echo "PyTorch MPS not found — creating virtual environment and installing dependencies..."
+        SYS_PY=""
+        for candidate in python3.13 python3.12 python3.11 python3; do
+            if command -v "$candidate" &>/dev/null; then SYS_PY="$candidate"; break; fi
+        done
+        if [ -n "$SYS_PY" ]; then
+            test -d "$ROOT_DIR/.venv" || "$SYS_PY" -m venv "$ROOT_DIR/.venv"
+            "$ROOT_DIR/.venv/bin/pip" install -r "$ROOT_DIR/requirements.txt"
+            # Re-check MPS after install
+            if "$ROOT_DIR/.venv/bin/python" -c "$MPS_CHECK" 2>/dev/null; then
+                MPS_OK=true
+            fi
+        else
+            echo "WARNING: No python3 found to create venv."
+        fi
+    fi
+
     if [ "$MPS_OK" = "true" ]; then
         MODE="mps"
         GPU_COUNT=1
@@ -122,10 +142,7 @@ if [ "$MODE" = "cpu" ] && [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm
         echo "  Redis will run in Docker; worker + API will run natively."
     else
         echo ""
-        echo "Apple Silicon detected but PyTorch MPS not available."
-        echo "Install PyTorch with MPS support:"
-        echo "  pip install -r requirements.txt"
-        echo ""
+        echo "Apple Silicon detected but PyTorch MPS not available even after install attempt."
         echo "Falling back to CPU mode (Docker)."
     fi
 fi
@@ -276,17 +293,29 @@ if [ "$MODE" = "mps" ]; then
     fi
     echo "Using $PYTHON ($(${PYTHON} --version 2>&1))"
 
+    # Verify critical Python dependencies before starting services
+    DEPS_CHECK="import cv2, ultralytics, celery, structlog, ffmpeg"
+    if ! $PYTHON -c "$DEPS_CHECK" 2>/dev/null; then
+        echo "Installing missing Python dependencies..."
+        $PYTHON -m pip install -r "$ROOT_DIR/requirements.txt"
+    fi
+
     # Export env vars for native processes
     set -a
     source "$ENV_FILE"
     set +a
     export PYTHONPATH="$ROOT_DIR"
 
+    # Remove stale pidfile to prevent "already running" errors on restart
+    rm -f "$WORKING_DIR/celery_worker.pid"
+
     # Start worker in background
-    echo "Starting Celery worker (MPS)..."
+    # Use --pool=solo: Apple Metal/MPS is not fork-safe, so prefork pool
+    # causes SIGABRT when PyTorch initialises the MPS device in a forked child.
+    echo "Starting Celery worker (MPS, solo pool)..."
     cd "$ROOT_DIR"
     nohup $PYTHON -m celery -A src.api.worker worker \
-        --loglevel=info --concurrency=1 \
+        --loglevel=info --pool=solo \
         --pidfile="$WORKING_DIR/celery_worker.pid" \
         > "$WORKING_DIR/worker.log" 2>&1 &
     WORKER_PID=$!

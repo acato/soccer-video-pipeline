@@ -1,5 +1,8 @@
 export PYTHONPATH := $(CURDIR)
 
+VENV_PYTHON := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+VENV_PIP    := $(if $(wildcard .venv/bin/pip),.venv/bin/pip,pip)
+
 .PHONY: help setup deploy test-unit test-integration test-e2e up down logs generate-fixtures check-nas check-gpu
 
 help:
@@ -22,13 +25,14 @@ deploy:
 	infra/scripts/setup.sh
 
 setup:
-	pip install -r requirements.txt
+	test -d .venv || python3 -m venv .venv
+	.venv/bin/pip install -r requirements.txt
 
 generate-fixtures:
-	python tests/fixtures/fixture_generator.py
+	$(VENV_PYTHON) tests/fixtures/fixture_generator.py
 
 test-unit:
-	pytest tests/unit/ -m unit -v --cov=src --cov-report=term-missing
+	$(VENV_PYTHON) -m pytest tests/unit/ -m unit -v --cov=src --cov-report=term-missing
 
 test-integration:
 	docker-compose -f infra/docker-compose.test.yml up -d
@@ -52,6 +56,7 @@ down:
 	@# Stop native processes (MPS mode)
 	-pkill -f "celery.*soccer_pipeline" 2>/dev/null || true
 	-pkill -f "uvicorn.*src.api.app" 2>/dev/null || true
+	-rm -f /tmp/soccer-pipeline/celery_worker.pid
 	@# Stop all Docker compose stacks
 	-docker compose -f infra/docker-compose.yml down 2>/dev/null || true
 	-docker compose -f infra/docker-compose.redis.yml down 2>/dev/null || true

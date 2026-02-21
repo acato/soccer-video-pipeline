@@ -28,6 +28,13 @@ YOLO_CLASS_BALL       = "ball"
 YOLO_CLASS_GOALKEEPER = "goalkeeper"
 YOLO_CLASS_REFEREE    = "referee"
 
+# Map COCO class names → pipeline class names.
+# A fine-tuned soccer model would output "player"/"ball" directly and bypass this.
+COCO_TO_PIPELINE_CLASS = {
+    "person": YOLO_CLASS_PLAYER,
+    "sports ball": YOLO_CLASS_BALL,
+}
+
 
 class PlayerDetector(BaseDetector):
     """
@@ -84,7 +91,8 @@ class PlayerDetector(BaseDetector):
         h, w = frame.shape[:2]
         for box in results[0].boxes:
             cls_idx = int(box.cls[0])
-            cls_name = results[0].names.get(cls_idx, "unknown")
+            raw_name = results[0].names.get(cls_idx, "unknown")
+            cls_name = COCO_TO_PIPELINE_CLASS.get(raw_name, raw_name)
             conf = float(box.conf[0])
             x1, y1, x2, y2 = box.xyxy[0].tolist()
 

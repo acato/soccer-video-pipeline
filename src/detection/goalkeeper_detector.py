@@ -66,11 +66,13 @@ class GoalkeeperDetector:
 
         Returns track_id of identified GK, or None if not identified.
         """
-        # If already identified and still active in these tracks
+        # If already identified and still active in these tracks, reuse
         if self._gk_track_id is not None:
             active_ids = {t.track_id for t in tracks}
             if self._gk_track_id in active_ids:
                 return self._gk_track_id
+            # Track IDs reset between chunks — clear stale ID to re-identify
+            self._gk_track_id = None
 
         if self._homography is not None:
             gk_id = self._identify_by_position(tracks, frame_shape)
@@ -79,8 +81,14 @@ class GoalkeeperDetector:
                 self._gk_track_id = gk_id
                 return gk_id
 
-        # Fallback: jersey color (needs frame data — not available here, used offline)
-        log.debug("gk_detector.identification_deferred", reason="no_homography")
+        # Fallback: position heuristic using normalized bbox coords (no homography)
+        gk_id = self._identify_by_edge_heuristic(tracks)
+        if gk_id is not None:
+            log.info("gk_detector.identified_by_edge_heuristic", track_id=gk_id)
+            self._gk_track_id = gk_id
+            return gk_id
+
+        log.debug("gk_detector.identification_deferred", reason="insufficient_tracks")
         return None
 
     def classify_gk_events(
@@ -239,6 +247,70 @@ class GoalkeeperDetector:
         elif det.bbox.center_y > 0.55:
             return EventType.DISTRIBUTION_SHORT
         return EventType.DISTRIBUTION_LONG
+
+    def _identify_by_edge_heuristic(
+        self, tracks: list[Track], min_detections: int = 5,
+    ) -> Optional[int]:
+        """
+        Identify GK without homography using normalized bbox coordinates.
+
+        In a wide-angle soccer camera the GK stays near the left or right edge
+        of the frame (close to one of the goals) and moves less than outfield
+        players. We score each sufficiently-long track by:
+          edge_score = how close to x=0 or x=1 the average position is
+          stability  = inverse of positional variance (low variance = GK-like)
+        Combined score picks the most "stationary near edge" player.
+        """
+        candidates: list[tuple[int, float]] = []  # (track_id, score)
+
+        for track in tracks:
+            dets = track.detections
+            if len(dets) < min_detections:
+                continue
+            # Only consider player/goalkeeper class detections
+            player_dets = [
+                d for d in dets
+                if d.class_name in ("player", "goalkeeper")
+            ]
+            if len(player_dets) < min_detections:
+                continue
+
+            xs = np.array([d.bbox.center_x for d in player_dets])
+            ys = np.array([d.bbox.center_y for d in player_dets])
+
+            mean_x = float(np.mean(xs))
+            var_x = float(np.var(xs))
+            var_y = float(np.var(ys))
+
+            # Edge proximity: how close the average x is to either edge (0 or 1)
+            edge_dist = min(mean_x, 1.0 - mean_x)  # 0 = at edge, 0.5 = center
+            edge_score = max(0.0, 1.0 - edge_dist * 5.0)  # High when < 0.20
+
+            # Stability: low variance = more stationary = GK-like
+            positional_var = var_x + var_y
+            stability = 1.0 / (1.0 + positional_var * 100.0)
+
+            score = edge_score * 0.6 + stability * 0.4
+            if edge_score > 0.0:  # Must be near an edge
+                candidates.append((track.track_id, score))
+
+        if not candidates:
+            return None
+
+        # Best candidate
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        best_id, best_score = candidates[0]
+
+        if best_score < 0.3:
+            return None
+
+        log.debug(
+            "gk_detector.edge_heuristic_result",
+            track_id=best_id,
+            score=round(best_score, 3),
+            candidates=len(candidates),
+        )
+        return best_id
 
     def _identify_by_position(
         self, tracks: list[Track], frame_shape: tuple[int, int]
