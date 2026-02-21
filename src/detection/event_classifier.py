@@ -17,6 +17,7 @@ from src.detection.goalkeeper_detector import GoalkeeperDetector
 from src.detection.models import Event, EventType, Track, EVENT_REEL_MAP
 from src.detection.player_detector import PlayerDetector
 from src.ingestion.models import VideoFile
+from src.tracking.gk_tracker import MatchGoalkeeperTracker
 from src.tracking.tracker import PlayerTracker
 
 log = structlog.get_logger(__name__)
@@ -235,6 +236,7 @@ class PipelineRunner:
         self.overlap_sec = overlap_sec
         self.min_confidence = min_confidence
         self._tracker = PlayerTracker()
+        self._gk_tracker = MatchGoalkeeperTracker(job_id)
 
     def run(self, progress_callback=None) -> int:
         """
@@ -286,6 +288,7 @@ class PipelineRunner:
             gk_id = self.gk_detector.identify_goalkeeper(
                 tracks, (self.video_file.height, self.video_file.width)
             )
+            self._gk_tracker.register_chunk_gk(chunk_idx, gk_id)
 
             # Classify events
             chunk_events: list[Event] = []
@@ -320,7 +323,14 @@ class PipelineRunner:
             if progress_callback:
                 progress_callback((chunk_idx + 1) / total_chunks * 100)
 
-        log.info("pipeline.complete", total_events=total_events, job_id=self.job_id)
+        gk_summary = self._gk_tracker.summary()
+        log.info(
+            "pipeline.complete",
+            total_events=total_events,
+            job_id=self.job_id,
+            gk_identification_rate=gk_summary["identification_rate"],
+            gk_summary=gk_summary,
+        )
         return total_events
 
     def _chunk_starts(self, duration: float) -> list[float]:

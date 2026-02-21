@@ -57,14 +57,14 @@ EVENT_REEL_MAP: dict[EventType, list[str]] = {
 # Per-event minimum confidence thresholds (override MIN_EVENT_CONFIDENCE global)
 EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
     EventType.GOAL:               0.85,   # High precision — false goals are very bad UX
-    EventType.SHOT_STOP_DIVING:   0.70,
-    EventType.SHOT_STOP_STANDING: 0.65,
-    EventType.ONE_ON_ONE:         0.70,
+    EventType.SHOT_STOP_DIVING:   0.75,
+    EventType.SHOT_STOP_STANDING: 0.70,
+    EventType.ONE_ON_ONE:         0.75,
     EventType.PUNCH:              0.65,
     EventType.CATCH:              0.70,
-    EventType.GOAL_KICK:          0.60,
-    EventType.DISTRIBUTION_SHORT: 0.60,
-    EventType.DISTRIBUTION_LONG:  0.65,
+    EventType.GOAL_KICK:          0.65,
+    EventType.DISTRIBUTION_SHORT: 0.65,
+    EventType.DISTRIBUTION_LONG:  0.68,
     EventType.SHOT_ON_TARGET:     0.70,
     EventType.SHOT_OFF_TARGET:    0.65,
     EventType.NEAR_MISS:          0.70,

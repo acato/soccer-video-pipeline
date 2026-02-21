@@ -50,6 +50,7 @@ class GoalkeeperDetector:
         self._gk_track_id: Optional[int] = None
         self._gk_jersey_hsv: Optional[tuple[float, float, float]] = None
         self._homography: Optional[np.ndarray] = None  # 3x3 perspective matrix
+        self._prev_gk_position: Optional[tuple[float, float]] = None  # Cross-chunk continuity
 
     def set_homography(self, H: np.ndarray) -> None:
         """Set the 3x3 field homography matrix (pixel → meters)."""
@@ -71,7 +72,13 @@ class GoalkeeperDetector:
             active_ids = {t.track_id for t in tracks}
             if self._gk_track_id in active_ids:
                 return self._gk_track_id
-            # Track IDs reset between chunks — clear stale ID to re-identify
+            # Track IDs reset between chunks — save position before clearing
+            old_gk_tracks = [t for t in tracks if t.track_id == self._gk_track_id]
+            if old_gk_tracks and old_gk_tracks[0].detections:
+                dets = old_gk_tracks[0].detections
+                xs = [d.bbox.center_x for d in dets]
+                ys = [d.bbox.center_y for d in dets]
+                self._prev_gk_position = (float(np.mean(xs)), float(np.mean(ys)))
             self._gk_track_id = None
 
         if self._homography is not None:
@@ -137,24 +144,30 @@ class GoalkeeperDetector:
             pre_vel = np.mean(velocities[max(0, i-window):i])
             post_vel = np.mean(velocities[i:min(len(velocities), i+5)])
 
-            if pre_vel < 0.02 and post_vel > 0.08:  # Stationary → moving
+            if pre_vel < 0.01 and post_vel > 0.12:  # Stationary → moving
                 det = dets[i]
-                # Classify as goal kick vs distribution based on field position
                 event_type = self._classify_distribution_type(det)
+                # Scale confidence by velocity transition strength
+                vel_ratio = post_vel / max(pre_vel, 0.001)
+                confidence = min(0.90, 0.55 + vel_ratio * 0.01)
                 events.append(Event(
                     job_id=self.job_id,
                     source_file=self.source_file,
                     event_type=event_type,
                     timestamp_start=max(0, det.timestamp - 1.0),
                     timestamp_end=det.timestamp + 3.0,
-                    confidence=0.68,
+                    confidence=confidence,
                     reel_targets=EVENT_REEL_MAP[event_type],
                     player_track_id=gk_track.track_id,
                     is_goalkeeper_event=True,
                     frame_start=max(0, det.frame_number - int(fps)),
                     frame_end=det.frame_number + int(3 * fps),
                     bounding_box=det.bbox,
-                    metadata={"detection_method": "velocity_transition"},
+                    metadata={
+                        "detection_method": "velocity_transition",
+                        "pre_vel": round(float(pre_vel), 4),
+                        "post_vel": round(float(post_vel), 4),
+                    },
                 ))
 
         return events
@@ -168,40 +181,87 @@ class GoalkeeperDetector:
         """
         events = []
         dets = gk_track.detections
-        if len(dets) < 3:
+        if len(dets) < 4:
             return events
 
-        for i in range(1, len(dets) - 1):
-            prev, curr, nxt = dets[i-1], dets[i], dets[i+1]
-            dy = abs(curr.bbox.center_y - prev.bbox.center_y)
-            dt = curr.timestamp - prev.timestamp
+        # Build frame-indexed ball position lookup from all tracks
+        ball_positions: dict[int, tuple[float, float]] = {}
+        for track in all_tracks:
+            for det in track.detections:
+                if det.class_name == "ball":
+                    ball_positions[det.frame_number] = (det.bbox.center_x, det.bbox.center_y)
+        has_ball_data = len(ball_positions) > 0
 
-            if dt <= 0:
+        # Velocity threshold depends on whether we have ball data for confirmation
+        vel_threshold = 0.25 if has_ball_data else 0.35
+        dive_threshold = 0.40
+
+        for i in range(1, len(dets) - 1):
+            # 3-detection smoothed velocity: use detections i-1, i, i+1
+            prev, curr, nxt = dets[i-1], dets[i], dets[i+1]
+
+            dy_prev = abs(curr.bbox.center_y - prev.bbox.center_y)
+            dy_next = abs(nxt.bbox.center_y - curr.bbox.center_y)
+            dt_prev = curr.timestamp - prev.timestamp
+            dt_next = nxt.timestamp - curr.timestamp
+
+            if dt_prev <= 0 or dt_next <= 0:
                 continue
 
-            vertical_velocity = dy / dt
-            # Significant vertical movement = dive/jump
-            if vertical_velocity > 0.15:
-                event_type = (
-                    EventType.SHOT_STOP_DIVING
-                    if vertical_velocity > 0.25
-                    else EventType.SHOT_STOP_STANDING
-                )
-                events.append(Event(
-                    job_id=self.job_id,
-                    source_file=self.source_file,
-                    event_type=event_type,
-                    timestamp_start=max(0, prev.timestamp - 0.5),
-                    timestamp_end=nxt.timestamp + 2.0,
-                    confidence=min(0.90, 0.60 + vertical_velocity),
-                    reel_targets=EVENT_REEL_MAP[event_type],
-                    player_track_id=gk_track.track_id,
-                    is_goalkeeper_event=True,
-                    frame_start=prev.frame_number,
-                    frame_end=nxt.frame_number + int(2 * fps),
-                    bounding_box=curr.bbox,
-                    metadata={"vertical_velocity": vertical_velocity},
-                ))
+            # Smoothed vertical velocity across 3 detections
+            v_prev = dy_prev / dt_prev
+            v_next = dy_next / dt_next
+            vertical_velocity = (v_prev + v_next) / 2.0
+
+            if vertical_velocity <= vel_threshold:
+                continue
+
+            # Ball proximity check: require ball within 0.15 normalized distance (±2 frames)
+            ball_distance = None
+            gk_x, gk_y = curr.bbox.center_x, curr.bbox.center_y
+            frame = curr.frame_number
+            for f_offset in range(-2, 3):
+                if (frame + f_offset) in ball_positions:
+                    bx, by = ball_positions[frame + f_offset]
+                    dist = ((gk_x - bx) ** 2 + (gk_y - by) ** 2) ** 0.5
+                    if ball_distance is None or dist < ball_distance:
+                        ball_distance = dist
+
+            # If we have ball data, require proximity
+            if has_ball_data and (ball_distance is None or ball_distance > 0.15):
+                continue
+
+            event_type = (
+                EventType.SHOT_STOP_DIVING
+                if vertical_velocity > dive_threshold
+                else EventType.SHOT_STOP_STANDING
+            )
+
+            # Confidence: base from velocity + ball proximity bonus
+            base_conf = min(0.80, 0.50 + vertical_velocity)
+            ball_bonus = 0.10 if (ball_distance is not None and ball_distance < 0.10) else 0.0
+            confidence_cap = 0.90 if has_ball_data else 0.75
+            confidence = min(confidence_cap, base_conf + ball_bonus)
+
+            metadata = {"vertical_velocity": round(vertical_velocity, 4)}
+            if ball_distance is not None:
+                metadata["ball_distance"] = round(ball_distance, 4)
+
+            events.append(Event(
+                job_id=self.job_id,
+                source_file=self.source_file,
+                event_type=event_type,
+                timestamp_start=max(0, prev.timestamp - 0.5),
+                timestamp_end=nxt.timestamp + 2.0,
+                confidence=confidence,
+                reel_targets=EVENT_REEL_MAP[event_type],
+                player_track_id=gk_track.track_id,
+                is_goalkeeper_event=True,
+                frame_start=prev.frame_number,
+                frame_end=nxt.frame_number + int(2 * fps),
+                bounding_box=curr.bbox,
+                metadata=metadata,
+            ))
 
         return self._merge_nearby_events(events, min_gap_sec=2.0)
 
@@ -209,34 +269,54 @@ class GoalkeeperDetector:
         self, gk_track: Track, all_tracks: list[Track], fps: float
     ) -> list[Event]:
         """
-        Detect one-on-one: GK moves significantly away from goal line
-        (homography required for full accuracy; approximated via bbox position otherwise).
+        Detect one-on-one: GK moves significantly away from goal line.
+        Requires 3 consecutive frames beyond threshold to filter noise.
         """
         events = []
-        if not gk_track.detections:
+        dets = gk_track.detections
+        if len(dets) < 4:
             return events
 
-        # Track vertical position of GK (proxy for distance from goal without homography)
-        # In typical wide-angle camera, GK near center of frame = advanced from goal
-        center_y_values = [d.bbox.center_y for d in gk_track.detections]
+        deviation_threshold = 0.20
+        consecutive_required = 3
 
-        for i, det in enumerate(gk_track.detections):
+        center_y_values = [d.bbox.center_y for d in dets]
+        consecutive_count = 0
+
+        for i, det in enumerate(dets):
             baseline_y = np.mean(center_y_values[:max(1, i)])
-            if abs(det.bbox.center_y - baseline_y) > 0.15:  # Moved significantly toward center
+            deviation = abs(det.bbox.center_y - baseline_y)
+
+            if deviation > deviation_threshold:
+                consecutive_count += 1
+            else:
+                consecutive_count = 0
+
+            if consecutive_count >= consecutive_required:
+                # Scale confidence by magnitude of deviation beyond threshold
+                excess = deviation - deviation_threshold
+                confidence = min(0.88, 0.65 + excess * 2.0)
+
                 events.append(Event(
                     job_id=self.job_id,
                     source_file=self.source_file,
                     event_type=EventType.ONE_ON_ONE,
                     timestamp_start=max(0, det.timestamp - 1.0),
                     timestamp_end=det.timestamp + 4.0,
-                    confidence=0.70,
+                    confidence=confidence,
                     reel_targets=EVENT_REEL_MAP[EventType.ONE_ON_ONE],
                     player_track_id=gk_track.track_id,
                     is_goalkeeper_event=True,
                     frame_start=max(0, det.frame_number - int(fps)),
                     frame_end=det.frame_number + int(4 * fps),
                     bounding_box=det.bbox,
+                    metadata={
+                        "deviation": round(deviation, 4),
+                        "consecutive_frames": consecutive_count,
+                    },
                 ))
+                # Reset to avoid duplicate detections for the same rush
+                consecutive_count = 0
 
         return self._merge_nearby_events(events, min_gap_sec=5.0)
 
@@ -249,65 +329,137 @@ class GoalkeeperDetector:
         return EventType.DISTRIBUTION_LONG
 
     def _identify_by_edge_heuristic(
-        self, tracks: list[Track], min_detections: int = 5,
+        self, tracks: list[Track], min_detections: int = 15,
     ) -> Optional[int]:
         """
         Identify GK without homography using normalized bbox coordinates.
 
-        In a wide-angle soccer camera the GK stays near the left or right edge
-        of the frame (close to one of the goals) and moves less than outfield
-        players. We score each sufficiently-long track by:
-          edge_score = how close to x=0 or x=1 the average position is
-          stability  = inverse of positional variance (low variance = GK-like)
-        Combined score picks the most "stationary near edge" player.
-        """
-        candidates: list[tuple[int, float]] = []  # (track_id, score)
+        Multi-signal scoring:
+          - Edge proximity (30%): mean_x near frame edge (< 0.12 from edge)
+          - Stability (15%): inverse of positional variance
+          - Isolation (30%): average distance from candidate to all other
+            same-half tracks (GK is typically the most isolated)
+          - Behind-defensive-line (25%): candidate is outermost among
+            same-half players (deeper than defenders)
 
+        Cross-chunk continuity: candidates near previous GK position get a bonus.
+        """
+        # Pre-compute per-track mean positions for isolation/behind-line scoring
+        track_means: dict[int, tuple[float, float]] = {}
         for track in tracks:
-            dets = track.detections
-            if len(dets) < min_detections:
-                continue
-            # Only consider player/goalkeeper class detections
             player_dets = [
-                d for d in dets
+                d for d in track.detections
                 if d.class_name in ("player", "goalkeeper")
             ]
             if len(player_dets) < min_detections:
                 continue
-
             xs = np.array([d.bbox.center_x for d in player_dets])
             ys = np.array([d.bbox.center_y for d in player_dets])
+            track_means[track.track_id] = (float(np.mean(xs)), float(np.mean(ys)))
 
-            mean_x = float(np.mean(xs))
+        if not track_means:
+            return None
+
+        candidates: list[tuple[int, float, dict]] = []  # (track_id, score, scores_dict)
+
+        for track in tracks:
+            if track.track_id not in track_means:
+                continue
+
+            mean_x, mean_y = track_means[track.track_id]
+            player_dets = [
+                d for d in track.detections
+                if d.class_name in ("player", "goalkeeper")
+            ]
+            xs = np.array([d.bbox.center_x for d in player_dets])
+            ys = np.array([d.bbox.center_y for d in player_dets])
             var_x = float(np.var(xs))
             var_y = float(np.var(ys))
 
-            # Edge proximity: how close the average x is to either edge (0 or 1)
-            edge_dist = min(mean_x, 1.0 - mean_x)  # 0 = at edge, 0.5 = center
-            edge_score = max(0.0, 1.0 - edge_dist * 5.0)  # High when < 0.20
+            # ── Edge proximity (30%) — tighter cutoff: < 0.12 from edge ──
+            edge_dist = min(mean_x, 1.0 - mean_x)
+            # Score is 1.0 at the edge, 0.0 at 0.12 or beyond
+            edge_score = max(0.0, 1.0 - edge_dist / 0.12)
 
-            # Stability: low variance = more stationary = GK-like
+            if edge_score <= 0.0:
+                continue  # Must be near an edge to be a GK candidate
+
+            # ── Stability (15%) ──────────────────────────────────────────
             positional_var = var_x + var_y
             stability = 1.0 / (1.0 + positional_var * 100.0)
 
-            score = edge_score * 0.6 + stability * 0.4
-            if edge_score > 0.0:  # Must be near an edge
-                candidates.append((track.track_id, score))
+            # ── Isolation score (30%) ────────────────────────────────────
+            # GK is typically the most spatially isolated player on their half
+            candidate_half_left = mean_x < 0.5
+            same_half_means = [
+                m for tid, m in track_means.items()
+                if tid != track.track_id and (m[0] < 0.5) == candidate_half_left
+            ]
+            if same_half_means:
+                distances = [
+                    ((mean_x - mx) ** 2 + (mean_y - my) ** 2) ** 0.5
+                    for mx, my in same_half_means
+                ]
+                avg_dist = float(np.mean(distances))
+                # Normalize: 0.3+ distance is very isolated → score 1.0
+                isolation = min(1.0, avg_dist / 0.3)
+            else:
+                isolation = 0.5  # Only player on this half — neutral
+
+            # ── Behind-defensive-line score (25%) ────────────────────────
+            # GK should be the outermost (closest to edge) among same-half players
+            if same_half_means:
+                if candidate_half_left:
+                    # Left half: lower x = closer to left edge = deeper
+                    deeper_count = sum(1 for mx, _ in same_half_means if mx < mean_x)
+                    behind_line = 1.0 - (deeper_count / len(same_half_means))
+                else:
+                    # Right half: higher x = closer to right edge = deeper
+                    deeper_count = sum(1 for mx, _ in same_half_means if mx > mean_x)
+                    behind_line = 1.0 - (deeper_count / len(same_half_means))
+            else:
+                behind_line = 0.5
+
+            score = (
+                edge_score * 0.30
+                + stability * 0.15
+                + isolation * 0.30
+                + behind_line * 0.25
+            )
+
+            # Cross-chunk continuity bonus
+            if self._prev_gk_position is not None:
+                prev_x, prev_y = self._prev_gk_position
+                dist_to_prev = ((mean_x - prev_x) ** 2 + (mean_y - prev_y) ** 2) ** 0.5
+                if dist_to_prev < 0.10:
+                    score += 0.15
+
+            candidates.append((track.track_id, score, {
+                "edge": round(edge_score, 3),
+                "stability": round(stability, 3),
+                "isolation": round(isolation, 3),
+                "behind_line": round(behind_line, 3),
+            }))
 
         if not candidates:
             return None
 
-        # Best candidate
         candidates.sort(key=lambda c: c[1], reverse=True)
-        best_id, best_score = candidates[0]
+        best_id, best_score, best_scores = candidates[0]
 
-        if best_score < 0.3:
+        if best_score < 0.45:
+            log.debug(
+                "gk_detector.edge_heuristic_rejected",
+                best_score=round(best_score, 3),
+                scores=best_scores,
+            )
             return None
 
-        log.debug(
+        log.info(
             "gk_detector.edge_heuristic_result",
             track_id=best_id,
             score=round(best_score, 3),
+            scores=best_scores,
             candidates=len(candidates),
         )
         return best_id
