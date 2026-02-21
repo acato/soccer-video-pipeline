@@ -172,7 +172,12 @@ class ActionClassifier:
             import torch
             from transformers import VideoMAEForVideoClassification, VideoMAEImageProcessor
 
-            device = "cuda" if (self.use_gpu and torch.cuda.is_available()) else "cpu"
+            if self.use_gpu and torch.cuda.is_available():
+                device = "cuda"
+            elif self.use_gpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
             self._processor = VideoMAEImageProcessor.from_pretrained(self.model_path)
             self._model = VideoMAEForVideoClassification.from_pretrained(self.model_path)
             self._model = self._model.to(device)

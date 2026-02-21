@@ -201,7 +201,7 @@ class PlayerDetector(BaseDetector):
 
     @staticmethod
     def _select_device(use_gpu: bool) -> str:
-        """Select 'cuda:0' if GPU available and requested, else 'cpu'."""
+        """Select best available device: cuda:0 → mps → cpu."""
         if not use_gpu:
             return "cpu"
         try:
@@ -209,7 +209,10 @@ class PlayerDetector(BaseDetector):
             if torch.cuda.is_available():
                 log.info("player_detector.using_gpu", device="cuda:0")
                 return "cuda:0"
-        except ImportError:
+            if torch.backends.mps.is_available():
+                log.info("player_detector.using_gpu", device="mps")
+                return "mps"
+        except (ImportError, AttributeError):
             pass
         log.info("player_detector.using_cpu", reason="GPU not available or torch not installed")
         return "cpu"

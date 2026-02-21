@@ -9,7 +9,7 @@ help:
 	@echo "  make test-unit          Run unit tests (no infra required)"
 	@echo "  make test-integration   Run integration tests (requires Docker)"
 	@echo "  make up                 Start stack (assumes .env exists)"
-	@echo "  make down               Stop stack"
+	@echo "  make down               Stop all services (Docker + native)"
 	@echo "  make logs               Tail worker + api logs"
 	@echo "  make check-nas          Run NAS health check"
 	@echo "  make check-gpu          Check NVIDIA GPU + container toolkit"
@@ -45,10 +45,20 @@ up:
 	@echo "Flower (job monitor): http://localhost:5555"
 
 down:
-	docker-compose -f infra/docker-compose.yml down
+	@# Stop native processes (MPS mode)
+	-pkill -f "celery.*soccer_pipeline" 2>/dev/null || true
+	-pkill -f "uvicorn.*src.api.app" 2>/dev/null || true
+	@# Stop all Docker compose stacks
+	-docker compose -f infra/docker-compose.yml down 2>/dev/null || true
+	-docker compose -f infra/docker-compose.redis.yml down 2>/dev/null || true
+	@echo "All services stopped."
 
 logs:
-	docker-compose -f infra/docker-compose.yml logs -f worker api
+	@if [ -f /tmp/soccer-pipeline/worker.log ]; then \
+		tail -f /tmp/soccer-pipeline/worker.log /tmp/soccer-pipeline/api.log; \
+	else \
+		docker compose -f infra/docker-compose.yml logs -f worker api; \
+	fi
 
 check-nas:
 	infra/scripts/check_nas.sh

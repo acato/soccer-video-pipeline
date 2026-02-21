@@ -100,9 +100,12 @@ def _make_real_task():
 # Try to create the real task; fall back to stub if Celery not installed
 try:
     process_match_task = _make_real_task()
+    # Expose Celery app at module level for `celery -A src.api.worker worker`
+    app = _celery_app
 except ImportError:
     log.warning("worker.celery_not_installed", fallback="stub task (tests only)")
     process_match_task = _StubTask()
+    app = None
 
 # Backwards-compatible alias
 process_match = process_match_task
