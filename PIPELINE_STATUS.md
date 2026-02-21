@@ -109,3 +109,5 @@ curl -X POST http://localhost:8080/jobs \
 4. **Field homography accuracy** — Synthetic fallback (±15m) sufficient for GK zone detection; accurate calibration needs at least 4 visible pitch corner markings.
 
 5. **Near-miss detection** — Currently missing from event_classifier; needs ball trajectory extrapolation toward goal box.
+
+6. **AMD ROCm support** — Add `rocm-smi` detection to `setup.sh` for Linux AMD GPUs. PyTorch-ROCm aliases HIP as CUDA so the pipeline may work out of the box; needs a ROCm Docker image variant and testing.
