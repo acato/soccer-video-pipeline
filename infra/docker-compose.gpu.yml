@@ -1,0 +1,12 @@
+# GPU override — merged automatically by setup.sh when NVIDIA GPUs are detected.
+# Do not edit manually; re-run setup.sh to regenerate.
+services:
+  worker:
+    deploy:
+      replicas: ${GPU_COUNT:-1}
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

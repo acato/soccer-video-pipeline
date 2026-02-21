@@ -1,16 +1,21 @@
-.PHONY: help setup test test-unit test-integration up down logs generate-fixtures
+.PHONY: help setup deploy test-unit test-integration test-e2e up down logs generate-fixtures check-nas check-gpu
 
 help:
 	@echo "Soccer Video Processing Pipeline"
 	@echo ""
-	@echo "  make setup              Install Python dependencies"
+	@echo "  make deploy             Auto-detect hardware, generate .env, start stack"
+	@echo "  make setup              Install Python dependencies (local dev)"
 	@echo "  make generate-fixtures  Generate synthetic test video fixtures"
 	@echo "  make test-unit          Run unit tests (no infra required)"
 	@echo "  make test-integration   Run integration tests (requires Docker)"
-	@echo "  make up                 Start full stack (docker-compose)"
+	@echo "  make up                 Start stack (assumes .env exists)"
 	@echo "  make down               Stop stack"
 	@echo "  make logs               Tail worker + api logs"
 	@echo "  make check-nas          Run NAS health check"
+	@echo "  make check-gpu          Check NVIDIA GPU + container toolkit"
+
+deploy:
+	infra/scripts/setup.sh
 
 setup:
 	pip install -r requirements.txt
@@ -47,3 +52,6 @@ logs:
 
 check-nas:
 	infra/scripts/check_nas.sh
+
+check-gpu:
+	infra/scripts/check_gpu.sh

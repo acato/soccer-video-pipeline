@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     env_file: .env
     ports:
-      - "8080:8080"
+      - "0.0.0.0:8080:8080"
     volumes:
       - nas_source:/mnt/nas/source:ro
       - nas_output:/mnt/nas/output
@@ -49,18 +49,14 @@ services:
       redis:
         condition: service_healthy
     deploy:
-      replicas: 2          # scale based on GPU count
-    # Uncomment for GPU access:
-    # runtime: nvidia
-    # environment:
-    #   - NVIDIA_VISIBLE_DEVICES=all
+      replicas: ${GPU_COUNT:-1}
 
   flower:
     image: mher/flower:2.0
     restart: unless-stopped
     env_file: .env
     ports:
-      - "5555:5555"
+      - "0.0.0.0:5555:5555"
     environment:
       - CELERY_BROKER_URL=${CELERY_BROKER_URL}
     depends_on:
