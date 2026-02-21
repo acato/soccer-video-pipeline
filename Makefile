@@ -1,3 +1,5 @@
+export PYTHONPATH := $(CURDIR)
+
 .PHONY: help setup deploy test-unit test-integration test-e2e up down logs generate-fixtures check-nas check-gpu
 
 help:
