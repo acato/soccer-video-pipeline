@@ -7,6 +7,11 @@
 
 ## Manual Submission
 ```bash
+# CLI (preferred)
+python infra/scripts/pipeline_cli.py submit matches/game.mp4
+python infra/scripts/pipeline_cli.py submit matches/game.mp4 --reel goalkeeper
+
+# curl fallback
 curl -X POST http://localhost:8080/jobs \
   -H "Content-Type: application/json" \
   -d '{"nas_path": "matches/game.mp4", "reel_types": ["goalkeeper", "highlights"]}'
@@ -14,6 +19,11 @@ curl -X POST http://localhost:8080/jobs \
 
 ## Check Status
 ```bash
+# CLI
+python infra/scripts/pipeline_cli.py status <job_id>
+python infra/scripts/pipeline_cli.py status <job_id> --watch   # poll until done
+
+# curl / UI
 curl http://localhost:8080/jobs/{job_id}/status
 open http://localhost:5555
 ```

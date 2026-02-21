@@ -15,6 +15,8 @@ help:
 	@echo "  make logs               Tail worker + api logs"
 	@echo "  make check-nas          Run NAS health check"
 	@echo "  make check-gpu          Check NVIDIA GPU + container toolkit"
+	@echo ""
+	@echo "CLI:  python infra/scripts/pipeline_cli.py --help"
 
 deploy:
 	infra/scripts/setup.sh

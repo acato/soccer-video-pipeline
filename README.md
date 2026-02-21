@@ -14,12 +14,14 @@ make deploy
 # or non-interactive: infra/scripts/setup.sh /mnt/nas/soccer /mnt/nas/output
 
 # 2. Submit a match for processing
-curl -X POST http://localhost:8080/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"nas_path": "matches/game_2025_01_15.mp4", "reel_types": ["goalkeeper", "highlights"]}'
+python infra/scripts/pipeline_cli.py submit matches/game_2025_01_15.mp4
 
 # 3. Monitor progress
-open http://localhost:8080/ui   # Dashboard
+python infra/scripts/pipeline_cli.py status <job_id> --watch
+open http://localhost:8080/ui   # Web dashboard
+
+# 4. List all jobs
+python infra/scripts/pipeline_cli.py list
 ```
 
 ### Deployment Modes
