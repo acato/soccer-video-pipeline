@@ -77,7 +77,7 @@ def _make_real_task():
     )
     def _process_match(self, job_id: str) -> dict:
         """Full pipeline: PENDING → INGESTING → DETECTING → SEGMENTING → ASSEMBLING → COMPLETE."""
-        import src.config as cfg
+        from src.config import config as cfg
         from src.ingestion.job import JobStore
         from src.ingestion.models import JobStatus
 
@@ -136,9 +136,9 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         job_id=job_id,
         source_file=vf.path,
         model_path=cfg.YOLO_MODEL_PATH,
-        use_gpu=cfg.USE_GPU,
-        inference_size=cfg.YOLO_INFERENCE_SIZE,
-        frame_step=cfg.DETECTION_FRAME_STEP,
+        use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
+        inference_size=int(cfg.YOLO_INFERENCE_SIZE),
+        frame_step=int(cfg.DETECTION_FRAME_STEP),
         working_dir=cfg.WORKING_DIR,
     )
     gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path)
@@ -150,9 +150,9 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         player_detector=player_detector,
         gk_detector=gk_detector,
         event_log=event_log,
-        chunk_sec=cfg.CHUNK_DURATION_SEC,
-        overlap_sec=cfg.CHUNK_OVERLAP_SEC,
-        min_confidence=cfg.MIN_EVENT_CONFIDENCE,
+        chunk_sec=int(cfg.CHUNK_DURATION_SEC),
+        overlap_sec=float(cfg.CHUNK_OVERLAP_SEC),
+        min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
     )
 
     def on_detect_progress(pct: float):
@@ -172,8 +172,8 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             events=all_events,
             video_duration=vf.duration_sec,
             reel_type=reel_type,
-            pre_pad=cfg.PRE_EVENT_PAD_SEC,
-            post_pad=cfg.POST_EVENT_PAD_SEC,
+            pre_pad=float(cfg.PRE_EVENT_PAD_SEC),
+            post_pad=float(cfg.POST_EVENT_PAD_SEC),
         )
         clips = postprocess_clips(
             raw_clips,
@@ -185,12 +185,6 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
 
     # ── Stage: ASSEMBLING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.ASSEMBLING, progress=70.0)
-    composer = ReelComposer(
-        working_dir=str(working),
-        video_codec=cfg.OUTPUT_CODEC,
-        audio_codec=cfg.OUTPUT_AUDIO_CODEC,
-        crf=cfg.OUTPUT_CRF,
-    )
 
     output_paths: dict[str, str] = {}
     reel_count = len(job.reel_types)
@@ -201,8 +195,16 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             log.warning("pipeline.no_clips_for_reel", reel_type=reel_type)
             continue
 
+        composer = ReelComposer(
+            job_id=job_id,
+            reel_type=reel_type,
+            working_dir=str(working),
+            codec=cfg.OUTPUT_CODEC,
+            crf=int(cfg.OUTPUT_CRF),
+        )
+
         local_reel = str(working / f"{reel_type}_reel.mp4")
-        ok = composer.compose_reel(clips=clips, output_path=local_reel, reel_type=reel_type)
+        ok = composer.compose(clips=clips, output_path=local_reel)
         if not ok:
             continue
 

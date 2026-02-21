@@ -1,78 +1,106 @@
-# Soccer Video Processing Pipeline — Agent Workspace
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-Agent-based video processing pipeline that ingests large 4K soccer match recordings from a NAS and produces:
-1. **Goalkeeper Reel** — Every GK action: saves, catches, punches, distribution (short/long pass, goal kicks)
-2. **Highlights Reel** — Core match events: shots, goals, near-misses, key defensive actions, great individual plays
-3. **Player Reel** (on-demand) — Personalized reel for any outfield player (Phase 2)
+Video processing pipeline that ingests 4K soccer match recordings from a NAS and produces goalkeeper reels (saves, distribution, goal kicks) and highlights reels (shots, goals, key plays). Uses chunked FFmpeg processing (never loads full video into RAM), Celery+Redis for async job orchestration, and YOLOv8/ByteTrack for player/ball detection.
 
-## Input Constraints
-- Format: MP4, H.264 or H.265
-- Resolution/Frame rate: 4K (3840×2160) at 30 or 60 fps
-- Size: Tens of GB per file
-- Storage: Network-attached storage (NAS), mounted or accessible via SMB/NFS
-- Multiple camera angles possible per game
+## Build & Test Commands
 
-## Agent Roster
-
-| Agent | Directory | Role |
-|-------|-----------|------|
-| Architect | `agents/architect/` | System design, ADRs, interface contracts |
-| Developer | `agents/developer/` | Implementation across all modules |
-| SDET | `agents/sdet/` | Test strategy, test suites, CI integration |
-| Video Analyst | `agents/video-analyst/` | CV model selection, tuning, event detection logic |
-| Pipeline Operator | `agents/pipeline-operator/` | Deployment, monitoring, NAS integration, job management |
-
-## Source Layout
-```
-src/
-  ingestion/      # NAS watcher, video intake, metadata extraction
-  detection/      # CV-based event detection (shots, saves, distribution)
-  tracking/       # Player/ball tracking across frames
-  segmentation/   # Clip boundary determination & trimming
-  assembly/       # Reel composition, encoding, output
-  api/            # REST API for job submission and status
-tests/
-infra/            # Docker, compose, deployment configs
-docs/             # ADRs, runbooks
+```bash
+make setup                # pip install -r requirements.txt
+make test-unit            # Unit tests only (no Docker/FFmpeg needed)
+make test-integration     # Spins up Docker test infra, runs integration tests, tears down
+make test-e2e             # Full docker-compose stack + E2E tests
+make up                   # Start full stack (API :8080, Flower :5555)
+make down                 # Stop stack
 ```
 
-## Key Design Principles
-- **Streaming-first**: Never load full video into RAM. Use FFmpeg segment processing.
-- **Async job queue**: Each match is a job; processing is async with status tracking.
-- **Modular detection**: Each event type (save, shot, goal, distribution) is an independent detector.
-- **NAS-aware**: Read directly from NAS mount; write intermediate artifacts to local fast storage; final output back to NAS.
-- **GPU-optional**: Detection pipeline degrades gracefully to CPU (slower) when no GPU present.
-
-## Technology Stack (baseline — Architect may revise)
-- **Runtime**: Python 3.11+
-- **Video I/O**: FFmpeg (via ffmpeg-python), OpenCV
-- **ML/CV**: YOLOv8 (ultralytics) for player/ball detection, ByteTrack for tracking
-- **Event Classification**: fine-tuned action recognition (SlowFast or VideoMAE)
-- **Orchestration**: Celery + Redis for job queue
-- **API**: FastAPI
-- **Storage**: Local SSD for working files, NAS for source + output
-- **Infra**: Docker Compose (single node), extensible to K8s
-
-## Agent Invocation Guide
-
-The root context acts as **orchestrator**.
-Sub-agents are invoked by navigating to their directory:
+Run a single test file or test:
+```bash
+pytest tests/unit/test_clipper.py -m unit -v
+pytest tests/unit/test_clipper.py::test_merge_overlapping_clips -m unit -v
 ```
-cd agents/architect       && claude   # Architecture decisions
-cd agents/developer       && claude   # Implementation work  
-cd agents/sdet            && claude   # Testing
-cd agents/video-analyst   && claude   # CV/ML decisions
+
+Coverage (CI enforces 75% minimum):
+```bash
+pytest tests/unit/ -m unit -v --cov=src --cov-report=term-missing --cov-fail-under=75
+```
+
+Generate synthetic test videos (requires FFmpeg locally):
+```bash
+make generate-fixtures
+```
+
+## Architecture
+
+### Pipeline Data Flow
+
+```
+NAS (read-only) → Intake (ffprobe + SHA-256) → Detection (chunked 30s windows)
+  → Segmentation (clip boundaries with padding/merging) → Assembly (FFmpeg concat)
+  → NAS Output (atomic write with retry)
+```
+
+### Job State Machine
+
+`PENDING → INGESTING → DETECTING → SEGMENTING → ASSEMBLING → COMPLETE` (or `FAILED` with manual retry)
+
+### Key Module Contracts
+
+- **BaseDetector** (`src/detection/base.py`): ABC that all event detectors implement. Per-chunk lifecycle: `detect_frame()` on each frame → `finalize_chunk()` returns Events.
+- **PipelineRunner** (`src/detection/event_classifier.py`): Orchestrates all detectors across video chunks, calls `detect_frame` then `finalize_chunk` per chunk.
+- **EventLog** (`src/detection/event_log.py`): Append-only JSONL persistence. Deduplication by event_id.
+- **compute_clips** (`src/segmentation/clipper.py`): Converts Events → ClipBoundary list with pre/post padding and merge logic.
+- **ReelComposer** (`src/assembly/composer.py`): Orchestrates clip extraction → validation → FFmpeg concat.
+- **JobStore** (`src/ingestion/job.py`): File-backed JSON persistence for job state. Atomic writes.
+
+### Worker Architecture
+
+`src/api/worker.py` contains the Celery task and `_run_pipeline()` — the single-task orchestrator that chains all stages. Celery is imported lazily so the module works in test environments without Redis. A `_StubTask` placeholder is used when Celery is not installed.
+
+### Configuration Pattern
+
+`src/config.py` exposes two interfaces:
+1. **Module-level constants** (e.g., `NAS_MOUNT_PATH`) — evaluated at import time from env vars. `_req()` for required, `_opt()` for optional.
+2. **`config` object** (`_Config` class) — dynamic accessor that re-reads env vars on each access. Use this in request handlers and tests where env vars are patched per-test via `monkeypatch.setenv`.
+
+Required env vars: `NAS_MOUNT_PATH`, `NAS_OUTPUT_PATH`. Everything else has defaults. See `infra/.env.example` for the full list.
+
+### Testing Patterns
+
+- Tests use pytest markers: `@pytest.mark.unit`, `@pytest.mark.integration`, `@pytest.mark.e2e`
+- `asyncio_mode = auto` in pytest.ini — async tests just work
+- `tests/conftest.py` provides: `set_test_env` (autouse, session-scoped env setup), `mock_config` (per-test env patching via monkeypatch), `sample_video_30s`/`sample_video_10s` (synthetic FFmpeg videos, session-scoped), `sample_events_jsonl` (deterministic event fixtures)
+- Unit tests in CI install only minimal deps (no ML/torch) — ML-dependent code paths have low coverage by design
+- Synthetic videos use FFmpeg lavfi color source — no real match footage needed
+
+### API
+
+FastAPI app at `src/api/app.py`. Routes in `src/api/routes/`:
+- `/jobs` — submit (POST, idempotent via SHA-256), list, status, retry
+- `/reels` — info + streaming download
+- `/events` — list, override, re-assemble
+- `/metrics` — Prometheus counters
+- `/ui` — embedded HTML/JS monitoring dashboard (no build step)
+- `/health`, `/ready` — liveness + readiness (checks NAS mount)
+
+### Multi-Agent Workspace
+
+Each `agents/{role}/` directory has its own `CLAUDE.md` for specialized sub-agent invocation:
+```bash
+cd agents/architect && claude       # System design, ADRs
+cd agents/developer && claude       # Implementation
+cd agents/sdet && claude            # Testing
+cd agents/video-analyst && claude   # CV/ML decisions
 cd agents/pipeline-operator && claude # Ops/deployment
 ```
 
-## Current Phase
-**Phase 0 — Scaffolding complete. Begin with Architect agent.**
+## Infrastructure
 
-Execution order:
-1. Architect → `docs/architecture.md` + interface contracts
-2. Video Analyst → model selection + event taxonomy
-3. Developer → implement modules (ingestion → detection → segmentation → assembly → api)
-4. SDET → test harnesses per module
-5. Pipeline Operator → Docker Compose, NAS config, monitoring
+Docker Compose (`infra/docker-compose.yml`): redis, api, worker (2 replicas), flower. Dockerfiles in `infra/Dockerfile.api` and `infra/Dockerfile.worker` (python:3.11-slim + ffmpeg).
+
+## Event Taxonomy
+
+16 event types defined in `src/detection/models.py` with per-event confidence thresholds and reel target mappings (goalkeeper vs highlights). New detectors should extend `BaseDetector` and register in `PipelineRunner`.
