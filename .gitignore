@@ -26,6 +26,11 @@ tests/fixtures/*.mp4
 .DS_Store
 .AppleDouble
 
+# Claude Code
+.claude/
+CLAUDE.md
+**/CLAUDE.md
+
 # IDE
 .vscode/
 .idea/

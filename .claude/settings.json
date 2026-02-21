@@ -1,6 +1,0 @@
-{
-  "model": "claude-opus-4-6",
-  "subagentModel": "claude-sonnet-4-6",
-  "parallelSubagents": 3,
-  "notes": "Use opus for architectural decisions and complex CV logic. Sonnet for boilerplate, tests, and render code."
-}
