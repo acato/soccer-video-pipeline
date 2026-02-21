@@ -58,4 +58,6 @@ class Job(BaseModel):
             data["progress_pct"] = progress
         if error is not None:
             data["error"] = error
+        elif status != JobStatus.FAILED:
+            data["error"] = None          # clear stale error on non-failure transitions
         return Job(**data)

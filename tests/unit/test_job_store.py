@@ -84,6 +84,33 @@ class TestJobStore:
         assert updated.status == JobStatus.COMPLETE
         assert job.status == JobStatus.PENDING  # Original unchanged
 
+    def test_with_status_clears_error_on_non_failed(self, tmp_path: Path):
+        """Transitioning to a non-FAILED status clears stale error from previous attempt."""
+        store = JobStore(tmp_path / "jobs")
+        job = Job(video_file=_sample_video_file())
+        store.save(job)
+        # Simulate a failed retry that left an error
+        store.update_status(job.job_id, JobStatus.FAILED, error="something broke")
+        failed = store.get(job.job_id)
+        assert failed.error == "something broke"
+        # Now retry — transition to DETECTING should clear the stale error
+        store.update_status(job.job_id, JobStatus.DETECTING, progress=5.0)
+        reloaded = store.get(job.job_id)
+        assert reloaded.status == JobStatus.DETECTING
+        assert reloaded.error is None
+
+    def test_with_status_preserves_error_on_failed(self, tmp_path: Path):
+        """Transitioning to FAILED without explicit error keeps existing error."""
+        job = Job(video_file=_sample_video_file(), error="original error")
+        updated = job.with_status(JobStatus.FAILED)
+        assert updated.error == "original error"
+
+    def test_with_status_explicit_error_on_any_status(self, tmp_path: Path):
+        """Passing error= explicitly always sets it, regardless of target status."""
+        job = Job(video_file=_sample_video_file())
+        updated = job.with_status(JobStatus.DETECTING, error="forced error")
+        assert updated.error == "forced error"
+
     def test_output_paths_updated(self, tmp_path: Path):
         store = JobStore(tmp_path / "jobs")
         job = Job(video_file=_sample_video_file())

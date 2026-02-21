@@ -282,9 +282,19 @@ class TestWorkerModuleExports:
 class TestRunPipelineJobCompletion:
     """Verify pipeline updates job status through all stages."""
 
+    def _make_clip(self):
+        from src.segmentation.clipper import ClipBoundary
+        return ClipBoundary(
+            source_file="/mnt/nas/source/match.mp4",
+            start_sec=7.0, end_sec=17.0,
+            events=["ev-001"], reel_type="goalkeeper",
+            primary_event_type="catch",
+        )
+
     def test_pipeline_reaches_complete_status(self, tmp_path):
         from src.ingestion.models import JobStatus
-        mocks = _run_pipeline_with_mocks(tmp_path)
+        clip = self._make_clip()
+        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
         result = mocks["result"]
         assert result["job_id"] == "test-job-001"
 
@@ -297,7 +307,8 @@ class TestRunPipelineJobCompletion:
 
     def test_pipeline_transitions_through_all_stages(self, tmp_path):
         from src.ingestion.models import JobStatus
-        mocks = _run_pipeline_with_mocks(tmp_path)
+        clip = self._make_clip()
+        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
         statuses = [c.args[1] for c in mocks["store"].update_status.call_args_list]
         assert JobStatus.DETECTING in statuses
         assert JobStatus.SEGMENTING in statuses
@@ -315,3 +326,23 @@ class TestRunPipelineJobCompletion:
         mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
         result = mocks["result"]
         assert "goalkeeper" in result["output_paths"]
+
+    def test_pipeline_fails_when_no_reels_produced(self, tmp_path):
+        """When detection finds 0 events, pipeline should mark FAILED, not COMPLETE."""
+        from src.ingestion.models import JobStatus
+
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[], clips=[])
+        result = mocks["result"]
+        assert result["output_paths"] == {}
+
+        # Should have called FAILED, not COMPLETE
+        status_calls = mocks["store"].update_status.call_args_list
+        final_call = status_calls[-1]
+        assert final_call.args[1] == JobStatus.FAILED
+        assert "No reels produced" in final_call.kwargs["error"]
+
+        # Verify COMPLETE was never called
+        complete_calls = [
+            c for c in status_calls if c.args[1] == JobStatus.COMPLETE
+        ]
+        assert len(complete_calls) == 0

@@ -226,6 +226,14 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         )
 
     # ── Stage: COMPLETE ───────────────────────────────────────────────────
+    if not output_paths and job.reel_types:
+        store.update_status(
+            job_id, JobStatus.FAILED, progress=100.0,
+            error="No reels produced: detection found 0 events for requested reel types",
+        )
+        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_types=job.reel_types)
+        return {"job_id": job_id, "output_paths": {}}
+
     store.update_status(
         job_id, JobStatus.COMPLETE, progress=100.0, output_paths=output_paths
     )
