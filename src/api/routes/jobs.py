@@ -55,7 +55,7 @@ def submit_job(request: SubmitJobRequest):
     if invalid:
         raise HTTPException(400, f"Invalid reel types: {invalid}. Valid: {sorted(valid_reels)}")
 
-    full_path = str(Path("/mnt/nas/source") / request.nas_path.lstrip("/"))
+    full_path = str(Path(dyn_cfg.NAS_MOUNT_PATH) / request.nas_path.lstrip("/"))
     if not Path(full_path).exists():
         raise HTTPException(404, f"Video file not found: {full_path}")
 
