@@ -10,11 +10,13 @@ Video processing pipeline that ingests 4K soccer match recordings from a NAS and
 
 ```bash
 make setup                # pip install -r requirements.txt
+make deploy               # Auto-detect hardware, generate .env, start stack (preferred)
 make test-unit            # Unit tests only (no Docker/FFmpeg needed)
 make test-integration     # Spins up Docker test infra, runs integration tests, tears down
 make test-e2e             # Full docker-compose stack + E2E tests
-make up                   # Start full stack (API :8080, Flower :5555)
-make down                 # Stop stack
+make up                   # Start full stack (assumes .env exists)
+make down                 # Stop all services (Docker + native)
+make check-gpu            # Verify NVIDIA GPU + container toolkit
 ```
 
 Run a single test file or test:
@@ -60,6 +62,20 @@ NAS (read-only) → Intake (ffprobe + SHA-256) → Detection (chunked 30s window
 
 `src/api/worker.py` contains the Celery task and `_run_pipeline()` — the single-task orchestrator that chains all stages. Celery is imported lazily so the module works in test environments without Redis. A `_StubTask` placeholder is used when Celery is not installed.
 
+**Config type casting**: `_Config.__getattr__` returns all env var values as strings. `_run_pipeline` explicitly casts them (`int()`, `float()`, `str().lower() in (...)` for bool) before passing to constructors.
+
+### GPU / Device Selection
+
+Three deployment modes, auto-detected by `infra/scripts/setup.sh`:
+
+| Mode | Detection | Worker runs in | GPU device |
+|------|-----------|----------------|------------|
+| **NVIDIA** | `nvidia-smi` + Docker toolkit | Docker container | `cuda:0` |
+| **MPS** | Apple Silicon + PyTorch MPS | Native (Redis in Docker) | `mps` |
+| **CPU** | Fallback | Docker container | `cpu` |
+
+Device selection: `PlayerDetector._select_device()` and `ActionClassifier._ensure_loaded()` use a `cuda:0 → mps → cpu` fallback chain. Both handle missing torch gracefully.
+
 ### Configuration Pattern
 
 `src/config.py` exposes two interfaces:
@@ -99,7 +115,12 @@ cd agents/pipeline-operator && claude # Ops/deployment
 
 ## Infrastructure
 
-Docker Compose (`infra/docker-compose.yml`): redis, api, worker (2 replicas), flower. Dockerfiles in `infra/Dockerfile.api` and `infra/Dockerfile.worker` (python:3.11-slim + ffmpeg).
+- `infra/docker-compose.yml` — Base stack: redis, api, worker (replicas via `$GPU_COUNT`), flower
+- `infra/docker-compose.gpu.yml` — NVIDIA GPU overlay (merged automatically when GPUs detected)
+- `infra/docker-compose.redis.yml` — Redis-only (used in MPS mode where worker runs natively)
+- `infra/scripts/setup.sh` — Auto-detecting deploy script: detects NVIDIA/MPS/CPU, generates `.env`, downloads model weights, starts the appropriate stack
+- `infra/scripts/check_gpu.sh` — NVIDIA Container Toolkit verification
+- Dockerfiles: `infra/Dockerfile.api` and `infra/Dockerfile.worker` (python:3.11-slim + ffmpeg)
 
 ## Event Taxonomy
 

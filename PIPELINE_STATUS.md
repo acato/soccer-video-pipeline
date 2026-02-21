@@ -6,11 +6,11 @@ Last updated: 2026-02-20
 
 | Suite | Tests | Status |
 |-------|-------|--------|
-| Unit | 157 | ✅ All passing |
+| Unit | 202 | ✅ All passing |
 | Integration | 26 | ✅ All passing (requires FFmpeg) |
-| E2E | 3 | ⏳ Requires running stack (`make up`) |
+| E2E | 3 | ⏳ Requires running stack (`make deploy`) |
 
-**Total: 183 tests, 0 failures**
+**Total: 228 tests, 0 failures**
 
 ## Module Coverage
 
@@ -27,6 +27,7 @@ Last updated: 2026-02-20
 | `api/routes/ui.py` | 100% | Embedded monitoring dashboard |
 | `api/metrics.py` | ~80% | Prometheus endpoint |
 | `assembly/encoder.py` | 82% | FFmpeg stream copy |
+| `api/worker.py` | 90% | Pipeline orchestration, type casting, Celery stub |
 
 *Low coverage modules require GPU/ML models to exercise (player_detector, goalkeeper_detector, tracker, homography, event_classifier)*
 
@@ -36,11 +37,11 @@ Last updated: 2026-02-20
 - [x] `src/ingestion/` — NAS watcher, ffprobe intake, SHA-256 idempotency, job store
 - [x] `src/detection/models.py` — 16 event types, per-event confidence thresholds, reel mapping
 - [x] `src/detection/event_log.py` — Append-only JSONL with streaming, dedup, merge
-- [x] `src/detection/player_detector.py` — YOLOv8 via FFmpeg frame extraction, GPU/CPU fallback
+- [x] `src/detection/player_detector.py` — YOLOv8 via FFmpeg frame extraction, cuda/mps/cpu fallback
 - [x] `src/detection/goalkeeper_detector.py` — Position + velocity heuristics for GK events
 - [x] `src/detection/event_classifier.py` — Shot/tackle/dribble detection, PipelineRunner
 - [x] `src/detection/jersey_classifier.py` — HSV K-means clustering for GK ID
-- [x] `src/detection/action_classifier.py` — VideoMAE integration + heuristic fallback
+- [x] `src/detection/action_classifier.py` — VideoMAE integration + heuristic fallback, cuda/mps/cpu
 - [x] `src/detection/confidence_calibration.py` — Per-event-type calibration
 - [x] `src/tracking/tracker.py` — ByteTrack wrapper + SimpleIoU fallback
 - [x] `src/tracking/gk_tracker.py` — Cross-chunk GK identity persistence
@@ -51,7 +52,7 @@ Last updated: 2026-02-20
 - [x] `src/assembly/composer.py` — ReelComposer: extract → validate → concat
 - [x] `src/assembly/output.py` — NAS atomic delivery with retry
 - [x] `src/api/app.py` — FastAPI with all routers + readiness probe
-- [x] `src/api/worker.py` — Celery task with full stage chain
+- [x] `src/api/worker.py` — Celery task with full stage chain, config type casting
 - [x] `src/api/routes/jobs.py` — Submit, list, status, retry
 - [x] `src/api/routes/reels.py` — Reel info + streaming download
 - [x] `src/api/routes/events.py` — Event review UI (list, override, re-assemble)
@@ -59,9 +60,13 @@ Last updated: 2026-02-20
 - [x] `src/api/metrics.py` — Prometheus metrics endpoint
 
 ### ✅ Infrastructure
-- [x] `docker-compose.yml` — redis, api, worker (scalable), flower, prometheus, grafana
+- [x] `docker-compose.yml` — Base stack: redis, api, worker (scalable via `$GPU_COUNT`), flower
+- [x] `docker-compose.gpu.yml` — NVIDIA GPU overlay (merged by setup.sh when GPUs detected)
+- [x] `docker-compose.redis.yml` — Redis-only (MPS mode: worker runs natively)
 - [x] `Dockerfile.api` + `Dockerfile.worker`
+- [x] `infra/scripts/setup.sh` — Auto-detecting deploy: NVIDIA/MPS/CPU, generates .env, starts stack
 - [x] `infra/scripts/check_nas.sh` — NAS health + bandwidth check
+- [x] `infra/scripts/check_gpu.sh` — NVIDIA Container Toolkit verification
 - [x] `infra/models/download_models.sh` — YOLOv8m weight download
 
 ### ✅ Documentation
@@ -78,26 +83,19 @@ Last updated: 2026-02-20
 # 1. Install dependencies
 make setup
 
-# 2. Download ML model weights
-bash infra/models/download_models.sh
+# 2. Deploy (auto-detects NVIDIA/MPS/CPU, generates .env, downloads models, starts stack)
+make deploy
+# or non-interactive: infra/scripts/setup.sh /mnt/nas/soccer /mnt/nas/output
 
-# 3. Configure environment
-cp infra/.env.example .env
-# Edit .env: set NAS_MOUNT_PATH, NAS_OUTPUT_PATH
-
-# 4. Run unit tests (no docker needed)
+# 3. Run unit tests (no docker needed)
 make test-unit
 
-# 5. Start stack
-make up
-# API: http://localhost:8080
-# Monitor UI: http://localhost:8080/ui
-# Flower: http://localhost:5555
-
-# 6. Submit a match
+# 4. Submit a match
 curl -X POST http://localhost:8080/jobs \
   -H "Content-Type: application/json" \
   -d '{"nas_path": "matches/game.mp4", "reel_types": ["goalkeeper", "highlights"]}'
+
+# Monitor: http://localhost:8080/ui
 ```
 
 ## Known Limitations / Next Steps
