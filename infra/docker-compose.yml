@@ -19,6 +19,11 @@ services:
       dockerfile: infra/Dockerfile.api
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Override host paths with the container-internal mount points
+      - NAS_MOUNT_PATH=/mnt/nas/source
+      - NAS_OUTPUT_PATH=/mnt/nas/output
+      - WORKING_DIR=/tmp/soccer-pipeline
     ports:
       - "0.0.0.0:8080:8080"
     volumes:
@@ -40,6 +45,11 @@ services:
       dockerfile: infra/Dockerfile.worker
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Override host paths with the container-internal mount points
+      - NAS_MOUNT_PATH=/mnt/nas/source
+      - NAS_OUTPUT_PATH=/mnt/nas/output
+      - WORKING_DIR=/tmp/soccer-pipeline
     volumes:
       - nas_source:/mnt/nas/source:ro
       - nas_output:/mnt/nas/output

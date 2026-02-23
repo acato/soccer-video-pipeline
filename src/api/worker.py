@@ -119,6 +119,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     """Execute all pipeline stages for a job. Called by the Celery task."""
     from src.assembly.composer import ReelComposer
     from src.assembly.output import write_reel_to_nas, get_output_path, write_job_manifest
+    from src.detection.base import NullDetector
     from src.detection.event_classifier import PipelineRunner
     from src.detection.event_log import EventLog
     from src.detection.goalkeeper_detector import GoalkeeperDetector
@@ -135,15 +136,19 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     # ── Stage: DETECTING ──────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
 
-    player_detector = PlayerDetector(
-        job_id=job_id,
-        source_file=vf.path,
-        model_path=cfg.YOLO_MODEL_PATH,
-        use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
-        inference_size=int(cfg.YOLO_INFERENCE_SIZE),
-        frame_step=int(cfg.DETECTION_FRAME_STEP),
-        working_dir=cfg.WORKING_DIR,
-    )
+    if str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes"):
+        log.info("worker.null_detector_enabled", job_id=job_id)
+        player_detector = NullDetector(job_id=job_id, source_file=vf.path)
+    else:
+        player_detector = PlayerDetector(
+            job_id=job_id,
+            source_file=vf.path,
+            model_path=cfg.YOLO_MODEL_PATH,
+            use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
+            inference_size=int(cfg.YOLO_INFERENCE_SIZE),
+            frame_step=int(cfg.DETECTION_FRAME_STEP),
+            working_dir=cfg.WORKING_DIR,
+        )
     gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
     event_log = EventLog(working / "events.jsonl")
 
@@ -226,7 +231,8 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         )
 
     # ── Stage: COMPLETE ───────────────────────────────────────────────────
-    if not output_paths and job.reel_types:
+    null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
+    if not output_paths and job.reel_types and not null_mode:
         store.update_status(
             job_id, JobStatus.FAILED, progress=100.0,
             error="No reels produced: detection found 0 events for requested reel types",

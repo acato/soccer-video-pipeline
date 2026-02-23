@@ -9,6 +9,7 @@ Requires:
 Usage:
   pytest tests/e2e/ -m e2e --timeout=600
 """
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -18,6 +19,9 @@ import httpx
 
 
 API_BASE = "http://localhost:8080"
+# Local path to the directory bind-mounted into the API/worker as NAS source.
+# Must match NAS_MOUNT_PATH in infra/.env (the host-side bind mount path).
+_NAS_SOURCE = Path(os.getenv("NAS_MOUNT_PATH", "/tmp/e2e-nas-source"))
 
 
 def _api_available() -> bool:
@@ -28,18 +32,22 @@ def _api_available() -> bool:
         return False
 
 
-def _make_test_video(path: Path, duration: int = 120) -> Path:
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "color=c=green:size=1280x720:rate=30",
-        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
-        "-t", str(duration),
-        "-c:v", "libx264", "-crf", "30", "-preset", "ultrafast",
-        "-c:a", "aac",
-        str(path),
-    ]
-    subprocess.run(cmd, capture_output=True, check=True)
-    return path
+def _make_test_video(filename: str, duration: int = 120) -> str:
+    """Create a synthetic video in the NAS source dir; return the relative filename."""
+    _NAS_SOURCE.mkdir(parents=True, exist_ok=True)
+    path = _NAS_SOURCE / filename
+    if not path.exists():
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=green:size=1280x720:rate=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+            "-t", str(duration),
+            "-c:v", "libx264", "-crf", "30", "-preset", "ultrafast",
+            "-c:a", "aac",
+            str(path),
+        ]
+        subprocess.run(cmd, capture_output=True, check=True)
+    return filename
 
 
 pytestmark = pytest.mark.e2e
@@ -59,13 +67,13 @@ skip_no_ffmpeg = pytest.mark.skipif(not _ffmpeg_available(), reason="FFmpeg not 
 @skip_no_api
 @skip_no_ffmpeg
 class TestE2EGoalkeeperReel:
-    def test_submit_and_wait_complete(self, tmp_path: Path):
+    def test_submit_and_wait_complete(self):
         """Submit a 2-minute synthetic video, wait for completion."""
-        video = _make_test_video(tmp_path / "match.mp4", duration=120)
+        nas_path = _make_test_video("e2e_full_match.mp4", duration=120)
 
         # Submit job
         resp = httpx.post(f"{API_BASE}/jobs", json={
-            "nas_path": str(video),
+            "nas_path": nas_path,
             "match_config": {
                 "team": {"team_name": "Home FC", "outfield_color": "blue", "gk_color": "neon_yellow"},
                 "opponent": {"team_name": "Away United", "outfield_color": "red", "gk_color": "neon_green"},
@@ -87,25 +95,27 @@ class TestE2EGoalkeeperReel:
         else:
             pytest.fail("Job did not complete within timeout")
 
-        # Verify output exists
+        # Verify job completed
         job_resp = httpx.get(f"{API_BASE}/jobs/{job_id}")
         job = job_resp.json()
         assert job["status"] == "complete"
-        assert "keeper" in job["output_paths"]
+        # Output paths only populated when a real detector is used (USE_NULL_DETECTOR=false)
+        if os.getenv("USE_NULL_DETECTOR", "false").lower() not in ("1", "true", "yes"):
+            assert "keeper" in job["output_paths"]
 
 
 @skip_no_api
 @skip_no_ffmpeg
 class TestE2EIdempotency:
-    def test_same_file_returns_same_job(self, tmp_path: Path):
+    def test_same_file_returns_same_job(self):
         """Submitting the same file twice returns the same job_id."""
-        video = _make_test_video(tmp_path / "match_idem.mp4", duration=30)
+        nas_path = _make_test_video("e2e_idem_match.mp4", duration=30)
 
         _mc = {
             "team": {"team_name": "Home FC", "outfield_color": "blue", "gk_color": "neon_yellow"},
             "opponent": {"team_name": "Away United", "outfield_color": "red", "gk_color": "neon_green"},
         }
-        resp1 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": str(video), "match_config": _mc})
-        resp2 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": str(video), "match_config": _mc})
+        resp1 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": nas_path, "match_config": _mc})
+        resp2 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": nas_path, "match_config": _mc})
 
         assert resp1.json()["job_id"] == resp2.json()["job_id"]

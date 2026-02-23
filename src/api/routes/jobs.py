@@ -81,9 +81,16 @@ def submit_job(request: SubmitJobRequest):
 
     store = _get_store()
 
-    # Idempotency check — same SHA-256 = same file, return existing job
+    # Idempotency check — same SHA-256 = same file
     existing = _find_by_hash(store, video_file.sha256)
     if existing:
+        from src.ingestion.models import JobStatus
+        if existing.status == JobStatus.FAILED:
+            # Re-queue failed jobs so callers don't get stuck on a stale failure
+            store.update_status(existing.job_id, JobStatus.PENDING, progress=0.0, error=None)
+            process_match_task.delay(existing.job_id)
+            log.info("jobs.requeued_failed", job_id=existing.job_id)
+            return store.get(existing.job_id)
         log.info("jobs.idempotent", job_id=existing.job_id)
         return existing
 

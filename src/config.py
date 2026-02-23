@@ -79,6 +79,7 @@ ACTION_MODEL_PATH: str = _opt("ACTION_MODEL_PATH", "/models/videomae-soccer.pt")
 USE_GPU: bool = _bool("USE_GPU", True)
 """Use NVIDIA GPU for inference if available. Auto-falls back to CPU."""
 
+
 YOLO_INFERENCE_SIZE: int = _int("YOLO_INFERENCE_SIZE", 1280)
 """Input resolution for YOLO inference (width). Images downscaled before inference."""
 
@@ -159,6 +160,7 @@ class _Config:
             "YOLO_MODEL_PATH": ("YOLO_MODEL_PATH", "/models/yolov8m.pt"),
             "ACTION_MODEL_PATH": ("ACTION_MODEL_PATH", "/models/videomae-soccer.pt"),
             "USE_GPU": ("USE_GPU", "false"),
+            "USE_NULL_DETECTOR": ("USE_NULL_DETECTOR", "false"),
             "YOLO_INFERENCE_SIZE": ("YOLO_INFERENCE_SIZE", "1280"),
             "DETECTION_FRAME_STEP": ("DETECTION_FRAME_STEP", "3"),
             "OUTPUT_CODEC": ("OUTPUT_CODEC", "copy"),

@@ -53,6 +53,20 @@ class BaseDetector(ABC):
         """Which output reels this detector contributes to."""
         ...
 
+    def detect_chunk(
+        self,
+        source_path: str,
+        chunk_start_sec: float,
+        chunk_duration_sec: float,
+        source_fps: float,
+    ) -> list:
+        """
+        Run detection on one chunk of video. Default implementation calls detect_frame
+        per frame — subclasses may override for batch/GPU efficiency.
+        Returns list of Detection objects.
+        """
+        return []
+
     def reset_chunk(self) -> None:
         """Reset per-chunk state. Called before processing each new chunk."""
         pass

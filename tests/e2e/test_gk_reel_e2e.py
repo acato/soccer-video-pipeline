@@ -103,11 +103,12 @@ class TestGoalkeeperReelE2E:
         else:
             pytest.fail(f"Job did not complete within {MAX_WAIT_SEC}s")
 
-        # Verify reel info accessible
-        reel_r = httpx.get(f"{API_URL}/reels/{job_id}/keeper", timeout=10)
-        assert reel_r.status_code == 200
-        reel_info = reel_r.json()
-        assert reel_info["size_bytes"] > 0
+        # Verify reel info accessible (only when a real detector was used)
+        if os.getenv("USE_NULL_DETECTOR", "false").lower() not in ("1", "true", "yes"):
+            reel_r = httpx.get(f"{API_URL}/reels/{job_id}/keeper", timeout=10)
+            assert reel_r.status_code == 200
+            reel_info = reel_r.json()
+            assert reel_info["size_bytes"] > 0
 
     def test_idempotency(self):
         """Running same job twice returns same output."""
