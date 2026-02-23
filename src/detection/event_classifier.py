@@ -17,7 +17,7 @@ from src.detection.goalkeeper_detector import GoalkeeperDetector
 from src.detection.models import Event, EventType, Track, EVENT_REEL_MAP
 from src.detection.player_detector import PlayerDetector
 from src.ingestion.models import VideoFile
-from src.tracking.gk_tracker import MatchGoalkeeperTracker
+from src.tracking.gk_tracker import MatchDualGoalkeeperTracker
 from src.tracking.tracker import PlayerTracker
 
 log = structlog.get_logger(__name__)
@@ -236,7 +236,7 @@ class PipelineRunner:
         self.overlap_sec = overlap_sec
         self.min_confidence = min_confidence
         self._tracker = PlayerTracker()
-        self._gk_tracker = MatchGoalkeeperTracker(job_id)
+        self._gk_tracker = MatchDualGoalkeeperTracker(job_id)
 
     def run(self, progress_callback=None) -> int:
         """
@@ -284,22 +284,36 @@ class PipelineRunner:
 
             tracks = self._tracker.get_all_tracks()
 
-            # Identify GK
-            gk_id = self.gk_detector.identify_goalkeeper(
-                tracks, (self.video_file.height, self.video_file.width)
+            # Build track_colors dict from tracks with jersey_color_hsv
+            track_colors = {
+                t.track_id: t.jersey_color_hsv
+                for t in tracks if t.jersey_color_hsv is not None
+            }
+
+            # Identify both GKs using jersey-first approach
+            gk_ids = self.gk_detector.identify_goalkeepers(
+                tracks,
+                (self.video_file.height, self.video_file.width),
+                track_colors,
             )
-            self._gk_tracker.register_chunk_gk(chunk_idx, gk_id)
+            self._gk_tracker.register_chunk_gks(chunk_idx, gk_ids)
 
             # Classify events
             chunk_events: list[Event] = []
 
-            # GK events
-            gk_tracks = [t for t in tracks if t.track_id == gk_id] if gk_id else []
-            if gk_tracks:
-                gk_track = gk_tracks[0]
-                gk_track.is_goalkeeper = True
-                gk_events = self.gk_detector.classify_gk_events(gk_track, tracks, fps)
-                chunk_events.extend(gk_events)
+            # GK events — classify for each identified keeper
+            for keeper_role in ("keeper_a", "keeper_b"):
+                gk_id = gk_ids.get(keeper_role)
+                if gk_id is None:
+                    continue
+                gk_tracks = [t for t in tracks if t.track_id == gk_id]
+                if gk_tracks:
+                    gk_track = gk_tracks[0]
+                    gk_track.is_goalkeeper = True
+                    gk_events = self.gk_detector.classify_gk_events(
+                        gk_track, tracks, fps, keeper_role=keeper_role
+                    )
+                    chunk_events.extend(gk_events)
 
             # Highlights events
             hl_events = classify_highlights_events(tracks, self.job_id, self.video_file.path, fps)
@@ -360,7 +374,6 @@ class PipelineRunnerV2(PipelineRunner):
     def run(self, progress_callback=None) -> int:
         from src.detection.action_classifier import ActionClassifier
         from src.detection.confidence_calibration import calibrate_events
-        from src.detection.jersey_classifier import classify_jersey_colors, identify_gk_by_jersey
 
         duration = self.video_file.duration_sec
         fps = self.video_file.fps
@@ -394,29 +407,34 @@ class PipelineRunnerV2(PipelineRunner):
 
             tracks = self._tracker.get_all_tracks()
 
-            # V2: Try jersey-based GK ID if homography not available
-            gk_id = self.gk_detector.identify_goalkeeper(
-                tracks, (self.video_file.height, self.video_file.width)
+            # V2: Jersey-first identification for both keepers
+            track_colors = {
+                t.track_id: t.jersey_color_hsv
+                for t in tracks if t.jersey_color_hsv is not None
+            }
+
+            gk_ids = self.gk_detector.identify_goalkeepers(
+                tracks,
+                (self.video_file.height, self.video_file.width),
+                track_colors,
             )
-            if gk_id is None and len(tracks) >= 6:
-                # Build synthetic color map from detection timestamps
-                track_colors = {
-                    t.track_id: t.jersey_color_hsv or (120.0, 0.7, 0.8)
-                    for t in tracks if t.jersey_color_hsv is not None
-                }
-                if len(track_colors) >= 6:
-                    from src.detection.jersey_classifier import identify_gk_by_jersey
-                    gk_id = identify_gk_by_jersey(track_colors)
-                    if gk_id:
-                        log.info("pipeline_v2.gk_jersey_identified", track_id=gk_id)
+            self._gk_tracker.register_chunk_gks(chunk_idx, gk_ids)
 
             chunk_events: list[Event] = []
-            gk_tracks = [t for t in tracks if t.track_id == gk_id] if gk_id else []
-            if gk_tracks:
-                gk_track = gk_tracks[0]
-                gk_track.is_goalkeeper = True
-                gk_events = self.gk_detector.classify_gk_events(gk_track, tracks, fps)
-                chunk_events.extend(gk_events)
+
+            # GK events for each identified keeper
+            for keeper_role in ("keeper_a", "keeper_b"):
+                gk_id = gk_ids.get(keeper_role)
+                if gk_id is None:
+                    continue
+                gk_tracks = [t for t in tracks if t.track_id == gk_id]
+                if gk_tracks:
+                    gk_track = gk_tracks[0]
+                    gk_track.is_goalkeeper = True
+                    gk_events = self.gk_detector.classify_gk_events(
+                        gk_track, tracks, fps, keeper_role=keeper_role
+                    )
+                    chunk_events.extend(gk_events)
 
             hl_events = classify_highlights_events(tracks, self.job_id, self.video_file.path, fps)
             chunk_events.extend(hl_events)

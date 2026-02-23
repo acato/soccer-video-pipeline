@@ -100,7 +100,7 @@ def sample_events_jsonl(tmp_path: Path) -> Path:
             "timestamp_start": 10.0,
             "timestamp_end": 12.5,
             "confidence": 0.82,
-            "reel_targets": ["goalkeeper"],
+            "reel_targets": ["keeper_a"],
             "player_track_id": 1,
             "is_goalkeeper_event": True,
             "frame_start": 300,

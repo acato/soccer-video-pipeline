@@ -87,13 +87,13 @@ class TestJobSubmission:
     def test_submit_valid_job(self, client, sample_video):
         r = client.post("/jobs", json={
             "nas_path": "test_match.mp4",
-            "reel_types": ["goalkeeper", "highlights"],
+            "reel_types": ["keeper_a", "keeper_b", "highlights"],
         })
         assert r.status_code == 201, f"Body: {r.text}"
         data = r.json()
         assert "job_id" in data
         assert data["status"] == "pending"
-        assert data["reel_types"] == ["goalkeeper", "highlights"]
+        assert data["reel_types"] == ["keeper_a", "keeper_b", "highlights"]
         assert data["progress_pct"] == 0.0
         # Celery was called
         client._mock_task.delay.assert_called()

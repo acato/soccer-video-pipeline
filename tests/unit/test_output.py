@@ -10,7 +10,15 @@ from src.assembly.output import get_output_path, write_job_manifest, REEL_FILENA
 
 @pytest.mark.unit
 class TestGetOutputPath:
-    def test_goalkeeper_path(self):
+    def test_keeper_a_path(self):
+        p = get_output_path("/nas/out", "job-001", "keeper_a")
+        assert str(p) == "/nas/out/job-001/keeper_a_reel.mp4"
+
+    def test_keeper_b_path(self):
+        p = get_output_path("/nas/out", "job-001", "keeper_b")
+        assert str(p) == "/nas/out/job-001/keeper_b_reel.mp4"
+
+    def test_goalkeeper_legacy_path(self):
         p = get_output_path("/nas/out", "job-001", "goalkeeper")
         assert str(p) == "/nas/out/job-001/goalkeeper_reel.mp4"
 
@@ -27,22 +35,22 @@ class TestGetOutputPath:
         assert "custom_reel" in str(p)
 
     def test_job_id_in_path(self):
-        p = get_output_path("/out", "abc-123-def", "goalkeeper")
+        p = get_output_path("/out", "abc-123-def", "keeper_a")
         assert "abc-123-def" in str(p)
 
     def test_returns_path_object(self):
-        p = get_output_path("/out", "j1", "goalkeeper")
+        p = get_output_path("/out", "j1", "keeper_a")
         assert isinstance(p, Path)
 
     def test_all_reel_types_have_mappings(self):
-        for reel_type in ["goalkeeper", "highlights", "player"]:
+        for reel_type in ["goalkeeper", "keeper_a", "keeper_b", "highlights", "player"]:
             assert reel_type in REEL_FILENAME_MAP
 
 
 @pytest.mark.unit
 class TestWriteJobManifest:
     def test_manifest_written_to_correct_path(self, tmp_path):
-        output_paths = {"goalkeeper": "/out/job1/goalkeeper_reel.mp4"}
+        output_paths = {"keeper_a": "/out/job1/keeper_a_reel.mp4"}
         manifest_path = write_job_manifest(
             str(tmp_path), "job-001", output_paths,
             metadata={"source": "match.mp4", "duration_sec": 5400.0},
@@ -57,10 +65,10 @@ class TestWriteJobManifest:
         assert data["job_id"] == "job-999"
 
     def test_manifest_contains_reels(self, tmp_path):
-        paths = {"goalkeeper": "/reel.mp4"}
+        paths = {"keeper_a": "/reel.mp4"}
         write_job_manifest(str(tmp_path), "j1", paths, {})
         data = json.loads((tmp_path / "j1" / "manifest.json").read_text())
-        assert data["reels"]["goalkeeper"] == "/reel.mp4"
+        assert data["reels"]["keeper_a"] == "/reel.mp4"
 
     def test_manifest_contains_completed_at(self, tmp_path):
         write_job_manifest(str(tmp_path), "j1", {}, {})

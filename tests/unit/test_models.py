@@ -57,7 +57,7 @@ class TestEventModel:
         ev = Event(
             job_id="j1", source_file="m.mp4",
             event_type=EventType.CATCH, timestamp_start=10.5, timestamp_end=13.5,
-            confidence=0.80, reel_targets=["goalkeeper"],
+            confidence=0.80, reel_targets=["keeper_a"],
             frame_start=315, frame_end=405,
         )
         assert abs(ev.duration_sec - 3.0) < 0.001
@@ -66,7 +66,7 @@ class TestEventModel:
         ev = Event(
             job_id="j1", source_file="m.mp4",
             event_type=EventType.SHOT_STOP_DIVING, timestamp_start=100, timestamp_end=102,
-            confidence=0.75, reel_targets=["goalkeeper"],
+            confidence=0.75, reel_targets=["keeper_a"],
             frame_start=3000, frame_end=3060,
         )
         json_str = ev.model_dump_json()
@@ -113,11 +113,11 @@ class TestJobModel:
         )
 
     def test_default_status_is_pending(self):
-        job = Job(video_file=self._make_video_file(), reel_types=["goalkeeper"])
+        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a"])
         assert job.status == JobStatus.PENDING
 
     def test_with_status_immutable_update(self):
-        job = Job(video_file=self._make_video_file(), reel_types=["goalkeeper"])
+        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a"])
         updated = job.with_status(JobStatus.DETECTING, progress=10.0)
         assert updated.status == JobStatus.DETECTING
         assert updated.progress_pct == 10.0
@@ -125,11 +125,11 @@ class TestJobModel:
 
     def test_job_id_is_uuid(self):
         import uuid
-        job = Job(video_file=self._make_video_file(), reel_types=["goalkeeper"])
+        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a"])
         uuid.UUID(job.job_id)  # Raises if invalid
 
     def test_serialization_roundtrip(self):
-        job = Job(video_file=self._make_video_file(), reel_types=["goalkeeper", "highlights"])
+        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a", "highlights"])
         json_str = job.model_dump_json()
         job2 = Job.model_validate_json(json_str)
         assert job2.job_id == job.job_id

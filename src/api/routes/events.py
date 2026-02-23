@@ -32,7 +32,8 @@ class EventUpdateRequest(BaseModel):
 
 class EventSummary(BaseModel):
     total: int
-    goalkeeper: int
+    keeper_a: int
+    keeper_b: int
     highlights: int
     by_type: dict[str, int]
     auto_include: int
@@ -63,13 +64,15 @@ async def list_events_summary(job_id: str):
     events = event_log.read_all()
 
     by_type: dict[str, int] = {}
-    gk_count = hl_count = 0
+    ka_count = kb_count = hl_count = 0
     auto_include = manually_exc = manually_inc = 0
 
     for ev in events:
         by_type[ev.event_type.value] = by_type.get(ev.event_type.value, 0) + 1
-        if "goalkeeper" in ev.reel_targets:
-            gk_count += 1
+        if "keeper_a" in ev.reel_targets:
+            ka_count += 1
+        if "keeper_b" in ev.reel_targets:
+            kb_count += 1
         if "highlights" in ev.reel_targets:
             hl_count += 1
         if ev.review_override is True:
@@ -82,7 +85,8 @@ async def list_events_summary(job_id: str):
 
     return EventSummary(
         total=len(events),
-        goalkeeper=gk_count,
+        keeper_a=ka_count,
+        keeper_b=kb_count,
         highlights=hl_count,
         by_type=by_type,
         auto_include=auto_include,

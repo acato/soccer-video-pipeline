@@ -34,25 +34,47 @@ class EventType(str, Enum):
     FREE_KICK_SHOT      = "free_kick_shot"
 
 
-# Map each event type to which reels it contributes to
+# Map each event type to which reels it contributes to.
+# GK event types have empty defaults — reel_targets are assigned dynamically
+# at event creation time based on which keeper (keeper_a / keeper_b) is involved.
 EVENT_REEL_MAP: dict[EventType, list[str]] = {
-    EventType.SHOT_STOP_DIVING:   ["goalkeeper"],
-    EventType.SHOT_STOP_STANDING: ["goalkeeper"],
-    EventType.PUNCH:              ["goalkeeper"],
-    EventType.CATCH:              ["goalkeeper"],
-    EventType.GOAL_KICK:          ["goalkeeper"],
-    EventType.DISTRIBUTION_SHORT: ["goalkeeper"],
-    EventType.DISTRIBUTION_LONG:  ["goalkeeper"],
-    EventType.ONE_ON_ONE:         ["goalkeeper", "highlights"],
+    EventType.SHOT_STOP_DIVING:   [],
+    EventType.SHOT_STOP_STANDING: [],
+    EventType.PUNCH:              [],
+    EventType.CATCH:              [],
+    EventType.GOAL_KICK:          [],
+    EventType.DISTRIBUTION_SHORT: [],
+    EventType.DISTRIBUTION_LONG:  [],
+    EventType.ONE_ON_ONE:         [],  # keeper role + "highlights" assigned at creation
     EventType.SHOT_ON_TARGET:     ["highlights"],
     EventType.SHOT_OFF_TARGET:    ["highlights"],
-    EventType.GOAL:               ["highlights", "goalkeeper"],  # GK concedes
+    EventType.GOAL:               ["highlights"],
     EventType.NEAR_MISS:          ["highlights"],
     EventType.DRIBBLE_SEQUENCE:   ["highlights"],
     EventType.TACKLE:             ["highlights"],
     EventType.PENALTY:            ["highlights"],
     EventType.FREE_KICK_SHOT:     ["highlights"],
 }
+
+# Valid keeper reel types (one per half of the pitch)
+GK_REEL_TYPES = ("keeper_a", "keeper_b")
+
+# GK-specific event types (reel_targets assigned dynamically)
+_GK_EVENT_TYPES = frozenset({
+    EventType.SHOT_STOP_DIVING,
+    EventType.SHOT_STOP_STANDING,
+    EventType.PUNCH,
+    EventType.CATCH,
+    EventType.GOAL_KICK,
+    EventType.DISTRIBUTION_SHORT,
+    EventType.DISTRIBUTION_LONG,
+    EventType.ONE_ON_ONE,
+})
+
+
+def is_gk_event_type(event_type: EventType) -> bool:
+    """Return True if the event type is a goalkeeper-specific event."""
+    return event_type in _GK_EVENT_TYPES
 
 # Per-event minimum confidence thresholds (override MIN_EVENT_CONFIDENCE global)
 EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {

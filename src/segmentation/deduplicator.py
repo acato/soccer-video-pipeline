@@ -16,7 +16,9 @@ log = structlog.get_logger(__name__)
 
 # Default max reel durations (configurable)
 MAX_REEL_DURATIONS: dict[str, float] = {
-    "goalkeeper": 20 * 60,   # 20 min max for GK reel
+    "goalkeeper": 20 * 60,   # 20 min max for legacy GK reel
+    "keeper_a": 20 * 60,     # 20 min max for keeper A (left half)
+    "keeper_b": 20 * 60,     # 20 min max for keeper B (right half)
     "highlights": 12 * 60,   # 12 min max for highlights reel
     "player": 15 * 60,
 }

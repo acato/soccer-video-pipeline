@@ -50,7 +50,7 @@ class TestGoalkeeperReelE2E:
         """Submit 2-minute synthetic match, wait for completion, verify reel exists."""
         r = httpx.post(
             f"{API_URL}/jobs",
-            json={"nas_path": "e2e_match.mp4", "reel_types": ["goalkeeper"]},
+            json={"nas_path": "e2e_match.mp4", "reel_types": ["keeper_a"]},
             timeout=30,
         )
         assert r.status_code == 201
@@ -73,7 +73,7 @@ class TestGoalkeeperReelE2E:
             pytest.fail(f"Job did not complete within {MAX_WAIT_SEC}s")
 
         # Verify reel info accessible
-        reel_r = httpx.get(f"{API_URL}/reels/{job_id}/goalkeeper", timeout=10)
+        reel_r = httpx.get(f"{API_URL}/reels/{job_id}/keeper_a", timeout=10)
         assert reel_r.status_code == 200
         reel_info = reel_r.json()
         assert reel_info["size_bytes"] > 0

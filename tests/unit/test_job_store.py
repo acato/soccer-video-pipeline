@@ -117,7 +117,7 @@ class TestJobStore:
         store.save(job)
         store.update_status(
             job.job_id, JobStatus.COMPLETE,
-            output_paths={"goalkeeper": "/nas/output/job1/goalkeeper_reel.mp4"}
+            output_paths={"keeper_a": "/nas/output/job1/keeper_a_reel.mp4"}
         )
         reloaded = store.get(job.job_id)
-        assert "goalkeeper" in reloaded.output_paths
+        assert "keeper_a" in reloaded.output_paths

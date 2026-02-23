@@ -44,7 +44,7 @@ class Job(BaseModel):
     updated_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    reel_types: list[str] = Field(default_factory=lambda: ["goalkeeper", "highlights"])
+    reel_types: list[str] = Field(default_factory=lambda: ["keeper_a", "keeper_b", "highlights"])
     output_paths: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
     progress_pct: float = 0.0

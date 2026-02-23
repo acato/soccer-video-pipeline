@@ -1,13 +1,12 @@
 """
 Goalkeeper identification and GK-specific event detection.
 
-GK identification uses a multi-signal approach:
-  1. Field position — GK stays near their goal line (< 20m from goal)
-  2. Jersey color — GK wears a distinct color from outfield players
-  3. Track continuity — once identified, ByteTrack maintains identity
+GK identification uses a jersey-first approach:
+  1. Jersey color uniqueness — PRIMARY signal: per-half outlier color = GK
+  2. Glove color heuristic — supplementary confidence boost
+  3. Edge heuristic — supplementary cross-check (logged, not decisive)
 
-Field homography is required for position-based identification.
-Falls back to jersey-color-only if homography is unavailable.
+Two keepers are tracked: keeper_a (left half) and keeper_b (right half).
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ import structlog
 
 from src.detection.models import (
     BoundingBox, Detection, Event, EventType, FieldPosition,
-    Track, EVENT_REEL_MAP
+    Track, EVENT_REEL_MAP,
 )
 
 log = structlog.get_logger(__name__)
@@ -34,27 +33,103 @@ PITCH_WIDTH = 68.0
 
 class GoalkeeperDetector:
     """
-    Identifies the goalkeeper track and classifies GK-specific events.
+    Identifies goalkeeper tracks and classifies GK-specific events.
 
-    State is per-match (not per-chunk): GK identity persists across the full video.
+    Tracks two keepers (keeper_a = left half, keeper_b = right half).
+    State is per-match (not per-chunk).
     """
 
-    def __init__(self, job_id: str, source_file: str, team_goal_x: float = 0.0):
-        """
-        Args:
-            team_goal_x: X coordinate of the GK's goal (0.0 = left goal, 105.0 = right goal)
-        """
+    def __init__(self, job_id: str, source_file: str):
         self.job_id = job_id
         self.source_file = source_file
-        self.team_goal_x = team_goal_x
-        self._gk_track_id: Optional[int] = None
-        self._gk_jersey_hsv: Optional[tuple[float, float, float]] = None
-        self._homography: Optional[np.ndarray] = None  # 3x3 perspective matrix
-        self._prev_gk_position: Optional[tuple[float, float]] = None  # Cross-chunk continuity
+        self._gk_track_ids: dict[str, Optional[int]] = {
+            "keeper_a": None,
+            "keeper_b": None,
+        }
+        self._homography: Optional[np.ndarray] = None
+        self._prev_gk_positions: dict[str, Optional[tuple[float, float]]] = {
+            "keeper_a": None,
+            "keeper_b": None,
+        }
 
     def set_homography(self, H: np.ndarray) -> None:
-        """Set the 3x3 field homography matrix (pixel → meters)."""
+        """Set the 3x3 field homography matrix (pixel -> meters)."""
         self._homography = H
+
+    def identify_goalkeepers(
+        self,
+        tracks: list[Track],
+        frame_shape: tuple[int, int],
+        track_colors: dict[int, tuple[float, float, float]],
+        frames_data: Optional[dict[int, np.ndarray]] = None,
+    ) -> dict[str, Optional[int]]:
+        """
+        Identify both goalkeepers using jersey-first approach.
+
+        PRIMARY: jersey color uniqueness per half
+        SUPPLEMENTARY: glove color confidence boost, edge heuristic cross-check
+
+        Returns {"keeper_a": track_id or None, "keeper_b": track_id or None}
+        """
+        from src.detection.jersey_classifier import (
+            identify_gk_by_jersey_per_half,
+            detect_glove_color,
+        )
+
+        # Build track position map (mean_x per track)
+        track_positions = self._compute_track_positions(tracks)
+
+        # PRIMARY: jersey color uniqueness per half
+        result = identify_gk_by_jersey_per_half(
+            track_colors, track_positions
+        )
+
+        # SUPPLEMENTARY: glove color confidence boost (log only)
+        if frames_data:
+            for role in ("keeper_a", "keeper_b"):
+                tid = result.get(role)
+                if tid is None:
+                    continue
+                track = next((t for t in tracks if t.track_id == tid), None)
+                if track and track.detections:
+                    det = track.detections[0]
+                    if det.frame_number in frames_data:
+                        glove_score = detect_glove_color(
+                            frames_data[det.frame_number], det.bbox, frame_shape
+                        )
+                        if glove_score is not None:
+                            log.debug(
+                                "gk_detector.glove_score",
+                                role=role,
+                                track_id=tid,
+                                glove_score=round(glove_score, 3),
+                            )
+
+        # SUPPLEMENTARY: edge heuristic cross-check (log agreement/disagreement)
+        edge_gk = self._identify_by_edge_heuristic(tracks)
+        if edge_gk is not None:
+            for role in ("keeper_a", "keeper_b"):
+                if result.get(role) == edge_gk:
+                    log.debug("gk_detector.edge_confirms_jersey", role=role, track_id=edge_gk)
+                    break
+            else:
+                if any(result.get(r) is not None for r in ("keeper_a", "keeper_b")):
+                    log.debug(
+                        "gk_detector.edge_disagrees",
+                        edge_id=edge_gk,
+                        jersey_ids=result,
+                    )
+
+        # Update internal state
+        for role in ("keeper_a", "keeper_b"):
+            tid = result.get(role)
+            if tid is not None:
+                self._gk_track_ids[role] = tid
+            # Save position for cross-chunk continuity
+            if tid is not None and tid in track_positions:
+                self._prev_gk_positions[role] = (track_positions[tid], 0.5)
+
+        return result
 
     def identify_goalkeeper(
         self,
@@ -62,40 +137,27 @@ class GoalkeeperDetector:
         frame_shape: tuple[int, int],
     ) -> Optional[int]:
         """
-        Identify the goalkeeper track ID from a set of tracks.
-        Updates internal GK identity state.
-
-        Returns track_id of identified GK, or None if not identified.
+        Deprecated: use identify_goalkeepers() instead.
+        Returns the first non-None keeper track_id (backward compat).
         """
-        # If already identified and still active in these tracks, reuse
-        if self._gk_track_id is not None:
-            active_ids = {t.track_id for t in tracks}
-            if self._gk_track_id in active_ids:
-                return self._gk_track_id
-            # Track IDs reset between chunks — save position before clearing
-            old_gk_tracks = [t for t in tracks if t.track_id == self._gk_track_id]
-            if old_gk_tracks and old_gk_tracks[0].detections:
-                dets = old_gk_tracks[0].detections
-                xs = [d.bbox.center_x for d in dets]
-                ys = [d.bbox.center_y for d in dets]
-                self._prev_gk_position = (float(np.mean(xs)), float(np.mean(ys)))
-            self._gk_track_id = None
+        # If already identified and still active, reuse
+        for role in ("keeper_a", "keeper_b"):
+            tid = self._gk_track_ids.get(role)
+            if tid is not None:
+                active_ids = {t.track_id for t in tracks}
+                if tid in active_ids:
+                    return tid
 
+        # Fallback to edge heuristic (old behavior)
         if self._homography is not None:
             gk_id = self._identify_by_position(tracks, frame_shape)
             if gk_id is not None:
-                log.info("gk_detector.identified_by_position", track_id=gk_id)
-                self._gk_track_id = gk_id
                 return gk_id
 
-        # Fallback: position heuristic using normalized bbox coords (no homography)
         gk_id = self._identify_by_edge_heuristic(tracks)
         if gk_id is not None:
-            log.info("gk_detector.identified_by_edge_heuristic", track_id=gk_id)
-            self._gk_track_id = gk_id
             return gk_id
 
-        log.debug("gk_detector.identification_deferred", reason="insufficient_tracks")
         return None
 
     def classify_gk_events(
@@ -103,25 +165,28 @@ class GoalkeeperDetector:
         gk_track: Track,
         all_tracks: list[Track],
         source_fps: float,
+        keeper_role: str = "keeper_a",
     ) -> list[Event]:
         """
         Classify GK-specific events from the GK track.
-        Returns list of Events with reel_targets=["goalkeeper"].
+        Returns list of Events with reel_targets=[keeper_role].
         """
         events = []
 
         if not gk_track.detections:
             return events
 
-        events.extend(self._detect_distribution(gk_track, source_fps))
-        events.extend(self._detect_saves(gk_track, all_tracks, source_fps))
-        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps))
+        events.extend(self._detect_distribution(gk_track, source_fps, keeper_role))
+        events.extend(self._detect_saves(gk_track, all_tracks, source_fps, keeper_role))
+        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps, keeper_role))
 
         return events
 
-    # ── Private detection methods ──────────────────────────────────────────
+    # -- Private detection methods --
 
-    def _detect_distribution(self, gk_track: Track, fps: float) -> list[Event]:
+    def _detect_distribution(
+        self, gk_track: Track, fps: float, keeper_role: str = "keeper_a"
+    ) -> list[Event]:
         """
         Detect goal kicks and distribution from GK track.
         Uses velocity analysis: sudden bbox position change after stationary period.
@@ -131,23 +196,20 @@ class GoalkeeperDetector:
         if len(dets) < 5:
             return events
 
-        # Compute center-x velocity over sliding window
         velocities = []
         for i in range(1, len(dets)):
             dx = dets[i].bbox.center_x - dets[i-1].bbox.center_x
             dt = dets[i].timestamp - dets[i-1].timestamp
             velocities.append(abs(dx / dt) if dt > 0 else 0)
 
-        # Find windows where GK was stationary then moved (distribution action)
         window = 10
         for i in range(window, len(velocities)):
             pre_vel = np.mean(velocities[max(0, i-window):i])
             post_vel = np.mean(velocities[i:min(len(velocities), i+5)])
 
-            if pre_vel < 0.01 and post_vel > 0.12:  # Stationary → moving
+            if pre_vel < 0.01 and post_vel > 0.12:
                 det = dets[i]
                 event_type = self._classify_distribution_type(det)
-                # Scale confidence by velocity transition strength
                 vel_ratio = post_vel / max(pre_vel, 0.001)
                 confidence = min(0.90, 0.55 + vel_ratio * 0.01)
                 events.append(Event(
@@ -157,7 +219,7 @@ class GoalkeeperDetector:
                     timestamp_start=max(0, det.timestamp - 1.0),
                     timestamp_end=det.timestamp + 3.0,
                     confidence=confidence,
-                    reel_targets=EVENT_REEL_MAP[event_type],
+                    reel_targets=[keeper_role],
                     player_track_id=gk_track.track_id,
                     is_goalkeeper_event=True,
                     frame_start=max(0, det.frame_number - int(fps)),
@@ -167,13 +229,15 @@ class GoalkeeperDetector:
                         "detection_method": "velocity_transition",
                         "pre_vel": round(float(pre_vel), 4),
                         "post_vel": round(float(post_vel), 4),
+                        "keeper_role": keeper_role,
                     },
                 ))
 
         return events
 
     def _detect_saves(
-        self, gk_track: Track, all_tracks: list[Track], fps: float
+        self, gk_track: Track, all_tracks: list[Track], fps: float,
+        keeper_role: str = "keeper_a",
     ) -> list[Event]:
         """
         Detect save events: GK makes sudden vertical or lateral movement
@@ -184,7 +248,6 @@ class GoalkeeperDetector:
         if len(dets) < 4:
             return events
 
-        # Build frame-indexed ball position lookup from all tracks
         ball_positions: dict[int, tuple[float, float]] = {}
         for track in all_tracks:
             for det in track.detections:
@@ -192,12 +255,10 @@ class GoalkeeperDetector:
                     ball_positions[det.frame_number] = (det.bbox.center_x, det.bbox.center_y)
         has_ball_data = len(ball_positions) > 0
 
-        # Velocity threshold depends on whether we have ball data for confirmation
         vel_threshold = 0.25 if has_ball_data else 0.35
         dive_threshold = 0.40
 
         for i in range(1, len(dets) - 1):
-            # 3-detection smoothed velocity: use detections i-1, i, i+1
             prev, curr, nxt = dets[i-1], dets[i], dets[i+1]
 
             dy_prev = abs(curr.bbox.center_y - prev.bbox.center_y)
@@ -208,7 +269,6 @@ class GoalkeeperDetector:
             if dt_prev <= 0 or dt_next <= 0:
                 continue
 
-            # Smoothed vertical velocity across 3 detections
             v_prev = dy_prev / dt_prev
             v_next = dy_next / dt_next
             vertical_velocity = (v_prev + v_next) / 2.0
@@ -216,7 +276,6 @@ class GoalkeeperDetector:
             if vertical_velocity <= vel_threshold:
                 continue
 
-            # Ball proximity check: require ball within 0.15 normalized distance (±2 frames)
             ball_distance = None
             gk_x, gk_y = curr.bbox.center_x, curr.bbox.center_y
             frame = curr.frame_number
@@ -227,7 +286,6 @@ class GoalkeeperDetector:
                     if ball_distance is None or dist < ball_distance:
                         ball_distance = dist
 
-            # If we have ball data, require proximity
             if has_ball_data and (ball_distance is None or ball_distance > 0.15):
                 continue
 
@@ -237,13 +295,15 @@ class GoalkeeperDetector:
                 else EventType.SHOT_STOP_STANDING
             )
 
-            # Confidence: base from velocity + ball proximity bonus
             base_conf = min(0.80, 0.50 + vertical_velocity)
             ball_bonus = 0.10 if (ball_distance is not None and ball_distance < 0.10) else 0.0
             confidence_cap = 0.90 if has_ball_data else 0.75
             confidence = min(confidence_cap, base_conf + ball_bonus)
 
-            metadata = {"vertical_velocity": round(vertical_velocity, 4)}
+            metadata = {
+                "vertical_velocity": round(vertical_velocity, 4),
+                "keeper_role": keeper_role,
+            }
             if ball_distance is not None:
                 metadata["ball_distance"] = round(ball_distance, 4)
 
@@ -254,7 +314,7 @@ class GoalkeeperDetector:
                 timestamp_start=max(0, prev.timestamp - 0.5),
                 timestamp_end=nxt.timestamp + 2.0,
                 confidence=confidence,
-                reel_targets=EVENT_REEL_MAP[event_type],
+                reel_targets=[keeper_role],
                 player_track_id=gk_track.track_id,
                 is_goalkeeper_event=True,
                 frame_start=prev.frame_number,
@@ -266,7 +326,8 @@ class GoalkeeperDetector:
         return self._merge_nearby_events(events, min_gap_sec=2.0)
 
     def _detect_one_on_ones(
-        self, gk_track: Track, all_tracks: list[Track], fps: float
+        self, gk_track: Track, all_tracks: list[Track], fps: float,
+        keeper_role: str = "keeper_a",
     ) -> list[Event]:
         """
         Detect one-on-one: GK moves significantly away from goal line.
@@ -293,9 +354,11 @@ class GoalkeeperDetector:
                 consecutive_count = 0
 
             if consecutive_count >= consecutive_required:
-                # Scale confidence by magnitude of deviation beyond threshold
                 excess = deviation - deviation_threshold
                 confidence = min(0.88, 0.65 + excess * 2.0)
+
+                # ONE_ON_ONE goes to both the keeper reel and highlights
+                reel_targets = [keeper_role, "highlights"]
 
                 events.append(Event(
                     job_id=self.job_id,
@@ -304,7 +367,7 @@ class GoalkeeperDetector:
                     timestamp_start=max(0, det.timestamp - 1.0),
                     timestamp_end=det.timestamp + 4.0,
                     confidence=confidence,
-                    reel_targets=EVENT_REEL_MAP[EventType.ONE_ON_ONE],
+                    reel_targets=reel_targets,
                     player_track_id=gk_track.track_id,
                     is_goalkeeper_event=True,
                     frame_start=max(0, det.frame_number - int(fps)),
@@ -313,9 +376,9 @@ class GoalkeeperDetector:
                     metadata={
                         "deviation": round(deviation, 4),
                         "consecutive_frames": consecutive_count,
+                        "keeper_role": keeper_role,
                     },
                 ))
-                # Reset to avoid duplicate detections for the same rush
                 consecutive_count = 0
 
         return self._merge_nearby_events(events, min_gap_sec=5.0)
@@ -327,6 +390,22 @@ class GoalkeeperDetector:
         elif det.bbox.center_y > 0.55:
             return EventType.DISTRIBUTION_SHORT
         return EventType.DISTRIBUTION_LONG
+
+    def _compute_track_positions(
+        self, tracks: list[Track], min_detections: int = 3,
+    ) -> dict[int, float]:
+        """Compute mean_x position for each track."""
+        positions: dict[int, float] = {}
+        for track in tracks:
+            dets = [
+                d for d in track.detections
+                if d.class_name in ("player", "goalkeeper")
+            ]
+            if len(dets) < min_detections:
+                continue
+            xs = [d.bbox.center_x for d in dets]
+            positions[track.track_id] = float(np.mean(xs))
+        return positions
 
     def _identify_by_edge_heuristic(
         self, tracks: list[Track], min_detections: int = 15,
@@ -344,7 +423,6 @@ class GoalkeeperDetector:
 
         Cross-chunk continuity: candidates near previous GK position get a bonus.
         """
-        # Pre-compute per-track mean positions for isolation/behind-line scoring
         track_means: dict[int, tuple[float, float]] = {}
         for track in tracks:
             player_dets = [
@@ -360,7 +438,7 @@ class GoalkeeperDetector:
         if not track_means:
             return None
 
-        candidates: list[tuple[int, float, dict]] = []  # (track_id, score, scores_dict)
+        candidates: list[tuple[int, float, dict]] = []
 
         for track in tracks:
             if track.track_id not in track_means:
@@ -376,20 +454,15 @@ class GoalkeeperDetector:
             var_x = float(np.var(xs))
             var_y = float(np.var(ys))
 
-            # ── Edge proximity (30%) — tighter cutoff: < 0.12 from edge ──
             edge_dist = min(mean_x, 1.0 - mean_x)
-            # Score is 1.0 at the edge, 0.0 at 0.12 or beyond
             edge_score = max(0.0, 1.0 - edge_dist / 0.12)
 
             if edge_score <= 0.0:
-                continue  # Must be near an edge to be a GK candidate
+                continue
 
-            # ── Stability (15%) ──────────────────────────────────────────
             positional_var = var_x + var_y
             stability = 1.0 / (1.0 + positional_var * 100.0)
 
-            # ── Isolation score (30%) ────────────────────────────────────
-            # GK is typically the most spatially isolated player on their half
             candidate_half_left = mean_x < 0.5
             same_half_means = [
                 m for tid, m in track_means.items()
@@ -401,20 +474,15 @@ class GoalkeeperDetector:
                     for mx, my in same_half_means
                 ]
                 avg_dist = float(np.mean(distances))
-                # Normalize: 0.3+ distance is very isolated → score 1.0
                 isolation = min(1.0, avg_dist / 0.3)
             else:
-                isolation = 0.5  # Only player on this half — neutral
+                isolation = 0.5
 
-            # ── Behind-defensive-line score (25%) ────────────────────────
-            # GK should be the outermost (closest to edge) among same-half players
             if same_half_means:
                 if candidate_half_left:
-                    # Left half: lower x = closer to left edge = deeper
                     deeper_count = sum(1 for mx, _ in same_half_means if mx < mean_x)
                     behind_line = 1.0 - (deeper_count / len(same_half_means))
                 else:
-                    # Right half: higher x = closer to right edge = deeper
                     deeper_count = sum(1 for mx, _ in same_half_means if mx > mean_x)
                     behind_line = 1.0 - (deeper_count / len(same_half_means))
             else:
@@ -428,11 +496,13 @@ class GoalkeeperDetector:
             )
 
             # Cross-chunk continuity bonus
-            if self._prev_gk_position is not None:
-                prev_x, prev_y = self._prev_gk_position
-                dist_to_prev = ((mean_x - prev_x) ** 2 + (mean_y - prev_y) ** 2) ** 0.5
-                if dist_to_prev < 0.10:
-                    score += 0.15
+            for role, prev_pos in self._prev_gk_positions.items():
+                if prev_pos is not None:
+                    prev_x, prev_y = prev_pos
+                    dist_to_prev = ((mean_x - prev_x) ** 2 + (mean_y - prev_y) ** 2) ** 0.5
+                    if dist_to_prev < 0.10:
+                        score += 0.15
+                        break
 
             candidates.append((track.track_id, score, {
                 "edge": round(edge_score, 3),
@@ -474,7 +544,7 @@ class GoalkeeperDetector:
         gk_zone_candidates: dict[int, int] = Counter()
 
         for track in tracks:
-            for det in track.detections[-30:]:  # Last 30 detections
+            for det in track.detections[-30:]:
                 pixel_center = np.array([
                     [det.bbox.center_x * frame_shape[1],
                      det.bbox.center_y * frame_shape[0]]
@@ -489,18 +559,15 @@ class GoalkeeperDetector:
         if not gk_zone_candidates:
             return None
 
-        # Player most consistently in GK zone is the GK
         best_id = max(gk_zone_candidates, key=gk_zone_candidates.get)
-        if gk_zone_candidates[best_id] >= 5:  # Min observations
+        if gk_zone_candidates[best_id] >= 5:
             return best_id
         return None
 
     def _in_gk_zone(self, field_x: float) -> bool:
         """Check if field X coordinate is within GK zone."""
-        if self.team_goal_x <= 10:  # Left goal
-            return field_x < GK_ZONE_DEPTH_METERS
-        else:  # Right goal
-            return field_x > (GOAL_LINE_RIGHT_X - GK_ZONE_DEPTH_METERS)
+        return (field_x < GK_ZONE_DEPTH_METERS or
+                field_x > (GOAL_LINE_RIGHT_X - GK_ZONE_DEPTH_METERS))
 
     @staticmethod
     def _merge_nearby_events(events: list[Event], min_gap_sec: float) -> list[Event]:
@@ -513,7 +580,6 @@ class GoalkeeperDetector:
         for event in events[1:]:
             prev = merged[-1]
             if event.timestamp_start - prev.timestamp_end < min_gap_sec:
-                # Extend previous event, keep higher confidence
                 data = prev.model_dump()
                 data["timestamp_end"] = max(prev.timestamp_end, event.timestamp_end)
                 data["frame_end"] = max(prev.frame_end, event.frame_end)

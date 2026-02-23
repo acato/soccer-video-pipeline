@@ -3,6 +3,7 @@ import pytest
 from src.detection.models import (
     BoundingBox, Detection, Event, EventType,
     EVENT_REEL_MAP, EVENT_CONFIDENCE_THRESHOLDS, Track,
+    GK_REEL_TYPES, is_gk_event_type,
 )
 
 
@@ -24,12 +25,13 @@ class TestEventReelMap:
         for event_type in EventType:
             assert event_type in EVENT_REEL_MAP, f"{event_type} missing from EVENT_REEL_MAP"
 
-    def test_goal_is_in_both_reels(self):
+    def test_goal_is_highlights_only(self):
         targets = EVENT_REEL_MAP[EventType.GOAL]
         assert "highlights" in targets
-        assert "goalkeeper" in targets
+        assert len(targets) == 1
 
-    def test_gk_events_only_in_goalkeeper_reel(self):
+    def test_gk_events_have_empty_default_reel_targets(self):
+        """GK event types have empty reel_targets in the map (assigned dynamically)."""
         gk_only_events = [
             EventType.SHOT_STOP_DIVING,
             EventType.SHOT_STOP_STANDING,
@@ -41,7 +43,16 @@ class TestEventReelMap:
         ]
         for et in gk_only_events:
             targets = EVENT_REEL_MAP[et]
-            assert targets == ["goalkeeper"], f"{et} should only target goalkeeper reel"
+            assert targets == [], f"{et} should have empty default reel_targets"
+
+    def test_is_gk_event_type(self):
+        assert is_gk_event_type(EventType.SHOT_STOP_DIVING)
+        assert is_gk_event_type(EventType.ONE_ON_ONE)
+        assert not is_gk_event_type(EventType.GOAL)
+        assert not is_gk_event_type(EventType.TACKLE)
+
+    def test_gk_reel_types(self):
+        assert GK_REEL_TYPES == ("keeper_a", "keeper_b")
 
 
 @pytest.mark.unit
@@ -78,7 +89,7 @@ class TestEventShouldInclude:
             event_type=EventType.SHOT_STOP_DIVING,
             timestamp_start=10.0, timestamp_end=11.0,
             confidence=0.99,  # Very high
-            reel_targets=["goalkeeper"],
+            reel_targets=["keeper_a"],
             frame_start=300, frame_end=330,
             review_override=False,
         )

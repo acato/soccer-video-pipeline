@@ -50,7 +50,7 @@ class TestJobsEndpoints:
     def test_submit_job_file_not_found(self, client):
         resp = client.post("/jobs", json={
             "nas_path": "does_not_exist.mp4",
-            "reel_types": ["goalkeeper"],
+            "reel_types": ["keeper_a"],
         })
         assert resp.status_code == 404
 
@@ -89,7 +89,7 @@ class TestJobsEndpoints:
 
             resp = client.post("/jobs", json={
                 "nas_path": "match.mp4",
-                "reel_types": ["goalkeeper", "highlights"],
+                "reel_types": ["keeper_a", "keeper_b", "highlights"],
             })
         assert resp.status_code == 201
         data = resp.json()

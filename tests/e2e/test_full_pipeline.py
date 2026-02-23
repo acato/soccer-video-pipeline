@@ -55,7 +55,7 @@ class TestE2EGoalkeeperReel:
         # Submit job
         resp = httpx.post(f"{API_BASE}/jobs", json={
             "nas_path": str(video),
-            "reel_types": ["goalkeeper"],
+            "reel_types": ["keeper_a"],
         })
         assert resp.status_code == 201
         job_id = resp.json()["job_id"]
@@ -76,7 +76,7 @@ class TestE2EGoalkeeperReel:
         job_resp = httpx.get(f"{API_BASE}/jobs/{job_id}")
         job = job_resp.json()
         assert job["status"] == "complete"
-        assert "goalkeeper" in job["output_paths"]
+        assert "keeper_a" in job["output_paths"]
 
 
 @skip_no_api

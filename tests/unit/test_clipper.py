@@ -29,19 +29,19 @@ def _make_event(
 @pytest.mark.unit
 class TestComputeClips:
     def test_empty_events_returns_empty(self):
-        clips = compute_clips([], 5400.0, "goalkeeper")
+        clips = compute_clips([], 5400.0, "keeper_a")
         assert clips == []
 
     def test_single_event_with_padding(self):
-        events = [_make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["goalkeeper"])]
-        clips = compute_clips(events, 5400.0, "goalkeeper", pre_pad=3.0, post_pad=5.0)
+        events = [_make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper_a"])]
+        clips = compute_clips(events, 5400.0, "keeper_a", pre_pad=3.0, post_pad=5.0)
         assert len(clips) == 1
         assert clips[0].start_sec == 57.0
         assert clips[0].end_sec == 67.0
 
     def test_padding_clamped_at_zero(self):
-        events = [_make_event("e1", EventType.SHOT_STOP_DIVING, 1.0, 2.0, ["goalkeeper"])]
-        clips = compute_clips(events, 5400.0, "goalkeeper", pre_pad=5.0, post_pad=5.0)
+        events = [_make_event("e1", EventType.SHOT_STOP_DIVING, 1.0, 2.0, ["keeper_a"])]
+        clips = compute_clips(events, 5400.0, "keeper_a", pre_pad=5.0, post_pad=5.0)
         assert clips[0].start_sec == 0.0
 
     def test_padding_clamped_at_video_end(self):
@@ -72,10 +72,10 @@ class TestComputeClips:
     def test_reel_type_filter(self):
         """Events not in reel_targets should be excluded."""
         events = [
-            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["goalkeeper"]),
+            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper_a"]),
             _make_event("e2", EventType.GOAL, 200.0, 201.0, ["highlights"], confidence=0.90),
         ]
-        gk_clips = compute_clips(events, 5400.0, "goalkeeper")
+        gk_clips = compute_clips(events, 5400.0, "keeper_a")
         hl_clips = compute_clips(events, 5400.0, "highlights")
         assert len(gk_clips) == 1
         assert len(hl_clips) == 1

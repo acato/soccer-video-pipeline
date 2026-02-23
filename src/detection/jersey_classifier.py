@@ -224,6 +224,169 @@ def _encode_hsv_for_clustering(colors: np.ndarray) -> np.ndarray:
     ])
 
 
+def identify_gk_by_jersey_per_half(
+    track_colors: dict[int, tuple[float, float, float]],
+    track_positions: dict[int, float],
+    min_tracks: int = 6,
+    uniqueness_threshold: float = 0.30,
+) -> dict[str, Optional[int]]:
+    """
+    Identify one goalkeeper per half by jersey color uniqueness.
+
+    Partitions tracks into left/right halves by mean_x position, then per half
+    finds the track with the highest average HSV distance from all other
+    same-half tracks. If that distance exceeds the threshold → keeper.
+
+    Args:
+        track_colors: {track_id: (h, s, v)} dominant jersey colors
+        track_positions: {track_id: mean_x} normalized 0-1 horizontal position
+        min_tracks: minimum total tracks needed before attempting identification
+        uniqueness_threshold: minimum avg HSV distance to qualify as keeper
+
+    Returns:
+        {"keeper_a": track_id or None, "keeper_b": track_id or None}
+        keeper_a = left half (mean_x < 0.5), keeper_b = right half
+    """
+    result: dict[str, Optional[int]] = {"keeper_a": None, "keeper_b": None}
+
+    # Need enough tracks to meaningfully partition
+    common_ids = set(track_colors.keys()) & set(track_positions.keys())
+    if len(common_ids) < min_tracks:
+        log.debug("jersey_per_half.insufficient_tracks", count=len(common_ids))
+        return result
+
+    # Filter out referee-hue-range tracks
+    filtered_ids = [
+        tid for tid in common_ids
+        if not _is_referee_hue(track_colors[tid])
+    ]
+    if len(filtered_ids) < min_tracks:
+        log.debug("jersey_per_half.too_few_after_ref_filter", count=len(filtered_ids))
+        return result
+
+    # Partition into left/right halves
+    left_ids = [tid for tid in filtered_ids if track_positions[tid] < 0.5]
+    right_ids = [tid for tid in filtered_ids if track_positions[tid] >= 0.5]
+
+    for half_name, half_ids in [("keeper_a", left_ids), ("keeper_b", right_ids)]:
+        if len(half_ids) < 2:
+            continue
+        gk_id = _find_outlier_in_half(half_ids, track_colors, uniqueness_threshold)
+        if gk_id is not None:
+            result[half_name] = gk_id
+            log.info(
+                "jersey_per_half.keeper_identified",
+                half=half_name,
+                track_id=gk_id,
+            )
+
+    return result
+
+
+def detect_glove_color(
+    frame: np.ndarray,
+    bbox,
+    frame_shape: tuple[int, int],
+) -> Optional[float]:
+    """
+    Detect goalkeeper gloves by analyzing the hand/wrist region of a bbox.
+
+    Crops the bottom 25% of the bounding box (hand area) and measures the
+    fraction of high-saturation, high-value, non-skin-tone pixels (typical
+    of brightly colored GK gloves).
+
+    Returns:
+        0.0–1.0 confidence score, or None if crop is invalid.
+    """
+    crop = _crop_hand_region(frame, bbox, frame_shape)
+    if crop is None or crop.size == 0:
+        return None
+
+    try:
+        import cv2
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+        h = hsv[:, :, 0].astype(float)
+        s = hsv[:, :, 1].astype(float) / 255.0
+        v = hsv[:, :, 2].astype(float) / 255.0
+
+        total_pixels = h.size
+        if total_pixels == 0:
+            return None
+
+        # Glove pixels: high saturation, high value, NOT skin tone (hue 5-25)
+        is_saturated = s > 0.35
+        is_bright = v > 0.30
+        is_skin = (h >= 5) & (h <= 25) & (s > 0.2)
+        glove_mask = is_saturated & is_bright & ~is_skin
+
+        fraction = float(np.sum(glove_mask)) / total_pixels
+        return min(1.0, fraction)
+    except Exception:
+        return None
+
+
+def _crop_hand_region(
+    frame: np.ndarray,
+    bbox,
+    frame_shape: tuple[int, int],
+) -> Optional[np.ndarray]:
+    """Crop the bottom 25% of a bounding box (hand/wrist area)."""
+    h, w = frame_shape
+    x1 = int(bbox.x * w)
+    y1 = int(bbox.y * h)
+    x2 = int((bbox.x + bbox.width) * w)
+    y2 = int((bbox.y + bbox.height) * h)
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    bbox_h = y2 - y1
+    hand_y1 = y1 + int(bbox_h * 0.75)
+    hand_y2 = y2
+
+    crop = frame[hand_y1:hand_y2, x1:x2]
+    return crop if crop.size > 0 else None
+
+
+def _is_referee_hue(hsv: tuple[float, float, float]) -> bool:
+    """Check if an HSV color falls in the referee hue range."""
+    h, s, _ = hsv
+    return REFEREE_HUE_RANGE[0] <= h <= REFEREE_HUE_RANGE[1] and s >= REFEREE_SAT_MIN
+
+
+def _find_outlier_in_half(
+    half_ids: list[int],
+    track_colors: dict[int, tuple[float, float, float]],
+    threshold: float,
+) -> Optional[int]:
+    """Find the color outlier among tracks on one half of the pitch."""
+    colors = np.array([list(track_colors[tid]) for tid in half_ids], dtype=np.float32)
+
+    max_dist = -1.0
+    best_idx = None
+
+    for i in range(len(half_ids)):
+        dists = []
+        for j in range(len(half_ids)):
+            if i == j:
+                continue
+            h_diff = min(abs(colors[i, 0] - colors[j, 0]),
+                        180 - abs(colors[i, 0] - colors[j, 0])) / 90.0
+            s_diff = abs(colors[i, 1] - colors[j, 1])
+            dist = 0.7 * h_diff + 0.3 * s_diff
+            dists.append(dist)
+
+        avg_dist = float(np.mean(dists))
+        if avg_dist > max_dist:
+            max_dist = avg_dist
+            best_idx = i
+
+    if best_idx is not None and max_dist > threshold:
+        return half_ids[best_idx]
+    return None
+
+
 def _identify_gk_simple_outlier(
     track_ids: list[int],
     colors: np.ndarray,

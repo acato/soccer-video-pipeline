@@ -26,7 +26,7 @@ router = APIRouter()
 
 class SubmitJobRequest(BaseModel):
     nas_path: str
-    reel_types: list[str] = ["goalkeeper", "highlights"]
+    reel_types: list[str] = ["keeper_a", "keeper_b", "highlights"]
 
 
 class JobStatusResponse(BaseModel):
@@ -50,10 +50,22 @@ def submit_job(request: SubmitJobRequest):
     from src.config import config as dyn_cfg
     from src.ingestion.job import JobStore, create_job
 
-    valid_reels = {"goalkeeper", "highlights", "player"}
+    valid_reels = {"keeper_a", "keeper_b", "highlights", "player", "goalkeeper"}
     invalid = [r for r in request.reel_types if r not in valid_reels]
     if invalid:
         raise HTTPException(400, f"Invalid reel types: {invalid}. Valid: {sorted(valid_reels)}")
+
+    # Normalize legacy "goalkeeper" → ["keeper_a", "keeper_b"]
+    if "goalkeeper" in request.reel_types:
+        request.reel_types = [
+            r for r in request.reel_types if r != "goalkeeper"
+        ] + ["keeper_a", "keeper_b"]
+        # Deduplicate while preserving order
+        seen = set()
+        request.reel_types = [
+            r for r in request.reel_types
+            if r not in seen and not seen.add(r)
+        ]
 
     full_path = str(Path(dyn_cfg.NAS_MOUNT_PATH) / request.nas_path.lstrip("/"))
     if not Path(full_path).exists():
