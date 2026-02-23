@@ -21,6 +21,17 @@ API_URL = os.getenv("API_URL", "http://localhost:8080")
 MAX_WAIT_SEC = 300
 
 
+def _api_available() -> bool:
+    try:
+        return httpx.get(f"{API_URL}/health", timeout=5.0).status_code == 200
+    except Exception:
+        return False
+
+
+skip_no_api = pytest.mark.skipif(not _api_available(), reason="API not running")
+
+
+@skip_no_api
 @pytest.mark.e2e
 class TestGoalkeeperReelE2E:
 
