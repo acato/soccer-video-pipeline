@@ -99,7 +99,7 @@ class TestActionClassifierInit:
             job_id="j1", source_file="m.mp4",
             event_type=EventType.CATCH,
             timestamp_start=10.0, timestamp_end=12.0,
-            confidence=0.75, reel_targets=["keeper_a"],
+            confidence=0.75, reel_targets=["keeper"],
             frame_start=300, frame_end=360,
         )]
         result = clf.confirm_events(events, "source.mp4", "job-001")

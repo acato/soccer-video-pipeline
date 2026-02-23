@@ -4,6 +4,7 @@ These are the canonical Job and VideoFile types used throughout the pipeline.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -20,6 +21,33 @@ class JobStatus(str, Enum):
     ASSEMBLING = "assembling"
     COMPLETE = "complete"
     FAILED = "failed"
+
+
+class KitConfig(BaseModel):
+    """Jersey colors worn by one team in a specific match."""
+    team_name: str          # e.g. "Foobar FC"
+    outfield_color: str     # e.g. "dark_blue" — see JERSEY_COLOR_PALETTE
+    gk_color: str           # e.g. "neon_yellow"
+
+    @property
+    def team_slug(self) -> str:
+        """Filename/reel-safe identifier: 'Foobar FC' → 'foobar_fc_gk'."""
+        slug = re.sub(r"[^a-z0-9]+", "_", self.team_name.lower()).strip("_")
+        return f"{slug}_gk"
+
+
+class MatchConfig(BaseModel):
+    """Per-match kit context for a single team.
+
+    `team`     — the team this job is generating reels for.
+    `opponent` — the opposing team; needed so the pipeline can distinguish
+                 the two GKs by jersey color, but no reels are produced for them.
+
+    Colors are per-match, not per-team, because teams switch between
+    home/away/third kits depending on the fixture.
+    """
+    team: KitConfig
+    opponent: KitConfig
 
 
 class VideoFile(BaseModel):
@@ -44,7 +72,8 @@ class Job(BaseModel):
     updated_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    reel_types: list[str] = Field(default_factory=lambda: ["keeper_a", "keeper_b", "highlights"])
+    reel_types: list[str] = Field(default_factory=lambda: ["keeper", "highlights"])
+    match_config: MatchConfig
     output_paths: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
     progress_pct: float = 0.0

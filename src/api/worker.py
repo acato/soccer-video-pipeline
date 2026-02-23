@@ -144,7 +144,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         frame_step=int(cfg.DETECTION_FRAME_STEP),
         working_dir=cfg.WORKING_DIR,
     )
-    gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path)
+    gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
     event_log = EventLog(working / "events.jsonl")
 
     runner = PipelineRunner(

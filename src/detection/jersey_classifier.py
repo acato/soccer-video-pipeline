@@ -30,6 +30,55 @@ log = structlog.get_logger(__name__)
 REFEREE_HUE_RANGE = (20, 40)   # Yellow
 REFEREE_SAT_MIN = 0.5
 
+# Human-readable jersey color names → HSV (H: 0-180, S: 0-1, V: 0-1).
+# Used when match_config is provided so classification is supervised rather
+# than relying on unsupervised outlier detection.
+JERSEY_COLOR_PALETTE: dict[str, tuple[float, float, float]] = {
+    # Achromatic
+    "white":        (0.0,   0.05, 0.95),
+    "silver":       (0.0,   0.05, 0.65),
+    "gray":         (0.0,   0.06, 0.45),
+    "black":        (0.0,   0.08, 0.10),
+    # Reds
+    "red":          (0.0,   0.85, 0.70),
+    "dark_red":     (0.0,   0.85, 0.40),
+    "maroon":       (0.0,   0.80, 0.28),
+    "burgundy":     (170.0, 0.72, 0.30),
+    # Oranges / yellows
+    "orange":       (12.0,  0.90, 0.85),
+    "neon_orange":  (10.0,  0.95, 0.95),
+    "yellow":       (28.0,  0.85, 0.90),
+    "neon_yellow":  (35.0,  0.95, 0.95),
+    # Greens
+    "green":        (60.0,  0.80, 0.55),
+    "dark_green":   (60.0,  0.85, 0.28),
+    "neon_green":   (55.0,  0.95, 0.95),
+    "teal":         (88.0,  0.80, 0.55),
+    # Blues
+    "sky_blue":     (103.0, 0.48, 0.85),
+    "light_blue":   (107.0, 0.58, 0.82),
+    "blue":         (112.0, 0.82, 0.65),
+    "dark_blue":    (115.0, 0.90, 0.32),
+    "navy":         (116.0, 0.92, 0.20),
+    # Other
+    "purple":       (135.0, 0.65, 0.50),
+    "pink":         (157.0, 0.45, 0.80),
+    "hot_pink":     (153.0, 0.80, 0.82),
+    "neon_pink":    (153.0, 0.90, 0.95),
+}
+
+
+def resolve_jersey_color(name: str) -> tuple[float, float, float]:
+    """
+    Return the HSV tuple for a named jersey color.
+    Raises ValueError for unknown names.
+    """
+    key = name.lower().replace(" ", "_").replace("-", "_")
+    if key not in JERSEY_COLOR_PALETTE:
+        valid = ", ".join(sorted(JERSEY_COLOR_PALETTE))
+        raise ValueError(f"Unknown jersey color {name!r}. Valid options: {valid}")
+    return JERSEY_COLOR_PALETTE[key]
+
 # Expected jersey colors for a typical game:
 # Team A outfield, Team B outfield, GK, (Referee)
 N_JERSEY_CLUSTERS = 4
@@ -280,6 +329,87 @@ def identify_gk_by_jersey_per_half(
                 track_id=gk_id,
             )
 
+    return result
+
+
+def identify_gk_by_known_colors(
+    track_colors: dict[int, tuple[float, float, float]],
+    track_positions: dict[int, float],
+    home_gk_hsv: tuple[float, float, float],
+    away_gk_hsv: tuple[float, float, float],
+    min_similarity: float = 0.40,
+) -> dict[str, Optional[int]]:
+    """
+    Identify goalkeepers using the known GK jersey colors from match_config.
+
+    For each known GK color, finds the track with the closest jersey color.
+    Assigns keeper_a (left half, mean_x < 0.5) and keeper_b (right half) by
+    position after color matching — not before — so it works even when a GK
+    drifts into the wrong half early in processing.
+
+    Args:
+        track_colors: {track_id: (h, s, v)} dominant jersey colors
+        track_positions: {track_id: mean_x} normalized horizontal position
+        home_gk_hsv: HSV of the home team GK jersey
+        away_gk_hsv: HSV of the away team GK jersey
+        min_similarity: minimum similarity score to accept a match (0–1)
+
+    Returns:
+        {"keeper_a": track_id or None, "keeper_b": track_id or None}
+    """
+    result: dict[str, Optional[int]] = {"keeper_a": None, "keeper_b": None}
+
+    common_ids = set(track_colors.keys()) & set(track_positions.keys())
+    if not common_ids:
+        return result
+
+    # Find the best-matching track for each known GK color
+    best_home: tuple[Optional[int], float] = (None, -1.0)
+    best_away: tuple[Optional[int], float] = (None, -1.0)
+
+    for tid in common_ids:
+        color = track_colors[tid]
+        sim_home = compute_jersey_similarity(color, home_gk_hsv)
+        sim_away = compute_jersey_similarity(color, away_gk_hsv)
+
+        if sim_home > best_home[1]:
+            best_home = (tid, sim_home)
+        if sim_away > best_away[1]:
+            best_away = (tid, sim_away)
+
+    home_id, home_sim = best_home
+    away_id, away_sim = best_away
+
+    # Reject weak matches
+    if home_sim < min_similarity:
+        home_id = None
+    if away_sim < min_similarity:
+        away_id = None
+
+    # If both colors matched the same track, keep the stronger match
+    if home_id is not None and home_id == away_id:
+        if home_sim >= away_sim:
+            away_id = None
+        else:
+            home_id = None
+
+    # Assign keeper_a / keeper_b by mean_x position
+    for tid in (t for t in (home_id, away_id) if t is not None):
+        role = "keeper_a" if track_positions[tid] < 0.5 else "keeper_b"
+        if result[role] is not None:
+            # Both keepers on the same half — put the second in the other slot
+            other = "keeper_b" if role == "keeper_a" else "keeper_a"
+            result[other] = tid
+        else:
+            result[role] = tid
+
+    log.info(
+        "jersey_classifier.gk_by_known_colors",
+        keeper_a=result["keeper_a"],
+        keeper_b=result["keeper_b"],
+        home_sim=round(home_sim, 3) if home_id is not None else None,
+        away_sim=round(away_sim, 3) if away_id is not None else None,
+    )
     return result
 
 

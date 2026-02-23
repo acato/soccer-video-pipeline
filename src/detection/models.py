@@ -56,8 +56,8 @@ EVENT_REEL_MAP: dict[EventType, list[str]] = {
     EventType.FREE_KICK_SHOT:     ["highlights"],
 }
 
-# Valid keeper reel types (one per half of the pitch)
-GK_REEL_TYPES = ("keeper_a", "keeper_b")
+# Valid keeper reel type
+GK_REEL_TYPES = ("keeper",)
 
 # GK-specific event types (reel_targets assigned dynamically)
 _GK_EVENT_TYPES = frozenset({

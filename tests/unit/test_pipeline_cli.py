@@ -32,7 +32,7 @@ SAMPLE_JOB = {
         "height": 2160,
         "sha256": "deadbeef",
     },
-    "reel_types": ["keeper_a", "keeper_b", "highlights"],
+    "reel_types": ["keeper", "highlights"],
     "output_paths": {},
     "created_at": "2025-06-01T10:00:00",
     "updated_at": "2025-06-01T10:05:00",
@@ -43,7 +43,7 @@ COMPLETE_JOB = {
     "status": "COMPLETE",
     "progress_pct": 100.0,
     "output_paths": {
-        "keeper_a": "/output/abc-123/keeper_a_reel.mp4",
+        "keeper": "/output/abc-123/keeper_reel.mp4",
         "highlights": "/output/abc-123/highlights_reel.mp4",
     },
 }
@@ -105,11 +105,11 @@ class TestSubmitCommand:
     def test_submit_custom_reels(self, capsys):
         def handler(req):
             body = json.loads(req.content)
-            assert body["reel_types"] == ["keeper_a"]
+            assert body["reel_types"] == ["keeper"]
             return httpx.Response(201, json=SAMPLE_JOB)
 
         with _patch_client(handler):
-            code = main(["submit", "game.mp4", "--reel", "keeper_a"])
+            code = main(["submit", "game.mp4", "--reel", "keeper"])
         assert code == 0
 
     def test_submit_invalid_reel(self, capsys):
@@ -375,8 +375,8 @@ class TestArgParsing:
 
     def test_reel_type_parsing(self):
         parser = build_parser()
-        args = parser.parse_args(["submit", "game.mp4", "--reel", "keeper_a,highlights"])
-        assert args.reel == "keeper_a,highlights"
+        args = parser.parse_args(["submit", "game.mp4", "--reel", "keeper,highlights"])
+        assert args.reel == "keeper,highlights"
 
     def test_api_url_from_env(self, monkeypatch):
         monkeypatch.setenv("PIPELINE_API_URL", "http://custom:1234")

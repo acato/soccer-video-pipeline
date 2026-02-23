@@ -14,7 +14,7 @@ from typing import Optional
 
 import structlog
 
-from src.ingestion.models import Job, JobStatus, VideoFile
+from src.ingestion.models import Job, JobStatus, MatchConfig, VideoFile
 
 log = structlog.get_logger(__name__)
 
@@ -86,12 +86,13 @@ def create_job(
     video_file: VideoFile,
     reel_types: list[str],
     store: JobStore,
+    match_config: Optional[MatchConfig] = None,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
     Returns the newly created Job.
     """
-    job = Job(video_file=video_file, reel_types=reel_types)
+    job = Job(video_file=video_file, reel_types=reel_types, match_config=match_config)
     store.save(job)
     log.info(
         "job.created",

@@ -8,6 +8,7 @@ All timestamps are in seconds (float) relative to video start.
 ## src/ingestion/models.py
 
 ```python
+import re
 from enum import Enum
 from pydantic import BaseModel
 
@@ -31,16 +32,46 @@ class VideoFile(BaseModel):
     size_bytes: int
     sha256: str                  # for idempotency check
 
+class KitConfig(BaseModel):
+    """Per-match kit configuration. Colors vary by fixture (home/away)."""
+    team_name: str               # e.g. "Home FC"
+    outfield_color: str          # named color from JERSEY_COLOR_PALETTE
+    gk_color: str                # named color from JERSEY_COLOR_PALETTE (required)
+
+    @property
+    def team_slug(self) -> str:
+        """URL-safe identifier derived from team_name, e.g. "home_fc_gk"."""
+        slug = re.sub(r"[^a-z0-9]+", "_", self.team_name.lower()).strip("_")
+        return f"{slug}_gk"
+
+class MatchConfig(BaseModel):
+    """
+    team    = the team whose GK reel is being produced
+    opponent = needed for color-based identification only
+    """
+    team: KitConfig
+    opponent: KitConfig
+
 class Job(BaseModel):
     job_id: str                  # UUID
     video_file: VideoFile
+    match_config: MatchConfig    # required — specifies team and kit colors
     status: JobStatus
     created_at: str              # ISO datetime
     updated_at: str
-    reel_types: list[str]        # ["goalkeeper", "highlights"]
+    reel_types: list[str]        # default: ["keeper", "highlights"]
     output_paths: dict[str, str] # reel_type -> output MP4 path
     error: str | None = None
+    progress_pct: float = 0.0
 ```
+
+### Valid reel types
+
+| Value        | Description                                      |
+|--------------|--------------------------------------------------|
+| `"keeper"`   | Goalkeeper reel for the team specified in `match_config.team` |
+| `"highlights"` | Match highlights reel                          |
+| `"player"`   | Individual outfield player reel                  |
 
 ---
 
@@ -70,6 +101,9 @@ class EventType(str, Enum):
     PENALTY = "penalty"
     FREE_KICK_SHOT = "free_kick_shot"
 
+# GK event types that route to the "keeper" reel
+GK_REEL_TYPES: tuple[str, ...] = ("keeper",)
+
 class Detection(BaseModel):
     frame_number: int
     timestamp: float
@@ -90,7 +124,7 @@ class Event(BaseModel):
     timestamp_start: float
     timestamp_end: float
     confidence: float
-    reel_targets: list[str]
+    reel_targets: list[str]      # e.g. ["keeper"] or ["highlights"]
     player_track_id: int | None = None
     is_goalkeeper_event: bool = False
     frame_start: int
@@ -98,6 +132,35 @@ class Event(BaseModel):
     reviewed: bool = False
     review_override: bool | None = None
     metadata: dict = {}
+```
+
+---
+
+## src/detection/jersey_classifier.py
+
+```python
+# 29 named colors mapping to HSV tuples (H: 0–180, S: 0–1, V: 0–1)
+JERSEY_COLOR_PALETTE: dict[str, tuple[float, float, float]]
+
+def resolve_jersey_color(name: str) -> tuple[float, float, float]:
+    """
+    Convert a human-readable color name to an HSV tuple.
+    Normalises case, spaces and hyphens (e.g. "Dark Blue" == "dark_blue").
+    Raises ValueError for unknown color names.
+    """
+
+def identify_gk_by_known_colors(
+    track_colors: dict[int, tuple],
+    track_positions: dict[int, float],
+    home_gk_hsv: tuple[float, float, float],
+    away_gk_hsv: tuple[float, float, float],
+    min_similarity: float = 0.40,
+) -> dict[str, int | None]:
+    """
+    Supervised GK identification using known jersey colors.
+    Returns {"keeper_a": track_id | None, "keeper_b": track_id | None}
+    where keeper_a is the GK on the left half of the pitch.
+    """
 ```
 
 ---
@@ -180,7 +243,22 @@ def concat_clips(
 
 ```
 POST   /jobs              — Submit new job
-                          Body: { "nas_path": str, "reel_types": list[str] }
+                          Body: {
+                            "nas_path": str,
+                            "match_config": {
+                              "team": {
+                                "team_name": str,
+                                "outfield_color": str,   # named color
+                                "gk_color": str          # named color
+                              },
+                              "opponent": {
+                                "team_name": str,
+                                "outfield_color": str,
+                                "gk_color": str
+                              }
+                            },
+                            "reel_types": list[str]      # default: ["keeper", "highlights"]
+                          }
                           Returns: Job
 
 GET    /jobs/{job_id}     — Get full job record

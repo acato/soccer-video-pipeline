@@ -7,6 +7,7 @@ instantiation, and Celery app exposure.
 import pytest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
+from tests.conftest import make_match_config
 
 
 def _make_video_file():
@@ -31,7 +32,8 @@ def _make_job(job_id="test-job-001", reel_types=None):
     return Job(
         job_id=job_id,
         video_file=_make_video_file(),
-        reel_types=reel_types or ["keeper_a"],
+        reel_types=reel_types or ["keeper"],
+        match_config=make_match_config(),
     )
 
 
@@ -168,7 +170,7 @@ class TestRunPipelineTypeCasting:
             job_id="test-job-001", source_file="match.mp4",
             event_type=EventType.CATCH, timestamp_start=10.0,
             timestamp_end=12.0, confidence=0.80,
-            reel_targets=["keeper_a"], frame_start=300, frame_end=360,
+            reel_targets=["keeper"], frame_start=300, frame_end=360,
         )
         mocks = _run_pipeline_with_mocks(tmp_path, events=[event])
         cc_call = mocks["compute_clips"].call_args
@@ -187,7 +189,7 @@ class TestRunPipelineReelComposer:
         return ClipBoundary(
             source_file="/mnt/nas/source/match.mp4",
             start_sec=7.0, end_sec=17.0,
-            events=["ev-001"], reel_type="keeper_a",
+            events=["ev-001"], reel_type="keeper",
             primary_event_type="catch",
         )
 
@@ -196,7 +198,7 @@ class TestRunPipelineReelComposer:
         mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
         composer_call = mocks["ReelComposer"].call_args
         assert composer_call.kwargs["job_id"] == "test-job-001"
-        assert composer_call.kwargs["reel_type"] == "keeper_a"
+        assert composer_call.kwargs["reel_type"] == "keeper"
 
     def test_composer_receives_codec_and_int_crf(self, tmp_path):
         clip = self._make_clip()
@@ -287,7 +289,7 @@ class TestRunPipelineJobCompletion:
         return ClipBoundary(
             source_file="/mnt/nas/source/match.mp4",
             start_sec=7.0, end_sec=17.0,
-            events=["ev-001"], reel_type="keeper_a",
+            events=["ev-001"], reel_type="keeper",
             primary_event_type="catch",
         )
 
@@ -320,12 +322,12 @@ class TestRunPipelineJobCompletion:
         clip = ClipBoundary(
             source_file="/mnt/nas/source/match.mp4",
             start_sec=7.0, end_sec=17.0,
-            events=["ev-001"], reel_type="keeper_a",
+            events=["ev-001"], reel_type="keeper",
             primary_event_type="catch",
         )
         mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
         result = mocks["result"]
-        assert "keeper_a" in result["output_paths"]
+        assert "keeper" in result["output_paths"]
 
     def test_pipeline_fails_when_no_reels_produced(self, tmp_path):
         """When detection finds 0 events, pipeline should mark FAILED, not COMPLETE."""

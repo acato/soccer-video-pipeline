@@ -301,17 +301,20 @@ class PipelineRunner:
             # Classify events
             chunk_events: list[Event] = []
 
-            # GK events — classify for each identified keeper
+            # GK events — only for the team's GK (opponent's label is None)
             for keeper_role in ("keeper_a", "keeper_b"):
                 gk_id = gk_ids.get(keeper_role)
                 if gk_id is None:
+                    continue
+                reel_label = self.gk_detector.reel_label_for(keeper_role)
+                if reel_label is None:
                     continue
                 gk_tracks = [t for t in tracks if t.track_id == gk_id]
                 if gk_tracks:
                     gk_track = gk_tracks[0]
                     gk_track.is_goalkeeper = True
                     gk_events = self.gk_detector.classify_gk_events(
-                        gk_track, tracks, fps, keeper_role=keeper_role
+                        gk_track, tracks, fps, keeper_role=reel_label,
                     )
                     chunk_events.extend(gk_events)
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from src.ingestion.job import JobStore, create_job
 from src.ingestion.models import Job, JobStatus, VideoFile
+from tests.conftest import make_match_config
 
 
 def _sample_video_file(path: str = "/mnt/nas/match.mp4") -> VideoFile:
@@ -19,12 +20,19 @@ def _sample_video_file(path: str = "/mnt/nas/match.mp4") -> VideoFile:
     )
 
 
+def _sample_job(**kwargs) -> Job:
+    return Job(
+        video_file=_sample_video_file(),
+        match_config=make_match_config(),
+        **kwargs,
+    )
+
+
 @pytest.mark.unit
 class TestJobStore:
     def test_save_and_get(self, tmp_path: Path):
         store = JobStore(tmp_path / "jobs")
-        vf = _sample_video_file()
-        job = Job(video_file=vf)
+        job = _sample_job()
         store.save(job)
         retrieved = store.get(job.job_id)
         assert retrieved is not None
@@ -36,88 +44,77 @@ class TestJobStore:
 
     def test_update_status(self, tmp_path: Path):
         store = JobStore(tmp_path / "jobs")
-        job = Job(video_file=_sample_video_file())
+        job = _sample_job()
         store.save(job)
         updated = store.update_status(job.job_id, JobStatus.DETECTING, progress=15.0)
         assert updated.status == JobStatus.DETECTING
         assert updated.progress_pct == 15.0
-        # Verify persisted
-        reloaded = store.get(job.job_id)
-        assert reloaded.status == JobStatus.DETECTING
+        assert store.get(job.job_id).status == JobStatus.DETECTING
 
     def test_update_status_not_found_returns_none(self, tmp_path: Path):
         store = JobStore(tmp_path / "jobs")
-        result = store.update_status("ghost-id", JobStatus.FAILED)
-        assert result is None
+        assert store.update_status("ghost-id", JobStatus.FAILED) is None
 
     def test_list_all_sorted_newest_first(self, tmp_path: Path):
         import time
         store = JobStore(tmp_path / "jobs")
-        job1 = Job(video_file=_sample_video_file())
+        job1 = _sample_job()
         time.sleep(0.01)
-        job2 = Job(video_file=_sample_video_file())
+        job2 = _sample_job()
         store.save(job1)
         store.save(job2)
         jobs = store.list_all()
-        assert jobs[0].job_id == job2.job_id  # Newest first
+        assert jobs[0].job_id == job2.job_id
 
     def test_save_is_atomic(self, tmp_path: Path):
-        """Save should write to .tmp then rename — no partial writes visible."""
         store = JobStore(tmp_path / "jobs")
-        job = Job(video_file=_sample_video_file())
-        store.save(job)
-        # Verify no .tmp file left behind
-        tmp_files = list((tmp_path / "jobs").glob("*.tmp"))
-        assert tmp_files == []
+        store.save(_sample_job())
+        assert list((tmp_path / "jobs").glob("*.tmp")) == []
 
     def test_path_traversal_prevented(self, tmp_path: Path):
-        """Job IDs with ../ should not escape the jobs directory."""
         store = JobStore(tmp_path / "jobs")
         safe_id = store._path("../../etc/passwd")
-        # Path must stay inside the jobs directory (no directory escape)
         assert str(safe_id).startswith(str(tmp_path / "jobs"))
 
     def test_job_with_status_immutable_update(self, tmp_path: Path):
-        store = JobStore(tmp_path / "jobs")
-        job = Job(video_file=_sample_video_file())
+        job = _sample_job()
         updated = job.with_status(JobStatus.COMPLETE, progress=100.0)
         assert updated.status == JobStatus.COMPLETE
-        assert job.status == JobStatus.PENDING  # Original unchanged
+        assert job.status == JobStatus.PENDING
 
     def test_with_status_clears_error_on_non_failed(self, tmp_path: Path):
-        """Transitioning to a non-FAILED status clears stale error from previous attempt."""
         store = JobStore(tmp_path / "jobs")
-        job = Job(video_file=_sample_video_file())
+        job = _sample_job()
         store.save(job)
-        # Simulate a failed retry that left an error
         store.update_status(job.job_id, JobStatus.FAILED, error="something broke")
-        failed = store.get(job.job_id)
-        assert failed.error == "something broke"
-        # Now retry — transition to DETECTING should clear the stale error
+        assert store.get(job.job_id).error == "something broke"
         store.update_status(job.job_id, JobStatus.DETECTING, progress=5.0)
         reloaded = store.get(job.job_id)
         assert reloaded.status == JobStatus.DETECTING
         assert reloaded.error is None
 
     def test_with_status_preserves_error_on_failed(self, tmp_path: Path):
-        """Transitioning to FAILED without explicit error keeps existing error."""
-        job = Job(video_file=_sample_video_file(), error="original error")
-        updated = job.with_status(JobStatus.FAILED)
-        assert updated.error == "original error"
+        job = _sample_job(error="original error")
+        assert job.with_status(JobStatus.FAILED).error == "original error"
 
     def test_with_status_explicit_error_on_any_status(self, tmp_path: Path):
-        """Passing error= explicitly always sets it, regardless of target status."""
-        job = Job(video_file=_sample_video_file())
-        updated = job.with_status(JobStatus.DETECTING, error="forced error")
-        assert updated.error == "forced error"
+        job = _sample_job()
+        assert job.with_status(JobStatus.DETECTING, error="forced error").error == "forced error"
 
     def test_output_paths_updated(self, tmp_path: Path):
         store = JobStore(tmp_path / "jobs")
-        job = Job(video_file=_sample_video_file())
+        job = _sample_job()
         store.save(job)
         store.update_status(
             job.job_id, JobStatus.COMPLETE,
-            output_paths={"keeper_a": "/nas/output/job1/keeper_a_reel.mp4"}
+            output_paths={"keeper": "/nas/output/job1/keeper_reel.mp4"}
         )
+        assert "keeper" in store.get(job.job_id).output_paths
+
+    def test_match_config_persisted(self, tmp_path: Path):
+        store = JobStore(tmp_path / "jobs")
+        job = _sample_job()
+        store.save(job)
         reloaded = store.get(job.job_id)
-        assert "keeper_a" in reloaded.output_paths
+        assert reloaded.match_config.team.team_name == "Home FC"
+        assert reloaded.match_config.opponent.gk_color == "neon_green"

@@ -20,6 +20,7 @@ from src.detection.models import (
     BoundingBox, Detection, Event, EventType, FieldPosition,
     Track, EVENT_REEL_MAP,
 )
+from src.ingestion.models import MatchConfig
 
 log = structlog.get_logger(__name__)
 
@@ -39,10 +40,18 @@ class GoalkeeperDetector:
     State is per-match (not per-chunk).
     """
 
-    def __init__(self, job_id: str, source_file: str):
+    def __init__(self, job_id: str, source_file: str, match_config: Optional[MatchConfig] = None):
         self.job_id = job_id
         self.source_file = source_file
+        self._match_config = match_config
         self._gk_track_ids: dict[str, Optional[int]] = {
+            "keeper_a": None,
+            "keeper_b": None,
+        }
+        # Maps spatial role → reel target label.
+        # None means the opponent's GK — no reel is produced for them.
+        # Set to "keeper" for the team's GK once identification has run.
+        self._gk_reel_labels: dict[str, Optional[str]] = {
             "keeper_a": None,
             "keeper_b": None,
         }
@@ -64,25 +73,40 @@ class GoalkeeperDetector:
         frames_data: Optional[dict[int, np.ndarray]] = None,
     ) -> dict[str, Optional[int]]:
         """
-        Identify both goalkeepers using jersey-first approach.
+        Identify both goalkeepers using known GK jersey colors from match_config.
 
-        PRIMARY: jersey color uniqueness per half
+        PRIMARY: supervised color matching against team/opponent GK colors
         SUPPLEMENTARY: glove color confidence boost, edge heuristic cross-check
 
         Returns {"keeper_a": track_id or None, "keeper_b": track_id or None}
         """
         from src.detection.jersey_classifier import (
-            identify_gk_by_jersey_per_half,
+            identify_gk_by_known_colors,
+            resolve_jersey_color,
+            compute_jersey_similarity,
             detect_glove_color,
         )
 
         # Build track position map (mean_x per track)
         track_positions = self._compute_track_positions(tracks)
 
-        # PRIMARY: jersey color uniqueness per half
-        result = identify_gk_by_jersey_per_half(
-            track_colors, track_positions
+        team_gk_hsv = resolve_jersey_color(self._match_config.team.gk_color)
+        opp_gk_hsv = resolve_jersey_color(self._match_config.opponent.gk_color)
+        result = identify_gk_by_known_colors(
+            track_colors,
+            track_positions,
+            home_gk_hsv=team_gk_hsv,
+            away_gk_hsv=opp_gk_hsv,
         )
+        # Label the team's GK role as "keeper"; leave the opponent's as None.
+        for role in ("keeper_a", "keeper_b"):
+            tid = result.get(role)
+            if tid is None or tid not in track_colors:
+                self._gk_reel_labels[role] = None
+                continue
+            sim_team = compute_jersey_similarity(track_colors[tid], team_gk_hsv)
+            sim_opp = compute_jersey_similarity(track_colors[tid], opp_gk_hsv)
+            self._gk_reel_labels[role] = "keeper" if sim_team >= sim_opp else None
 
         # SUPPLEMENTARY: glove color confidence boost (log only)
         if frames_data:
@@ -159,6 +183,15 @@ class GoalkeeperDetector:
             return gk_id
 
         return None
+
+    def reel_label_for(self, role: str) -> Optional[str]:
+        """
+        Return the reel target label for a spatial keeper role.
+
+        Returns 'keeper' if this role is the team's GK, or None if it is the
+        opponent's GK (meaning no events should be emitted for them).
+        """
+        return self._gk_reel_labels.get(role)
 
     def classify_gk_events(
         self,

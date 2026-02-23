@@ -4,7 +4,7 @@
 Standalone script — no src/ imports. Communicates with the API via HTTP only.
 
 Usage:
-    pipeline_cli.py submit <nas_path> [--reel goalkeeper,highlights] [--json]
+    pipeline_cli.py submit <nas_path> [--reel keeper,highlights] [--json]
     pipeline_cli.py status <job_id>   [--watch] [--interval 5]      [--json]
     pipeline_cli.py list              [--limit 20]                   [--json]
     pipeline_cli.py retry  <job_id>                                  [--json]
@@ -20,7 +20,7 @@ import time
 import httpx
 
 DEFAULT_API_URL = "http://localhost:8080"
-VALID_REEL_TYPES = {"keeper_a", "keeper_b", "highlights", "player", "goalkeeper"}
+VALID_REEL_TYPES = {"keeper", "highlights", "player"}
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("nas_path", help="Relative path to video on NAS")
     p_submit.add_argument(
         "--reel", default=None,
-        help="Comma-separated reel types (default: keeper_a,keeper_b,highlights)",
+        help="Comma-separated reel types (default: keeper,highlights)",
     )
 
     # status

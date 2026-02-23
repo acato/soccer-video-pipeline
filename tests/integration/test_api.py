@@ -8,6 +8,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+_MATCH_CONFIG = {
+    "team": {
+        "team_name": "Home FC",
+        "outfield_color": "blue",
+        "gk_color": "neon_yellow",
+    },
+    "opponent": {
+        "team_name": "Away United",
+        "outfield_color": "red",
+        "gk_color": "neon_green",
+    },
+}
+
+
 @pytest.fixture(scope="module")
 def client(tmp_path_factory, set_test_env):
     """Create FastAPI TestClient with mocked config paths."""
@@ -50,13 +64,15 @@ class TestJobsEndpoints:
     def test_submit_job_file_not_found(self, client):
         resp = client.post("/jobs", json={
             "nas_path": "does_not_exist.mp4",
-            "reel_types": ["keeper_a"],
+            "match_config": _MATCH_CONFIG,
+            "reel_types": ["keeper"],
         })
         assert resp.status_code == 404
 
     def test_submit_job_invalid_reel_type(self, client, tmp_path):
         resp = client.post("/jobs", json={
             "nas_path": "match.mp4",
+            "match_config": _MATCH_CONFIG,
             "reel_types": ["invalid_reel"],
         })
         assert resp.status_code == 400
@@ -89,7 +105,8 @@ class TestJobsEndpoints:
 
             resp = client.post("/jobs", json={
                 "nas_path": "match.mp4",
-                "reel_types": ["keeper_a", "keeper_b", "highlights"],
+                "match_config": _MATCH_CONFIG,
+                "reel_types": ["keeper", "highlights"],
             })
         assert resp.status_code == 201
         data = resp.json()
@@ -115,8 +132,9 @@ class TestJobsEndpoints:
         os.makedirs(nas, exist_ok=True)
         open(os.path.join(nas, "match2.mp4"), "w").close()
 
-        resp1 = client.post("/jobs", json={"nas_path": "match2.mp4"})
-        resp2 = client.post("/jobs", json={"nas_path": "match2.mp4"})
+        payload = {"nas_path": "match2.mp4", "match_config": _MATCH_CONFIG}
+        resp1 = client.post("/jobs", json=payload)
+        resp2 = client.post("/jobs", json=payload)
 
         assert resp1.status_code == 201
         assert resp2.json()["job_id"] == resp1.json()["job_id"]

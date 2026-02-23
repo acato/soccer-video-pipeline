@@ -9,6 +9,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+_MATCH_CONFIG = {
+    "team": {
+        "team_name": "Home FC",
+        "outfield_color": "blue",
+        "gk_color": "neon_yellow",
+    },
+    "opponent": {
+        "team_name": "Away United",
+        "outfield_color": "red",
+        "gk_color": "neon_green",
+    },
+}
+
+
 @pytest.fixture(scope="class")
 def api_env(tmp_path_factory):
     """
@@ -74,12 +88,16 @@ class TestJobSubmission:
         assert isinstance(r.json(), list)
 
     def test_submit_nonexistent_file_returns_404(self, client, sample_video):
-        r = client.post("/jobs", json={"nas_path": "does_not_exist.mp4"})
+        r = client.post("/jobs", json={
+            "nas_path": "does_not_exist.mp4",
+            "match_config": _MATCH_CONFIG,
+        })
         assert r.status_code == 404
 
     def test_submit_invalid_reel_type_returns_400(self, client, sample_video):
         r = client.post("/jobs", json={
             "nas_path": "test_match.mp4",
+            "match_config": _MATCH_CONFIG,
             "reel_types": ["invalid_type"],
         })
         assert r.status_code == 400
@@ -87,19 +105,23 @@ class TestJobSubmission:
     def test_submit_valid_job(self, client, sample_video):
         r = client.post("/jobs", json={
             "nas_path": "test_match.mp4",
-            "reel_types": ["keeper_a", "keeper_b", "highlights"],
+            "match_config": _MATCH_CONFIG,
+            "reel_types": ["keeper", "highlights"],
         })
         assert r.status_code == 201, f"Body: {r.text}"
         data = r.json()
         assert "job_id" in data
         assert data["status"] == "pending"
-        assert data["reel_types"] == ["keeper_a", "keeper_b", "highlights"]
+        assert data["reel_types"] == ["keeper", "highlights"]
         assert data["progress_pct"] == 0.0
         # Celery was called
         client._mock_task.delay.assert_called()
 
     def test_get_job_by_id(self, client, sample_video):
-        r1 = client.post("/jobs", json={"nas_path": "test_match.mp4"})
+        r1 = client.post("/jobs", json={
+            "nas_path": "test_match.mp4",
+            "match_config": _MATCH_CONFIG,
+        })
         job_id = r1.json()["job_id"]
         r2 = client.get(f"/jobs/{job_id}")
         assert r2.status_code == 200
@@ -110,7 +132,10 @@ class TestJobSubmission:
         assert r.status_code == 404
 
     def test_get_job_status(self, client, sample_video):
-        r1 = client.post("/jobs", json={"nas_path": "test_match.mp4"})
+        r1 = client.post("/jobs", json={
+            "nas_path": "test_match.mp4",
+            "match_config": _MATCH_CONFIG,
+        })
         job_id = r1.json()["job_id"]
         r2 = client.get(f"/jobs/{job_id}/status")
         assert r2.status_code == 200
@@ -121,14 +146,18 @@ class TestJobSubmission:
 
     def test_idempotent_submission(self, client, sample_video):
         """Submitting the same file twice returns the same job_id."""
-        r1 = client.post("/jobs", json={"nas_path": "test_match.mp4"})
-        r2 = client.post("/jobs", json={"nas_path": "test_match.mp4"})
+        payload = {"nas_path": "test_match.mp4", "match_config": _MATCH_CONFIG}
+        r1 = client.post("/jobs", json=payload)
+        r2 = client.post("/jobs", json=payload)
         assert r1.status_code == 201
         assert r2.status_code == 201
         assert r1.json()["job_id"] == r2.json()["job_id"]
 
     def test_list_jobs_after_submission(self, client, sample_video):
-        client.post("/jobs", json={"nas_path": "test_match.mp4"})
+        client.post("/jobs", json={
+            "nas_path": "test_match.mp4",
+            "match_config": _MATCH_CONFIG,
+        })
         r = client.get("/jobs")
         assert r.status_code == 200
         jobs = r.json()
@@ -136,7 +165,10 @@ class TestJobSubmission:
         assert all("job_id" in j for j in jobs)
 
     def test_retry_non_failed_job_returns_400(self, client, sample_video):
-        r = client.post("/jobs", json={"nas_path": "test_match.mp4"})
+        r = client.post("/jobs", json={
+            "nas_path": "test_match.mp4",
+            "match_config": _MATCH_CONFIG,
+        })
         job_id = r.json()["job_id"]
         r2 = client.post(f"/jobs/{job_id}/retry")
         # Job is PENDING, not FAILED — retry should reject

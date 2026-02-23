@@ -7,7 +7,7 @@ from src.detection.event_log import EventLog, merge_logs
 from src.detection.models import Event, EventType
 
 
-def _make_event(event_id: str, ts_start: float = 10.0, reel="keeper_a") -> Event:
+def _make_event(event_id: str, ts_start: float = 10.0, reel="keeper") -> Event:
     return Event(
         event_id=event_id,
         job_id="job-001",
@@ -60,9 +60,9 @@ class TestEventLog:
 
     def test_filter_by_reel(self, tmp_path: Path):
         log = EventLog(tmp_path / "events.jsonl")
-        log.append(_make_event("gk1", reel="keeper_a"))
+        log.append(_make_event("gk1", reel="keeper"))
         log.append(_make_event("hl1", reel="highlights"))
-        gk_events = log.filter_by_reel("keeper_a")
+        gk_events = log.filter_by_reel("keeper")
         hl_events = log.filter_by_reel("highlights")
         assert len(gk_events) == 1 and gk_events[0].event_id == "gk1"
         assert len(hl_events) == 1 and hl_events[0].event_id == "hl1"

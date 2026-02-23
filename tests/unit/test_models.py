@@ -7,6 +7,23 @@ from src.detection.models import (
     EVENT_REEL_MAP, EVENT_CONFIDENCE_THRESHOLDS
 )
 from src.ingestion.models import Job, JobStatus, VideoFile
+from tests.conftest import make_match_config
+
+
+def _make_video_file() -> VideoFile:
+    return VideoFile(
+        path="/nas/match.mp4", filename="match.mp4",
+        duration_sec=5400, fps=30, width=3840, height=2160,
+        codec="h264", size_bytes=10_000_000_000, sha256="abc123",
+    )
+
+
+def _make_job(**kwargs) -> Job:
+    return Job(
+        video_file=_make_video_file(),
+        match_config=make_match_config(),
+        **kwargs,
+    )
 
 
 @pytest.mark.unit
@@ -57,7 +74,7 @@ class TestEventModel:
         ev = Event(
             job_id="j1", source_file="m.mp4",
             event_type=EventType.CATCH, timestamp_start=10.5, timestamp_end=13.5,
-            confidence=0.80, reel_targets=["keeper_a"],
+            confidence=0.80, reel_targets=["keeper"],
             frame_start=315, frame_end=405,
         )
         assert abs(ev.duration_sec - 3.0) < 0.001
@@ -66,7 +83,7 @@ class TestEventModel:
         ev = Event(
             job_id="j1", source_file="m.mp4",
             event_type=EventType.SHOT_STOP_DIVING, timestamp_start=100, timestamp_end=102,
-            confidence=0.75, reel_targets=["keeper_a"],
+            confidence=0.75, reel_targets=["keeper"],
             frame_start=3000, frame_end=3060,
         )
         json_str = ev.model_dump_json()
@@ -105,19 +122,14 @@ class TestBoundingBox:
 @pytest.mark.unit
 class TestJobModel:
 
-    def _make_video_file(self) -> VideoFile:
-        return VideoFile(
-            path="/nas/match.mp4", filename="match.mp4",
-            duration_sec=5400, fps=30, width=3840, height=2160,
-            codec="h264", size_bytes=10_000_000_000, sha256="abc123",
-        )
-
     def test_default_status_is_pending(self):
-        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a"])
-        assert job.status == JobStatus.PENDING
+        assert _make_job().status == JobStatus.PENDING
+
+    def test_default_reel_types(self):
+        assert _make_job().reel_types == ["keeper", "highlights"]
 
     def test_with_status_immutable_update(self):
-        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a"])
+        job = _make_job()
         updated = job.with_status(JobStatus.DETECTING, progress=10.0)
         assert updated.status == JobStatus.DETECTING
         assert updated.progress_pct == 10.0
@@ -125,12 +137,16 @@ class TestJobModel:
 
     def test_job_id_is_uuid(self):
         import uuid
-        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a"])
-        uuid.UUID(job.job_id)  # Raises if invalid
+        uuid.UUID(_make_job().job_id)  # Raises if invalid
 
     def test_serialization_roundtrip(self):
-        job = Job(video_file=self._make_video_file(), reel_types=["keeper_a", "highlights"])
-        json_str = job.model_dump_json()
-        job2 = Job.model_validate_json(json_str)
+        job = _make_job(reel_types=["keeper", "highlights"])
+        job2 = Job.model_validate_json(job.model_dump_json())
         assert job2.job_id == job.job_id
         assert job2.reel_types == job.reel_types
+        assert job2.match_config.team.team_name == "Home FC"
+
+    def test_match_config_team_slug(self):
+        job = _make_job()
+        assert job.match_config.team.team_slug == "home_fc_gk"
+        assert job.match_config.opponent.team_slug == "away_united_gk"

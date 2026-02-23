@@ -20,11 +20,13 @@ from src.assembly.encoder import validate_clip
 log = structlog.get_logger(__name__)
 
 REEL_FILENAME_MAP = {
+    "keeper":     "keeper_reel.mp4",
+    "highlights": "highlights_reel.mp4",
+    "player":     "player_reel.mp4",
+    # Legacy aliases kept for backward-compat with stored job records
     "goalkeeper": "goalkeeper_reel.mp4",
     "keeper_a":   "keeper_a_reel.mp4",
     "keeper_b":   "keeper_b_reel.mp4",
-    "highlights": "highlights_reel.mp4",
-    "player":     "player_reel.mp4",
 }
 
 

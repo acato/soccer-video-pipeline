@@ -130,7 +130,7 @@ class TestEventLogWithRealEvents:
         log = EventLog(sample_events_jsonl)
         events = log.read_all()
 
-        gk_clips = compute_clips(events, 5400.0, "keeper_a", pre_pad=3.0, post_pad=5.0)
+        gk_clips = compute_clips(events, 5400.0, "keeper", pre_pad=3.0, post_pad=5.0)
         hl_clips = compute_clips(events, 5400.0, "highlights", pre_pad=3.0, post_pad=5.0)
 
         assert len(gk_clips) == 1

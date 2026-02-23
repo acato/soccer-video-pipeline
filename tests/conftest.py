@@ -86,6 +86,32 @@ def sample_video_10s(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Match config helpers
+# ---------------------------------------------------------------------------
+
+def make_match_config():
+    """Return a minimal MatchConfig suitable for use in tests."""
+    from src.ingestion.models import KitConfig, MatchConfig
+    return MatchConfig(
+        team=KitConfig(
+            team_name="Home FC",
+            outfield_color="blue",
+            gk_color="neon_yellow",
+        ),
+        opponent=KitConfig(
+            team_name="Away United",
+            outfield_color="red",
+            gk_color="neon_green",
+        ),
+    )
+
+
+@pytest.fixture
+def sample_match_config():
+    return make_match_config()
+
+
+# ---------------------------------------------------------------------------
 # Event log fixtures
 # ---------------------------------------------------------------------------
 @pytest.fixture
@@ -100,7 +126,7 @@ def sample_events_jsonl(tmp_path: Path) -> Path:
             "timestamp_start": 10.0,
             "timestamp_end": 12.5,
             "confidence": 0.82,
-            "reel_targets": ["keeper_a"],
+            "reel_targets": ["keeper"],
             "player_track_id": 1,
             "is_goalkeeper_event": True,
             "frame_start": 300,

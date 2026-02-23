@@ -55,7 +55,11 @@ class TestE2EGoalkeeperReel:
         # Submit job
         resp = httpx.post(f"{API_BASE}/jobs", json={
             "nas_path": str(video),
-            "reel_types": ["keeper_a"],
+            "match_config": {
+                "team": {"team_name": "Home FC", "outfield_color": "blue", "gk_color": "neon_yellow"},
+                "opponent": {"team_name": "Away United", "outfield_color": "red", "gk_color": "neon_green"},
+            },
+            "reel_types": ["keeper", "highlights"],
         })
         assert resp.status_code == 201
         job_id = resp.json()["job_id"]
@@ -76,7 +80,7 @@ class TestE2EGoalkeeperReel:
         job_resp = httpx.get(f"{API_BASE}/jobs/{job_id}")
         job = job_resp.json()
         assert job["status"] == "complete"
-        assert "keeper_a" in job["output_paths"]
+        assert "keeper" in job["output_paths"]
 
 
 @skip_no_api
@@ -85,7 +89,11 @@ class TestE2EIdempotency:
         """Submitting the same file twice returns the same job_id."""
         video = _make_test_video(tmp_path / "match_idem.mp4", duration=30)
 
-        resp1 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": str(video)})
-        resp2 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": str(video)})
+        _mc = {
+            "team": {"team_name": "Home FC", "outfield_color": "blue", "gk_color": "neon_yellow"},
+            "opponent": {"team_name": "Away United", "outfield_color": "red", "gk_color": "neon_green"},
+        }
+        resp1 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": str(video), "match_config": _mc})
+        resp2 = httpx.post(f"{API_BASE}/jobs", json={"nas_path": str(video), "match_config": _mc})
 
         assert resp1.json()["job_id"] == resp2.json()["job_id"]

@@ -50,7 +50,14 @@ class TestGoalkeeperReelE2E:
         """Submit 2-minute synthetic match, wait for completion, verify reel exists."""
         r = httpx.post(
             f"{API_URL}/jobs",
-            json={"nas_path": "e2e_match.mp4", "reel_types": ["keeper_a"]},
+            json={
+                "nas_path": "e2e_match.mp4",
+                "match_config": {
+                    "team": {"team_name": "Home FC", "outfield_color": "blue", "gk_color": "neon_yellow"},
+                    "opponent": {"team_name": "Away United", "outfield_color": "red", "gk_color": "neon_green"},
+                },
+                "reel_types": ["keeper"],
+            },
             timeout=30,
         )
         assert r.status_code == 201
@@ -73,21 +80,25 @@ class TestGoalkeeperReelE2E:
             pytest.fail(f"Job did not complete within {MAX_WAIT_SEC}s")
 
         # Verify reel info accessible
-        reel_r = httpx.get(f"{API_URL}/reels/{job_id}/keeper_a", timeout=10)
+        reel_r = httpx.get(f"{API_URL}/reels/{job_id}/keeper", timeout=10)
         assert reel_r.status_code == 200
         reel_info = reel_r.json()
         assert reel_info["size_bytes"] > 0
 
     def test_idempotency(self):
         """Running same job twice returns same output."""
+        _mc = {
+            "team": {"team_name": "Home FC", "outfield_color": "blue", "gk_color": "neon_yellow"},
+            "opponent": {"team_name": "Away United", "outfield_color": "red", "gk_color": "neon_green"},
+        }
         r1 = httpx.post(
             f"{API_URL}/jobs",
-            json={"nas_path": "e2e_match.mp4"},
+            json={"nas_path": "e2e_match.mp4", "match_config": _mc},
             timeout=30,
         )
         r2 = httpx.post(
             f"{API_URL}/jobs",
-            json={"nas_path": "e2e_match.mp4"},
+            json={"nas_path": "e2e_match.mp4", "match_config": _mc},
             timeout=30,
         )
         assert r1.json()["job_id"] == r2.json()["job_id"]

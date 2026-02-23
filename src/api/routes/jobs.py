@@ -18,7 +18,9 @@ from pydantic import BaseModel
 
 # Import at module level so tests can patch src.api.routes.jobs.process_match_task
 from src.api.worker import process_match_task
+from src.detection.jersey_classifier import JERSEY_COLOR_PALETTE
 from src.ingestion.intake import extract_metadata
+from src.ingestion.models import MatchConfig
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -26,7 +28,8 @@ router = APIRouter()
 
 class SubmitJobRequest(BaseModel):
     nas_path: str
-    reel_types: list[str] = ["keeper_a", "keeper_b", "highlights"]
+    match_config: MatchConfig
+    reel_types: list[str] = ["keeper", "highlights"]
 
 
 class JobStatusResponse(BaseModel):
@@ -50,22 +53,20 @@ def submit_job(request: SubmitJobRequest):
     from src.config import config as dyn_cfg
     from src.ingestion.job import JobStore, create_job
 
-    valid_reels = {"keeper_a", "keeper_b", "highlights", "player", "goalkeeper"}
+    valid_reels = {"keeper", "highlights", "player"}
     invalid = [r for r in request.reel_types if r not in valid_reels]
     if invalid:
         raise HTTPException(400, f"Invalid reel types: {invalid}. Valid: {sorted(valid_reels)}")
 
-    # Normalize legacy "goalkeeper" → ["keeper_a", "keeper_b"]
-    if "goalkeeper" in request.reel_types:
-        request.reel_types = [
-            r for r in request.reel_types if r != "goalkeeper"
-        ] + ["keeper_a", "keeper_b"]
-        # Deduplicate while preserving order
-        seen = set()
-        request.reel_types = [
-            r for r in request.reel_types
-            if r not in seen and not seen.add(r)
-        ]
+    invalid_colors = []
+    for role, kit in [("team", request.match_config.team), ("opponent", request.match_config.opponent)]:
+        for field, color in [("outfield_color", kit.outfield_color), ("gk_color", kit.gk_color)]:
+            key = color.lower().replace(" ", "_").replace("-", "_")
+            if key not in JERSEY_COLOR_PALETTE:
+                invalid_colors.append(f"{role}.{field}={color!r}")
+    if invalid_colors:
+        valid = ", ".join(sorted(JERSEY_COLOR_PALETTE))
+        raise HTTPException(400, f"Unknown jersey color(s): {invalid_colors}. Valid: {valid}")
 
     full_path = str(Path(dyn_cfg.NAS_MOUNT_PATH) / request.nas_path.lstrip("/"))
     if not Path(full_path).exists():
@@ -86,7 +87,7 @@ def submit_job(request: SubmitJobRequest):
         log.info("jobs.idempotent", job_id=existing.job_id)
         return existing
 
-    job = create_job(video_file, request.reel_types, store)
+    job = create_job(video_file, request.reel_types, store, request.match_config)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job

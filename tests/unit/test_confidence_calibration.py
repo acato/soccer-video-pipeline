@@ -11,7 +11,7 @@ def _event(conf: float = 0.70, etype: EventType = EventType.CATCH) -> Event:
     return Event(
         job_id="j1", source_file="m.mp4",
         event_type=etype, timestamp_start=10, timestamp_end=12,
-        confidence=conf, reel_targets=["keeper_a"],
+        confidence=conf, reel_targets=["keeper"],
         frame_start=300, frame_end=360,
     )
 

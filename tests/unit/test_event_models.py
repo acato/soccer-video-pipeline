@@ -42,8 +42,7 @@ class TestEventReelMap:
             EventType.DISTRIBUTION_LONG,
         ]
         for et in gk_only_events:
-            targets = EVENT_REEL_MAP[et]
-            assert targets == [], f"{et} should have empty default reel_targets"
+            assert EVENT_REEL_MAP[et] == [], f"{et} should have empty default reel_targets"
 
     def test_is_gk_event_type(self):
         assert is_gk_event_type(EventType.SHOT_STOP_DIVING)
@@ -52,7 +51,7 @@ class TestEventReelMap:
         assert not is_gk_event_type(EventType.TACKLE)
 
     def test_gk_reel_types(self):
-        assert GK_REEL_TYPES == ("keeper_a", "keeper_b")
+        assert GK_REEL_TYPES == ("keeper",)
 
 
 @pytest.mark.unit
@@ -81,7 +80,7 @@ class TestEventShouldInclude:
             frame_start=300, frame_end=330,
             review_override=True,
         )
-        assert event.should_include()  # Forced by override
+        assert event.should_include()
 
     def test_review_override_false_forces_exclude(self):
         event = Event(
@@ -89,11 +88,11 @@ class TestEventShouldInclude:
             event_type=EventType.SHOT_STOP_DIVING,
             timestamp_start=10.0, timestamp_end=11.0,
             confidence=0.99,  # Very high
-            reel_targets=["keeper_a"],
+            reel_targets=["keeper"],
             frame_start=300, frame_end=330,
             review_override=False,
         )
-        assert not event.should_include()  # Forced out by override
+        assert not event.should_include()
 
     def test_duration_property(self):
         event = Event(

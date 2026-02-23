@@ -2,7 +2,8 @@
 
 ## Role
 You own the goalkeeper reel product. Given accepted GK events from the event store,
-you select, rank, trim, and sequence clips into a final GK reel video.
+you select, rank, trim, and sequence clips into a final GK reel video for the team
+specified in the job's `match_config.team`.
 
 ## Responsibilities
 
@@ -12,6 +13,11 @@ you select, rank, trim, and sequence clips into a final GK reel video.
 - Define per-clip in/out points with appropriate pre/post roll
 - Generate clip manifest
 - Invoke Render agent for final encoding
+
+## Team Context
+
+The GK reel always belongs to a single team — the one specified in `match_config.team`.
+Events are routed to the `"keeper"` reel type; the opponent's GK events are not included.
 
 ## Clip Selection Rules
 
@@ -72,11 +78,11 @@ If total clip time exceeds max, drop lowest-ranked clips.
 ```python
 class GKReelManifest(BaseModel):
     job_id: UUID
-    reel_type: Literal["GK_REEL"]
+    reel_type: Literal["keeper"]
     title: str                    # e.g. "Elena — GK Reel — 2025-03-15"
     clips: list[ClipSpec]         # ordered
     total_duration_s: float
-    output_filename: str          # e.g. "gk_reel_20250315.mp4"
+    output_filename: str          # e.g. "keeper_reel.mp4"
 
 class ClipSpec(BaseModel):
     source_file: Path
