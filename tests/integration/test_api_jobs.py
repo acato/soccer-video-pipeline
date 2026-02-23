@@ -57,10 +57,23 @@ def client(api_env):
             yield c
 
 
+def _ffmpeg_available() -> bool:
+    import subprocess
+    try:
+        return subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+skip_no_ffmpeg = pytest.mark.skipif(not _ffmpeg_available(), reason="FFmpeg not installed")
+
+
 @pytest.fixture(scope="class")
 def sample_video(api_env):
     """Create a synthetic MP4 in the NAS source directory."""
     import subprocess
+    if not _ffmpeg_available():
+        pytest.skip("FFmpeg not installed")
     nas_source = api_env[0]
     video_path = nas_source / "test_match.mp4"
     result = subprocess.run([

@@ -11,7 +11,10 @@ import pytest
 
 
 def _ffmpeg_available() -> bool:
-    return subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode == 0
+    try:
+        return subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        return False
 
 
 pytestmark = pytest.mark.integration
