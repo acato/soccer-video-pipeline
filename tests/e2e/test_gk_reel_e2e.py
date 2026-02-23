@@ -28,19 +28,32 @@ def _api_available() -> bool:
         return False
 
 
+def _ffmpeg_available() -> bool:
+    import subprocess
+    try:
+        return subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 skip_no_api = pytest.mark.skipif(not _api_available(), reason="API not running")
+skip_no_ffmpeg = pytest.mark.skipif(not _ffmpeg_available(), reason="FFmpeg not installed")
 
 
 @skip_no_api
+@skip_no_ffmpeg
 @pytest.mark.e2e
 class TestGoalkeeperReelE2E:
 
     @pytest.fixture(scope="class", autouse=True)
     def ensure_fixture_exists(self, tmp_path_factory):
-        """Generate a synthetic test video if not already present."""
+        """Generate a synthetic test video in the NAS source directory."""
         import subprocess
-        fixture_path = Path("/tmp/e2e_fixtures")
-        fixture_path.mkdir(exist_ok=True)
+        # Write to the NAS source directory that the API/worker can see.
+        # Falls back to /tmp/e2e_fixtures if NAS_MOUNT_PATH is not set.
+        nas_path = os.getenv("NAS_MOUNT_PATH", "/tmp/e2e_fixtures")
+        fixture_path = Path(nas_path)
+        fixture_path.mkdir(parents=True, exist_ok=True)
         video = fixture_path / "e2e_match.mp4"
         if not video.exists():
             subprocess.run([

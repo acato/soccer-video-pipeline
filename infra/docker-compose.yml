@@ -69,7 +69,7 @@ volumes:
     driver_opts:
       type: none
       o: bind
-      device: ./models          # local model weight storage
+      device: ${MODEL_WEIGHTS_PATH}
 
   # NAS mounts — configure these to point at your actual NAS
   # For NFS: set type: nfs, device: 192.168.1.x:/path

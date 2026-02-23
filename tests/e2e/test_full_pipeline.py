@@ -43,10 +43,21 @@ def _make_test_video(path: Path, duration: int = 120) -> Path:
 
 
 pytestmark = pytest.mark.e2e
+
+
+def _ffmpeg_available() -> bool:
+    try:
+        return subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
 skip_no_api = pytest.mark.skipif(not _api_available(), reason="API not running")
+skip_no_ffmpeg = pytest.mark.skipif(not _ffmpeg_available(), reason="FFmpeg not installed")
 
 
 @skip_no_api
+@skip_no_ffmpeg
 class TestE2EGoalkeeperReel:
     def test_submit_and_wait_complete(self, tmp_path: Path):
         """Submit a 2-minute synthetic video, wait for completion."""
@@ -84,6 +95,7 @@ class TestE2EGoalkeeperReel:
 
 
 @skip_no_api
+@skip_no_ffmpeg
 class TestE2EIdempotency:
     def test_same_file_returns_same_job(self, tmp_path: Path):
         """Submitting the same file twice returns the same job_id."""
