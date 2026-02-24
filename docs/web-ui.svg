@@ -1,0 +1,167 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <!-- Background -->
+  <rect width="1100" height="680" fill="#0f1117" rx="8"/>
+
+  <!-- Header bar -->
+  <rect y="0" width="1100" height="52" fill="#161b22" rx="8 8 0 0"/>
+  <line x1="0" y1="52" x2="1100" y2="52" stroke="#30363d"/>
+  <circle cx="36" cy="26" r="10" fill="none" stroke="#3fb950" stroke-width="2"/>
+  <text x="56" y="31" fill="#e1e4e8" font-size="17" font-weight="600">Soccer Pipeline Monitor</text>
+  <rect x="240" y="17" width="38" height="18" fill="#238636" rx="9"/>
+  <text x="247" y="30" fill="white" font-size="10" font-weight="600">LIVE</text>
+  <text x="960" y="31" fill="#8b949e" font-size="11">Updated 2:34:12 PM</text>
+
+  <!-- Team banner -->
+  <rect x="30" y="68" width="1040" height="44" fill="#161b22" stroke="#30363d" rx="8"/>
+  <text x="50" y="95" fill="#e1e4e8" font-size="15" font-weight="600">Lightning SC</text>
+  <text x="160" y="95" fill="#8b949e" font-size="11">2 jerseys saved</text>
+
+  <!-- Submit Match form panel -->
+  <rect x="30" y="126" width="1040" height="90" fill="#161b22" stroke="#30363d" rx="8"/>
+  <text x="50" y="152" fill="#e1e4e8" font-size="14" font-weight="600">Submit Match</text>
+
+  <!-- Video File dropdown -->
+  <text x="50" y="175" fill="#8b949e" font-size="11">VIDEO FILE</text>
+  <rect x="50" y="180" width="400" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
+  <text x="62" y="199" fill="#e1e4e8" font-size="13">saturday_game.mp4</text>
+  <polygon points="436,192 442,192 439,198" fill="#8b949e"/>
+
+  <!-- Jersey dropdown -->
+  <text x="470" y="175" fill="#8b949e" font-size="11">JERSEY</text>
+  <rect x="470" y="180" width="130" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
+  <text x="482" y="199" fill="#e1e4e8" font-size="13">Home</text>
+  <polygon points="586,192 592,192 589,198" fill="#8b949e"/>
+
+  <!-- Reel checkboxes -->
+  <text x="620" y="175" fill="#8b949e" font-size="11">REELS</text>
+  <!-- Goalkeeper checkbox (checked) -->
+  <rect x="620" y="186" width="14" height="14" fill="#388bfd" rx="3"/>
+  <polyline points="623,193 627,197 633,189" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="640" y="198" fill="#e1e4e8" font-size="13">Goalkeeper</text>
+  <!-- Highlights checkbox (checked) -->
+  <rect x="720" y="186" width="14" height="14" fill="#388bfd" rx="3"/>
+  <polyline points="723,193 727,197 733,189" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="740" y="198" fill="#e1e4e8" font-size="13">Highlights</text>
+
+  <!-- Submit button -->
+  <rect x="840" y="180" width="100" height="28" fill="#238636" rx="6"/>
+  <text x="860" y="199" fill="white" font-size="12" font-weight="600">Submit Job</text>
+
+  <!-- Stats row -->
+  <!-- Pending -->
+  <rect x="30" y="232" width="248" height="68" fill="#161b22" stroke="#30363d" rx="8"/>
+  <text x="154" y="263" fill="#d29922" font-size="28" font-weight="700" text-anchor="middle">1</text>
+  <text x="154" y="283" fill="#8b949e" font-size="10" text-anchor="middle" letter-spacing="0.5">PENDING</text>
+  <!-- Processing -->
+  <rect x="294" y="232" width="248" height="68" fill="#161b22" stroke="#30363d" rx="8"/>
+  <text x="418" y="263" fill="#388bfd" font-size="28" font-weight="700" text-anchor="middle">2</text>
+  <text x="418" y="283" fill="#8b949e" font-size="10" text-anchor="middle" letter-spacing="0.5">PROCESSING</text>
+  <!-- Complete -->
+  <rect x="558" y="232" width="248" height="68" fill="#161b22" stroke="#30363d" rx="8"/>
+  <text x="682" y="263" fill="#3fb950" font-size="28" font-weight="700" text-anchor="middle">5</text>
+  <text x="682" y="283" fill="#8b949e" font-size="10" text-anchor="middle" letter-spacing="0.5">COMPLETE</text>
+  <!-- Failed -->
+  <rect x="822" y="232" width="248" height="68" fill="#161b22" stroke="#30363d" rx="8"/>
+  <text x="946" y="263" fill="#f85149" font-size="28" font-weight="700" text-anchor="middle">0</text>
+  <text x="946" y="283" fill="#8b949e" font-size="10" text-anchor="middle" letter-spacing="0.5">FAILED</text>
+
+  <!-- Jobs table panel -->
+  <rect x="30" y="316" width="1040" height="348" fill="#161b22" stroke="#30363d" rx="8"/>
+  <!-- Panel header -->
+  <text x="50" y="342" fill="#e1e4e8" font-size="14" font-weight="600">Jobs</text>
+  <rect x="990" y="326" width="64" height="24" fill="#21262d" stroke="#30363d" rx="6"/>
+  <text x="1000" y="342" fill="#e1e4e8" font-size="11">&#8635; Refresh</text>
+  <line x1="30" y1="352" x2="1070" y2="352" stroke="#30363d"/>
+
+  <!-- Table headers -->
+  <text x="50" y="372" fill="#8b949e" font-size="10" letter-spacing="0.5">FILE</text>
+  <text x="310" y="372" fill="#8b949e" font-size="10" letter-spacing="0.5">STATUS</text>
+  <text x="460" y="372" fill="#8b949e" font-size="10" letter-spacing="0.5">PROGRESS</text>
+  <text x="620" y="372" fill="#8b949e" font-size="10" letter-spacing="0.5">REELS</text>
+  <text x="780" y="372" fill="#8b949e" font-size="10" letter-spacing="0.5">CREATED</text>
+  <text x="940" y="372" fill="#8b949e" font-size="10" letter-spacing="0.5">ACTIONS</text>
+  <line x1="30" y1="382" x2="1070" y2="382" stroke="#21262d"/>
+
+  <!-- Row 1: complete -->
+  <text x="50" y="408" fill="#e1e4e8" font-size="13">saturday_game.mp4</text>
+  <circle cx="318" cy="404" r="4" fill="#3fb950"/>
+  <text x="328" y="408" fill="#e1e4e8" font-size="13">complete</text>
+  <!-- Progress bar 100% -->
+  <rect x="460" y="400" width="80" height="6" fill="#21262d" rx="3"/>
+  <rect x="460" y="400" width="80" height="6" fill="#3fb950" rx="3"/>
+  <text x="548" y="408" fill="#8b949e" font-size="11">100%</text>
+  <!-- Reel download links -->
+  <rect x="620" y="396" width="58" height="18" fill="none" stroke="#388bfd" stroke-opacity="0.2" rx="4"/>
+  <text x="627" y="409" fill="#388bfd" font-size="11">&#11015; keeper</text>
+  <rect x="684" y="396" width="72" height="18" fill="none" stroke="#388bfd" stroke-opacity="0.2" rx="4"/>
+  <text x="691" y="409" fill="#388bfd" font-size="11">&#11015; highlights</text>
+  <text x="780" y="408" fill="#8b949e" font-size="11">2/22/2026, 4:12 PM</text>
+  <!-- Delete button -->
+  <rect x="940" y="396" width="60" height="18" fill="#21262d" stroke="#f8514933" rx="4"/>
+  <text x="950" y="409" fill="#f85149" font-size="10">&#10005; Delete</text>
+  <line x1="30" y1="424" x2="1070" y2="424" stroke="#21262d"/>
+
+  <!-- Row 2: detecting (in progress) -->
+  <text x="50" y="450" fill="#e1e4e8" font-size="13">sunday_cup_final.mp4</text>
+  <circle cx="318" cy="446" r="4" fill="#388bfd"/>
+  <text x="328" y="450" fill="#e1e4e8" font-size="13">detecting</text>
+  <!-- Progress bar 45% -->
+  <rect x="460" y="442" width="80" height="6" fill="#21262d" rx="3"/>
+  <rect x="460" y="442" width="36" height="6" fill="#388bfd" rx="3"/>
+  <text x="548" y="450" fill="#8b949e" font-size="11">45%</text>
+  <text x="620" y="450" fill="#8b949e" font-size="11">keeper</text>
+  <text x="670" y="450" fill="#8b949e" font-size="11">highlights</text>
+  <text x="780" y="450" fill="#8b949e" font-size="11">2/23/2026, 9:05 AM</text>
+  <line x1="30" y1="466" x2="1070" y2="466" stroke="#21262d"/>
+
+  <!-- Row 3: complete -->
+  <text x="50" y="492" fill="#e1e4e8" font-size="13">training_scrimmage.mp4</text>
+  <circle cx="318" cy="488" r="4" fill="#3fb950"/>
+  <text x="328" y="492" fill="#e1e4e8" font-size="13">complete</text>
+  <rect x="460" y="484" width="80" height="6" fill="#21262d" rx="3"/>
+  <rect x="460" y="484" width="80" height="6" fill="#3fb950" rx="3"/>
+  <text x="548" y="492" fill="#8b949e" font-size="11">100%</text>
+  <rect x="620" y="480" width="58" height="18" fill="none" stroke="#388bfd" stroke-opacity="0.2" rx="4"/>
+  <text x="627" y="493" fill="#388bfd" font-size="11">&#11015; keeper</text>
+  <text x="780" y="492" fill="#8b949e" font-size="11">2/21/2026, 11:30 AM</text>
+  <rect x="940" y="480" width="60" height="18" fill="#21262d" stroke="#f8514933" rx="4"/>
+  <text x="950" y="493" fill="#f85149" font-size="10">&#10005; Delete</text>
+  <line x1="30" y1="508" x2="1070" y2="508" stroke="#21262d"/>
+
+  <!-- Row 4: pending -->
+  <text x="50" y="534" fill="#e1e4e8" font-size="13">weeknight_league.mp4</text>
+  <circle cx="318" cy="530" r="4" fill="#d29922"/>
+  <text x="328" y="534" fill="#e1e4e8" font-size="13">pending</text>
+  <rect x="460" y="526" width="80" height="6" fill="#21262d" rx="3"/>
+  <text x="548" y="534" fill="#8b949e" font-size="11">0%</text>
+  <text x="620" y="534" fill="#8b949e" font-size="11">keeper</text>
+  <text x="670" y="534" fill="#8b949e" font-size="11">highlights</text>
+  <text x="780" y="534" fill="#8b949e" font-size="11">2/23/2026, 9:08 AM</text>
+  <line x1="30" y1="550" x2="1070" y2="550" stroke="#21262d"/>
+
+  <!-- Row 5: failed -->
+  <text x="50" y="576" fill="#e1e4e8" font-size="13">corrupt_file.mp4</text>
+  <circle cx="318" cy="572" r="4" fill="#f85149"/>
+  <text x="328" y="576" fill="#e1e4e8" font-size="13">failed</text>
+  <rect x="460" y="568" width="80" height="6" fill="#21262d" rx="3"/>
+  <rect x="460" y="568" width="12" height="6" fill="#f85149" rx="3"/>
+  <text x="548" y="576" fill="#8b949e" font-size="11">15%</text>
+  <text x="620" y="576" fill="#8b949e" font-size="11">highlights</text>
+  <text x="780" y="576" fill="#8b949e" font-size="11">2/20/2026, 3:45 PM</text>
+  <!-- Retry + Delete buttons -->
+  <rect x="940" y="564" width="52" height="18" fill="#21262d" stroke="#30363d" rx="4"/>
+  <text x="948" y="577" fill="#e1e4e8" font-size="10">&#8617; Retry</text>
+  <rect x="998" y="564" width="60" height="18" fill="#21262d" stroke="#f8514933" rx="4"/>
+  <text x="1008" y="577" fill="#f85149" font-size="10">&#10005; Delete</text>
+
+  <!-- Callout labels (annotation layer) -->
+  <!-- A: Submit form -->
+  <rect x="42" y="128" width="14" height="14" fill="#388bfd" rx="7"/>
+  <text x="49" y="139" fill="white" font-size="10" font-weight="700" text-anchor="middle">A</text>
+  <!-- B: Stats row -->
+  <rect x="42" y="234" width="14" height="14" fill="#388bfd" rx="7"/>
+  <text x="49" y="245" fill="white" font-size="10" font-weight="700" text-anchor="middle">B</text>
+  <!-- C: Jobs table -->
+  <rect x="42" y="318" width="14" height="14" fill="#388bfd" rx="7"/>
+  <text x="49" y="329" fill="white" font-size="10" font-weight="700" text-anchor="middle">C</text>
+</svg>

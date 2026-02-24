@@ -166,13 +166,16 @@ Bookmark this page! You'll come back here every time you want to process a game.
 
 ## Step 7: Process a Game
 
-1. In the dashboard, type the **filename** of your video (for example: `saturday_game.mp4`)
+1. In the dashboard, pick your **video file** from the dropdown (it lists every video in your NAS folder)
 2. Pick which **jersey** your team was wearing in that game (Home, Away, etc.)
-3. Click **Submit Job**
-4. Watch the progress bar move across the screen
-5. When it hits 100%, click the **download link** to get your reel
+3. Check which reels you want: **Goalkeeper**, **Highlights**, or both (both are checked by default)
+4. Click **Submit Job**
+5. Watch the progress bar move across the screen
+6. When it hits 100%, click the **download link** to get your reel
 
 That's it! Your goalkeeper reel is ready to share.
+
+> For a detailed walkthrough of every part of the dashboard, see [docs/web-ui.md](docs/web-ui.md).
 
 ---
 
