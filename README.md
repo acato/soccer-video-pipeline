@@ -4,7 +4,7 @@
 
 > **Intended use:** This software is designed for youth and amateur soccer analytics and personal experimentation. It is not affiliated with, endorsed by, or approved by any professional league, federation, or governing body.
 
-Agent-based system that processes 4K soccer match recordings from a NAS and automatically produces:
+Agent-based system that processes soccer match recordings from a NAS and automatically produces:
 
 - **Goalkeeper Reel** — every GK action (saves, distribution, one-on-ones)
 - **Highlights Reel** — shots, goals, near-misses, great plays
