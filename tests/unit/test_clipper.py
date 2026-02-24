@@ -82,6 +82,18 @@ class TestComputeClips:
         assert gk_clips[0].primary_event_type == "shot_stop_diving"
         assert hl_clips[0].primary_event_type == "goal"
 
+    def test_keeper_matches_keeper_a_and_keeper_b(self):
+        """reel_type='keeper' should match keeper_a and keeper_b sub-roles."""
+        events = [
+            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper_a"]),
+            _make_event("e2", EventType.CATCH, 300.0, 302.0, ["keeper_b"]),
+            _make_event("e3", EventType.GOAL, 500.0, 501.0, ["highlights"], confidence=0.90),
+        ]
+        gk_clips = compute_clips(events, 5400.0, "keeper")
+        assert len(gk_clips) == 2
+        hl_clips = compute_clips(events, 5400.0, "highlights")
+        assert len(hl_clips) == 1
+
     def test_low_confidence_events_excluded(self):
         """GOAL events below 0.85 threshold are excluded."""
         events = [_make_event("e1", EventType.GOAL, 100.0, 101.0, ["highlights"], confidence=0.50)]

@@ -75,10 +75,14 @@ class EventLog:
         return events
 
     def filter_by_reel(self, reel_type: str) -> list[Event]:
-        """Return all events for a specific reel type, sorted by timestamp."""
+        """Return all events for a specific reel type, sorted by timestamp.
+
+        GK events use sub-roles like keeper_a/keeper_b, so "keeper" matches
+        any target starting with "keeper".
+        """
         return [
             e for e in self.read_all()
-            if reel_type in e.reel_targets
+            if any(rt == reel_type or rt.startswith(reel_type + "_") for rt in e.reel_targets)
         ]
 
     def filter_by_confidence(self, min_confidence: float = 0.65) -> list[Event]:

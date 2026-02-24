@@ -48,8 +48,14 @@ def compute_clips(
     Returns:
         Sorted list of ClipBoundary objects, no overlaps.
     """
-    # Filter to this reel and to events that should be included
-    reel_events = [e for e in events if reel_type in e.reel_targets and e.should_include()]
+    # Filter to this reel and to events that should be included.
+    # GK events have reel_targets like ["keeper_a"], ["keeper_b"] — match
+    # any target starting with the requested reel_type (e.g. "keeper").
+    reel_events = [
+        e for e in events
+        if any(rt == reel_type or rt.startswith(reel_type + "_") for rt in e.reel_targets)
+        and e.should_include()
+    ]
     if not reel_events:
         return []
 
