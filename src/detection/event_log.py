@@ -31,6 +31,12 @@ class EventLog:
         self.path = Path(log_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
+    def clear(self) -> None:
+        """Remove all events. Used when re-running detection on retry."""
+        if self.path.exists():
+            self.path.unlink()
+            log.info("event_log.cleared", path=str(self.path))
+
     def append(self, event: Event) -> None:
         """Append one event to the log. Creates file if it doesn't exist."""
         with open(self.path, "a", buffering=1) as f:  # Line-buffered

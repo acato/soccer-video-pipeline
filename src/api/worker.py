@@ -151,6 +151,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         )
     gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
     event_log = EventLog(working / "events.jsonl")
+    event_log.clear()  # Remove stale events from previous failed runs
 
     runner = PipelineRunner(
         job_id=job_id,
