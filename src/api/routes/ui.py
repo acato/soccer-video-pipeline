@@ -75,6 +75,10 @@ _UI_HTML = r"""<!DOCTYPE html>
   select { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
            border-radius: 6px; color: #e1e4e8; font-size: 14px; }
   select:focus { outline: none; border-color: #388bfd; }
+  .checkbox-group { display: flex; gap: 12px; align-items: center; height: 36px; }
+  .checkbox-group label { display: flex; align-items: center; gap: 6px; margin-bottom: 0;
+                          font-size: 14px; color: #e1e4e8; cursor: pointer; }
+  .checkbox-group input[type=checkbox] { accent-color: #388bfd; width: 16px; height: 16px; cursor: pointer; }
   .btn-primary { background: #238636; border-color: #238636; color: white; padding: 8px 16px; }
   .btn-primary:hover { background: #2ea043; }
   .team-banner { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
@@ -110,8 +114,10 @@ _UI_HTML = r"""<!DOCTYPE html>
     <h2>Submit Match</h2>
     <div class="form-row">
       <div class="form-group">
-        <label>Video Filename</label>
-        <input type="text" id="nas-path" placeholder="saturday_game.mp4" />
+        <label>Video File</label>
+        <select id="nas-path">
+          <option value="">Loading files...</option>
+        </select>
       </div>
       <div class="form-group" style="flex:0 0 160px">
         <label>Jersey</label>
@@ -119,9 +125,12 @@ _UI_HTML = r"""<!DOCTYPE html>
           <option value="">Loading...</option>
         </select>
       </div>
-      <div class="form-group" style="flex:0 0 180px">
-        <label>Reel Types</label>
-        <input type="text" id="reel-types" value="goalkeeper,highlights" />
+      <div class="form-group" style="flex:0 0 200px">
+        <label>Reels</label>
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="reel-gk" checked /> Goalkeeper</label>
+          <label><input type="checkbox" id="reel-hl" checked /> Highlights</label>
+        </div>
       </div>
       <button class="btn btn-primary" onclick="submitJob()">Submit Job</button>
     </div>
@@ -142,7 +151,6 @@ _UI_HTML = r"""<!DOCTYPE html>
     <table>
       <thead>
         <tr>
-          <th>Job ID</th>
           <th>File</th>
           <th>Status</th>
           <th>Progress</th>
@@ -152,7 +160,7 @@ _UI_HTML = r"""<!DOCTYPE html>
         </tr>
       </thead>
       <tbody id="jobs-table-body">
-        <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        <tr><td colspan="6" class="empty-state">Loading...</td></tr>
       </tbody>
     </table>
   </div>
@@ -190,6 +198,19 @@ async function loadTeamConfig() {
   }
 }
 
+async function loadFiles() {
+  const sel = document.getElementById('nas-path');
+  try {
+    const r = await fetch(API + '/files');
+    if (!r.ok) throw new Error(r.statusText);
+    const files = await r.json();
+    sel.innerHTML = '<option value="">-- select a video --</option>' +
+      files.map(f => '<option value="' + f + '">' + f + '</option>').join('');
+  } catch (e) {
+    sel.innerHTML = '<option value="">(could not load files)</option>';
+  }
+}
+
 async function loadJobs() {
   try {
     const r = await fetch(API + '/jobs?limit=50');
@@ -206,7 +227,7 @@ async function loadJobs() {
 function renderJobs(jobs) {
   const tbody = document.getElementById('jobs-table-body');
   if (!jobs.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No jobs yet. Submit a match above.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No jobs yet. Submit a match above.</td></tr>';
     return;
   }
   tbody.innerHTML = jobs.map(job => {
@@ -214,7 +235,6 @@ function renderJobs(jobs) {
     const statusClass = job.status.replace('_', '-');
     const dotClass = 'dot-' + job.status;
     const created = new Date(job.created_at).toLocaleString();
-    const shortId = job.job_id.slice(0, 8);
     const filename = job.video_file?.filename || '—';
 
     const reelLinks = (job.reel_types || []).map(rt => {
@@ -232,8 +252,7 @@ function renderJobs(jobs) {
       : '';
 
     return `<tr>
-      <td style="font-family:monospace;font-size:12px" title="${job.job_id}">${shortId}…</td>
-      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${filename}">${filename}</td>
+      <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${filename}">${filename}</td>
       <td><span class="status"><span class="status-dot ${dotClass}"></span>${job.status}</span></td>
       <td>
         <div style="display:flex;align-items:center;gap:8px">
@@ -264,11 +283,14 @@ function updateStats(jobs) {
 }
 
 async function submitJob() {
-  const nasPath = document.getElementById('nas-path').value.trim();
-  if (!nasPath) { showToast('Please enter a video filename', true); return; }
+  const nasPath = document.getElementById('nas-path').value;
+  if (!nasPath) { showToast('Please select a video file', true); return; }
   const kitSelect = document.getElementById('kit-select');
   const kitName = kitSelect.value;
-  const reelTypes = document.getElementById('reel-types').value.split(',').map(s => s.trim());
+  const reelTypes = [];
+  if (document.getElementById('reel-gk').checked) reelTypes.push('keeper');
+  if (document.getElementById('reel-hl').checked) reelTypes.push('highlights');
+  if (!reelTypes.length) { showToast('Select at least one reel type', true); return; }
   const body = { nas_path: nasPath, reel_types: reelTypes };
   if (kitName) body.kit_name = kitName;
   try {
@@ -280,7 +302,7 @@ async function submitJob() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
     showToast('Job submitted: ' + data.job_id.slice(0, 8) + '…');
-    document.getElementById('nas-path').value = '';
+    document.getElementById('nas-path').selectedIndex = 0;
     loadJobs();
   } catch (e) {
     showToast('Submit failed: ' + e.message, true);
@@ -317,8 +339,9 @@ function showToast(msg, isError = false) {
   setTimeout(() => { t.className = 'toast'; }, 3500);
 }
 
-// Load team config once, then auto-refresh jobs every 10s
+// Load configs once, then auto-refresh jobs every 10s
 loadTeamConfig();
+loadFiles();
 loadJobs();
 setInterval(loadJobs, 10000);
 </script>

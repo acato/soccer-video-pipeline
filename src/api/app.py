@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import jobs, reels
 from src.api.routes.events import router as events_router
+from src.api.routes.files import router as files_router
 from src.api.routes.team import router as team_router
 from src.api.routes.ui import router as ui_router
 from src.api import metrics
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router,    prefix="/jobs",    tags=["jobs"])
     app.include_router(reels.router,   prefix="/reels",   tags=["reels"])
     app.include_router(events_router,  prefix="/events",  tags=["events"])
+    app.include_router(files_router,   prefix="/files",   tags=["files"])
     app.include_router(team_router,    prefix="/team",    tags=["team"])
     app.include_router(metrics.router,                    tags=["ops"])
     app.include_router(ui_router,                         tags=["ui"])
