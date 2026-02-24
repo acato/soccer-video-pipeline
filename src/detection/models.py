@@ -131,6 +131,7 @@ class Detection(BaseModel):
     confidence: float
     bbox: BoundingBox
     track_id: Optional[int] = None  # Assigned by tracker
+    metadata: dict = Field(default_factory=dict)
 
 
 class Track(BaseModel):
