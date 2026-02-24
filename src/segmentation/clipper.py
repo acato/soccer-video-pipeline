@@ -31,6 +31,7 @@ def compute_clips(
     pre_pad: float = 3.0,
     post_pad: float = 5.0,
     merge_gap_sec: float = 2.0,
+    max_clip_duration_sec: float = 90.0,
 ) -> list[ClipBoundary]:
     """
     Convert events to padded, merged, bounded clip windows.
@@ -42,6 +43,7 @@ def compute_clips(
         pre_pad: Seconds to include before event start
         post_pad: Seconds to include after event end
         merge_gap_sec: Clips with gap < this are merged into one
+        max_clip_duration_sec: Prevent merges that would exceed this duration
 
     Returns:
         Sorted list of ClipBoundary objects, no overlaps.
@@ -61,12 +63,16 @@ def compute_clips(
         end = min(video_duration, event.timestamp_end + post_pad)
         raw_clips.append((start, end, event))
 
-    # Merge overlapping or close clips
+    # Merge overlapping or close clips (but cap merged clip duration)
     merged: list[tuple[float, float, list[Event]]] = []
     for start, end, event in raw_clips:
         if merged and start - merged[-1][1] <= merge_gap_sec:
             prev_start, prev_end, prev_events = merged[-1]
-            merged[-1] = (prev_start, max(prev_end, end), prev_events + [event])
+            new_end = max(prev_end, end)
+            if new_end - prev_start <= max_clip_duration_sec:
+                merged[-1] = (prev_start, new_end, prev_events + [event])
+            else:
+                merged.append((start, end, [event]))
         else:
             merged.append((start, end, [event]))
 

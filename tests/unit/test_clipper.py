@@ -98,6 +98,22 @@ class TestComputeClips:
         assert "e1" in clips[0].events
         assert "e2" in clips[0].events
 
+    def test_max_clip_duration_prevents_mega_merge(self):
+        """Many close events should not chain-merge into one mega-clip."""
+        events = [
+            _make_event(f"e{i}", EventType.SHOT_ON_TARGET, 10.0 * i, 10.0 * i + 2.0, ["highlights"])
+            for i in range(20)
+        ]
+        # With default 90s cap, a 200s chain should be split
+        clips = compute_clips(
+            events, 5400.0, "highlights",
+            pre_pad=3.0, post_pad=5.0, merge_gap_sec=2.0,
+            max_clip_duration_sec=90.0,
+        )
+        assert len(clips) > 1
+        for clip in clips:
+            assert clip.end_sec - clip.start_sec <= 90.0
+
     def test_primary_event_is_highest_confidence(self):
         events = [
             _make_event("e1", EventType.SHOT_ON_TARGET, 100.0, 101.0, ["highlights"], confidence=0.70),
