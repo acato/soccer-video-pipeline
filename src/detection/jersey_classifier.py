@@ -361,6 +361,11 @@ def identify_gk_by_known_colors(
 
     common_ids = set(track_colors.keys()) & set(track_positions.keys())
     if not common_ids:
+        log.debug(
+            "jersey_classifier.gk_by_known_colors_no_data",
+            track_colors_count=len(track_colors),
+            track_positions_count=len(track_positions),
+        )
         return result
 
     # Find the best-matching track for each known GK color
@@ -454,6 +459,23 @@ def detect_glove_color(
         return min(1.0, fraction)
     except Exception:
         return None
+
+
+def extract_jersey_color(
+    frame: np.ndarray,
+    bbox,
+    frame_shape: tuple[int, int],
+) -> Optional[tuple[float, float, float]]:
+    """
+    Extract the dominant HSV jersey color from a single detection.
+
+    Convenience wrapper used by PlayerDetector to compute jersey colors
+    per-detection while frames are still in memory.
+    """
+    crop = _crop_jersey_region(frame, bbox, frame_shape)
+    if crop is None or crop.size == 0:
+        return None
+    return _dominant_hsv(crop)
 
 
 def _crop_hand_region(

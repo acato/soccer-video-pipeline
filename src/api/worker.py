@@ -234,11 +234,24 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     # ── Stage: COMPLETE ───────────────────────────────────────────────────
     null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
     if not output_paths and job.reel_types and not null_mode:
-        store.update_status(
-            job_id, JobStatus.FAILED, progress=100.0,
-            error="No reels produced: detection found 0 events for requested reel types",
+        # Collect diagnostic info for the error message
+        total_events = len(all_events)
+        event_types = list({e.event_type for e in all_events})
+        keeper_events = sum(
+            1 for e in all_events
+            if any("keeper" in rt for rt in e.reel_targets)
         )
-        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_types=job.reel_types)
+        error_msg = (
+            f"No reels produced for {job.reel_types}. "
+            f"Detection found {total_events} events ({event_types}) "
+            f"but {keeper_events} matched keeper targets. "
+            f"Clips per reel: {', '.join(f'{r}={len(clips_by_reel.get(r, []))}' for r in job.reel_types)}"
+        )
+        store.update_status(
+            job_id, JobStatus.FAILED, progress=100.0, error=error_msg,
+        )
+        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_types=job.reel_types,
+                     total_events=total_events, keeper_events=keeper_events)
         return {"job_id": job_id, "output_paths": {}}
 
     store.update_status(

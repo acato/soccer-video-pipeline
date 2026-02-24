@@ -139,6 +139,8 @@ class PlayerDetector(BaseDetector):
                 frame_number = int(chunk_start_sec * source_fps) + idx * self.frame_step
                 timestamp = chunk_start_sec + (idx * self.frame_step / source_fps)
                 dets = self.detect_frame(frame, frame_number, timestamp)
+                # Extract jersey colors while frame is still in memory
+                self._tag_jersey_colors(dets, frame)
                 all_detections.extend(dets)
 
             return all_detections
@@ -178,10 +180,12 @@ class PlayerDetector(BaseDetector):
         ]
         result = subprocess.run(cmd, capture_output=True, timeout=120)
         if result.returncode != 0:
+            # Use tail of stderr — FFmpeg banner fills the first 500+ chars
+            stderr_tail = result.stderr.decode(errors="replace")[-1500:]
             log.error(
                 "frame_extraction.failed",
                 chunk_start=start_sec,
-                error=result.stderr.decode()[:500],
+                error=stderr_tail,
             )
             return []
         return sorted(output_dir.glob("frame_*.jpg"))
@@ -206,6 +210,18 @@ class PlayerDetector(BaseDetector):
             except Exception as exc:
                 raise RuntimeError(f"Failed to load YOLO model from {self.model_path}: {exc}")
         return self._model
+
+    @staticmethod
+    def _tag_jersey_colors(detections: list[Detection], frame: np.ndarray) -> None:
+        """Extract jersey HSV color for player/goalkeeper detections while frame is in memory."""
+        from src.detection.jersey_classifier import extract_jersey_color
+        h, w = frame.shape[:2]
+        for det in detections:
+            if det.class_name not in (YOLO_CLASS_PLAYER, YOLO_CLASS_GOALKEEPER):
+                continue
+            hsv = extract_jersey_color(frame, det.bbox, (h, w))
+            if hsv is not None:
+                det.metadata["jersey_hsv"] = list(hsv)
 
     @staticmethod
     def _select_device(use_gpu: bool) -> str:

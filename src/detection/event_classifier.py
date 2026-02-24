@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Iterator
 
+import numpy as np
 import structlog
 
 from src.detection.event_log import EventLog
@@ -208,6 +209,29 @@ def _merge_nearby(events: list[Event], gap_sec: float) -> list[Event]:
     return merged
 
 
+def _aggregate_jersey_colors(tracks: list[Track]) -> None:
+    """
+    Populate Track.jersey_color_hsv from per-detection jersey_hsv metadata.
+
+    PlayerDetector tags each detection with its jersey HSV colour while the
+    frame is still in memory.  Here we aggregate those per-detection colours
+    into a single per-track colour using the median (robust to single-frame noise).
+    """
+    for track in tracks:
+        if track.jersey_color_hsv is not None:
+            continue
+        colors = [
+            d.metadata["jersey_hsv"]
+            for d in track.detections
+            if "jersey_hsv" in d.metadata
+        ]
+        if colors:
+            arr = np.array(colors)
+            track.jersey_color_hsv = tuple(
+                float(np.median(arr[:, i])) for i in range(3)
+            )
+
+
 class PipelineRunner:
     """
     Orchestrates the full detection pipeline for one video file.
@@ -246,6 +270,8 @@ class PipelineRunner:
         duration = self.video_file.duration_sec
         fps = self.video_file.fps
         total_events = 0
+        consecutive_empty = 0
+        max_consecutive_empty = 10
 
         chunk_starts = self._chunk_starts(duration)
         total_chunks = len(chunk_starts)
@@ -271,6 +297,18 @@ class PipelineRunner:
                 self.video_file.path, start_sec, chunk_dur, fps
             )
 
+            # Abort early if frame extraction keeps failing (NAS/disk issue)
+            if not detections and chunk_idx > 0:
+                consecutive_empty += 1
+                if consecutive_empty >= max_consecutive_empty:
+                    raise RuntimeError(
+                        f"Frame extraction failed for {consecutive_empty} consecutive "
+                        f"chunks (from {start_sec - (consecutive_empty - 1) * self.chunk_sec:.0f}s). "
+                        f"Source file may be inaccessible: {self.video_file.path}"
+                    )
+            else:
+                consecutive_empty = 0
+
             # Group detections by frame and feed to tracker
             frame_groups: dict[int, list] = {}
             for det in detections:
@@ -283,6 +321,9 @@ class PipelineRunner:
                 )
 
             tracks = self._tracker.get_all_tracks()
+
+            # Aggregate jersey colors from per-detection metadata onto tracks
+            _aggregate_jersey_colors(tracks)
 
             # Build track_colors dict from tracks with jersey_color_hsv
             track_colors = {
@@ -410,7 +451,8 @@ class PipelineRunnerV2(PipelineRunner):
 
             tracks = self._tracker.get_all_tracks()
 
-            # V2: Jersey-first identification for both keepers
+            # V2: Aggregate jersey colors, then identify keepers
+            _aggregate_jersey_colors(tracks)
             track_colors = {
                 t.track_id: t.jersey_color_hsv
                 for t in tracks if t.jersey_color_hsv is not None
