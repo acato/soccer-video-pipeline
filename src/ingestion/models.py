@@ -73,7 +73,7 @@ class Job(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     reel_types: list[str] = Field(default_factory=lambda: ["keeper", "highlights"])
-    match_config: MatchConfig
+    match_config: Optional[MatchConfig] = None
     output_paths: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
     progress_pct: float = 0.0

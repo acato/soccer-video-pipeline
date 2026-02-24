@@ -142,6 +142,23 @@ def retry_job(job_id: str):
     return updated
 
 
+@router.delete("/{job_id}")
+def delete_job(job_id: str):
+    """Delete a completed or failed job."""
+    from src.ingestion.models import JobStatus
+    store = _get_store()
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Job not found: {job_id}")
+    if job.status not in (JobStatus.COMPLETE, JobStatus.FAILED):
+        raise HTTPException(
+            400, f"Only completed or failed jobs can be deleted (current: {job.status})"
+        )
+    store.delete(job_id)
+    log.info("jobs.deleted", job_id=job_id)
+    return {"deleted": True, "job_id": job_id}
+
+
 def _find_by_hash(store, sha256: str):
     for job in store.list_all():
         if job.video_file.sha256 == sha256:

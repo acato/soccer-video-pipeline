@@ -76,6 +76,15 @@ class JobStore:
                 log.warning("job.corrupt_file", path=str(p), error=str(exc))
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
 
+    def delete(self, job_id: str) -> bool:
+        """Remove a job file from disk. Returns True if deleted, False if not found."""
+        path = self._path(job_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        log.info("job.deleted", job_id=job_id)
+        return True
+
     def _path(self, job_id: str) -> Path:
         # Sanitize job_id to prevent path traversal
         safe_id = job_id.replace("/", "").replace("..", "")

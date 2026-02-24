@@ -183,6 +183,9 @@ function renderJobs(jobs) {
     const retryBtn = job.status === 'failed'
       ? `<button class="btn btn-sm" onclick="retryJob('${job.job_id}')">↩ Retry</button>`
       : '';
+    const deleteBtn = (job.status === 'failed' || job.status === 'complete')
+      ? `<button class="btn btn-sm" style="color:#f85149;border-color:#f8514933" onclick="deleteJob('${job.job_id}')">✕ Delete</button>`
+      : '';
 
     return `<tr>
       <td style="font-family:monospace;font-size:12px" title="${job.job_id}">${shortId}…</td>
@@ -196,7 +199,7 @@ function renderJobs(jobs) {
       </td>
       <td><div class="reel-links">${reelLinks}</div></td>
       <td style="font-size:12px;color:#8b949e">${created}</td>
-      <td>${retryBtn}</td>
+      <td style="display:flex;gap:4px">${retryBtn}${deleteBtn}</td>
     </tr>`;
   }).join('');
 }
@@ -247,6 +250,18 @@ async function retryJob(jobId) {
   }
 }
 
+async function deleteJob(jobId) {
+  if (!confirm('Delete this job?')) return;
+  try {
+    const r = await fetch(API + '/jobs/' + jobId, { method: 'DELETE' });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    showToast('Job deleted');
+    loadJobs();
+  } catch (e) {
+    showToast('Delete failed: ' + e.message, true);
+  }
+}
+
 function showToast(msg, isError = false) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -265,4 +280,4 @@ setInterval(loadJobs, 10000);
 @router.get("/ui", response_class=HTMLResponse, include_in_schema=False)
 async def monitoring_ui():
     """Embedded monitoring dashboard."""
-    return HTMLResponse(_UI_HTML)
+    return HTMLResponse(_UI_HTML, headers={"Cache-Control": "no-store"})
