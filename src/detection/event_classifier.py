@@ -298,7 +298,7 @@ class PipelineRunner:
             )
 
             # Abort early if frame extraction keeps failing (NAS/disk issue)
-            if not detections and chunk_idx > 0:
+            if not detections:
                 consecutive_empty += 1
                 if consecutive_empty >= max_consecutive_empty:
                     raise RuntimeError(

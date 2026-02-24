@@ -133,6 +133,13 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     working = Path(cfg.WORKING_DIR) / job_id
     working.mkdir(parents=True, exist_ok=True)
 
+    # ── Pre-flight: verify source file is accessible ────────────────────
+    if not Path(vf.path).exists():
+        error_msg = f"Source file not found: {vf.path}"
+        log.error("pipeline.source_not_found", job_id=job_id, path=vf.path)
+        store.update_status(job_id, JobStatus.FAILED, progress=0.0, error=error_msg)
+        return {"job_id": job_id, "output_paths": {}, "error": error_msg}
+
     # ── Stage: DETECTING ──────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
 

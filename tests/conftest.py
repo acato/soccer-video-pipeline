@@ -101,7 +101,7 @@ def make_match_config():
         opponent=KitConfig(
             team_name="Away United",
             outfield_color="red",
-            gk_color="neon_green",
+            gk_color="teal",
         ),
     )
 

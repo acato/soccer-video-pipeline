@@ -117,4 +117,4 @@ class TestJobStore:
         store.save(job)
         reloaded = store.get(job.job_id)
         assert reloaded.match_config.team.team_name == "Home FC"
-        assert reloaded.match_config.opponent.gk_color == "neon_green"
+        assert reloaded.match_config.opponent.gk_color == "teal"

@@ -10,11 +10,11 @@ from pathlib import Path
 from tests.conftest import make_match_config
 
 
-def _make_video_file():
+def _make_video_file(path="/mnt/nas/source/match.mp4"):
     """Build a minimal VideoFile for testing."""
     from src.ingestion.models import VideoFile
     return VideoFile(
-        path="/mnt/nas/source/match.mp4",
+        path=path,
         filename="match.mp4",
         duration_sec=5400.0,
         fps=30.0,
@@ -26,12 +26,12 @@ def _make_video_file():
     )
 
 
-def _make_job(job_id="test-job-001", reel_types=None):
+def _make_job(job_id="test-job-001", reel_types=None, source_path="/mnt/nas/source/match.mp4"):
     """Build a minimal Job for testing."""
     from src.ingestion.models import Job
     return Job(
         job_id=job_id,
-        video_file=_make_video_file(),
+        video_file=_make_video_file(path=source_path),
         reel_types=reel_types or ["keeper"],
         match_config=make_match_config(),
     )
@@ -43,6 +43,7 @@ def _make_string_config(tmp_path):
     cfg.WORKING_DIR = str(tmp_path / "working")
     cfg.YOLO_MODEL_PATH = "/models/yolov8m.pt"
     cfg.USE_GPU = "false"
+    cfg.USE_NULL_DETECTOR = "false"
     cfg.YOLO_INFERENCE_SIZE = "1280"
     cfg.DETECTION_FRAME_STEP = "3"
     cfg.CHUNK_DURATION_SEC = "30"
@@ -80,7 +81,12 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
     """
     from src.api.worker import _run_pipeline
 
-    job = job or _make_job()
+    # Create a real temp source file so the pre-flight check passes
+    source_file = tmp_path / "source" / "match.mp4"
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    source_file.touch()
+
+    job = job or _make_job(source_path=str(source_file))
     cfg = cfg or _make_string_config(tmp_path)
     store = MagicMock()
     store.get.return_value = job
