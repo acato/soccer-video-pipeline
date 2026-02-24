@@ -135,10 +135,10 @@ if [[ $# -eq 0 ]]; then
   exit 1
 fi
 
-# Parse --kit arguments
-declare -A kits_outfield
-declare -A kits_gk
-kit_order=()
+# Parse --kit arguments into parallel arrays (bash 3 compatible — no declare -A)
+kit_names=()
+kit_outfields=()
+kit_gks=()
 
 while [[ $# -gt 0 ]]; do
   if [[ "$1" != "--kit" ]]; then
@@ -166,22 +166,21 @@ while [[ $# -gt 0 ]]; do
     exit 1
   fi
 
-  kits_outfield["$kit_name"]="$outfield"
-  kits_gk["$kit_name"]="$gk"
-  kit_order+=("$kit_name")
+  kit_names+=("$kit_name")
+  kit_outfields+=("$outfield")
+  kit_gks+=("$gk")
 done
 
-if [[ ${#kit_order[@]} -eq 0 ]]; then
+if [[ ${#kit_names[@]} -eq 0 ]]; then
   echo "Error: No kits provided. Use --kit Home blue teal"
   exit 1
 fi
 
 # Build JSON via python (portable, no jq dependency)
 kits_json="{"
-first=true
-for kit_name in "${kit_order[@]}"; do
-  if $first; then first=false; else kits_json+=","; fi
-  kits_json+="\"$kit_name\":{\"outfield_color\":\"${kits_outfield[$kit_name]}\",\"gk_color\":\"${kits_gk[$kit_name]}\"}"
+for ((i = 0; i < ${#kit_names[@]}; i++)); do
+  if [[ $i -gt 0 ]]; then kits_json+=","; fi
+  kits_json+="\"${kit_names[$i]}\":{\"outfield_color\":\"${kit_outfields[$i]}\",\"gk_color\":\"${kit_gks[$i]}\"}"
 done
 kits_json+="}"
 
