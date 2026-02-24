@@ -87,7 +87,10 @@ def _make_real_task():
             raise ValueError(f"Job {job_id} not found")
 
         try:
-            return _run_pipeline(job_id, store, cfg)
+            from src.utils.sleep_inhibitor import SleepInhibitor
+            prevent = str(cfg.PREVENT_SLEEP).lower() in ("1", "true", "yes")
+            with SleepInhibitor(job_id=job_id, enabled=prevent):
+                return _run_pipeline(job_id, store, cfg)
         except Exception as exc:
             tb = traceback.format_exc()
             log.error("pipeline.failed", job_id=job_id, error=str(exc), traceback=tb)

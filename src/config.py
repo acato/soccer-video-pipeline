@@ -130,6 +130,12 @@ WATCH_STABLE_TIME_SEC: float = _float("WATCH_STABLE_TIME_SEC", 30.0)
 """Wait this long after last file modification before considering it fully written."""
 
 # ---------------------------------------------------------------------------
+# macOS Sleep Prevention
+# ---------------------------------------------------------------------------
+PREVENT_SLEEP: bool = _bool("PREVENT_SLEEP", True)
+"""Use caffeinate to prevent idle sleep during jobs (macOS only)."""
+
+# ---------------------------------------------------------------------------
 # Derived helpers
 # ---------------------------------------------------------------------------
 def working_dir_for_job(job_id: str) -> Path:
@@ -175,6 +181,7 @@ class _Config:
             "NAS_READ_BUFFER_BYTES": ("NAS_READ_BUFFER_BYTES", str(8*1024*1024)),
             "WATCH_POLL_INTERVAL_SEC": ("WATCH_POLL_INTERVAL_SEC", "10.0"),
             "WATCH_STABLE_TIME_SEC": ("WATCH_STABLE_TIME_SEC", "30.0"),
+            "PREVENT_SLEEP": ("PREVENT_SLEEP", "true"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
