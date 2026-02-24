@@ -31,6 +31,12 @@ GOAL_LINE_LEFT_X = 0.0
 GOAL_LINE_RIGHT_X = 105.0
 PITCH_WIDTH = 68.0
 
+# Reference GK bbox height (normalized) for threshold calibration.
+# Thresholds were tuned for a close-camera view where the GK bbox is ~25% of
+# frame height.  For wide-angle footage the GK appears much smaller, so we
+# scale thresholds proportionally.
+REFERENCE_BBOX_HEIGHT = 0.25
+
 
 class GoalkeeperDetector:
     """
@@ -203,22 +209,38 @@ class GoalkeeperDetector:
         """
         Classify GK-specific events from the GK track.
         Returns list of Events with reel_targets=[keeper_role].
+
+        Velocity/deviation thresholds are scaled by the GK's apparent size
+        (mean bbox height) so that wide-angle footage with a small GK bbox
+        uses proportionally lower thresholds.
         """
         events = []
 
         if not gk_track.detections:
             return events
 
-        events.extend(self._detect_distribution(gk_track, source_fps, keeper_role))
-        events.extend(self._detect_saves(gk_track, all_tracks, source_fps, keeper_role))
-        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps, keeper_role))
+        mean_h = sum(d.bbox.height for d in gk_track.detections) / len(gk_track.detections)
+        bbox_scale = max(0.3, min(1.0, mean_h / REFERENCE_BBOX_HEIGHT))
+
+        log.info(
+            "gk_detector.bbox_scale",
+            keeper_role=keeper_role,
+            mean_bbox_height=round(mean_h, 4),
+            bbox_scale=round(bbox_scale, 3),
+            num_detections=len(gk_track.detections),
+        )
+
+        events.extend(self._detect_distribution(gk_track, source_fps, keeper_role, bbox_scale))
+        events.extend(self._detect_saves(gk_track, all_tracks, source_fps, keeper_role, bbox_scale))
+        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps, keeper_role, bbox_scale))
 
         return events
 
     # -- Private detection methods --
 
     def _detect_distribution(
-        self, gk_track: Track, fps: float, keeper_role: str = "keeper_a"
+        self, gk_track: Track, fps: float, keeper_role: str = "keeper_a",
+        bbox_scale: float = 1.0,
     ) -> list[Event]:
         """
         Detect goal kicks and distribution from GK track.
@@ -240,7 +262,7 @@ class GoalkeeperDetector:
             pre_vel = np.mean(velocities[max(0, i-window):i])
             post_vel = np.mean(velocities[i:min(len(velocities), i+5)])
 
-            if pre_vel < 0.01 and post_vel > 0.12:
+            if pre_vel < 0.01 and post_vel > 0.12 * bbox_scale:
                 det = dets[i]
                 event_type = self._classify_distribution_type(det)
                 vel_ratio = post_vel / max(pre_vel, 0.001)
@@ -270,7 +292,7 @@ class GoalkeeperDetector:
 
     def _detect_saves(
         self, gk_track: Track, all_tracks: list[Track], fps: float,
-        keeper_role: str = "keeper_a",
+        keeper_role: str = "keeper_a", bbox_scale: float = 1.0,
     ) -> list[Event]:
         """
         Detect save events: GK makes sudden vertical or lateral movement
@@ -288,8 +310,8 @@ class GoalkeeperDetector:
                     ball_positions[det.frame_number] = (det.bbox.center_x, det.bbox.center_y)
         has_ball_data = len(ball_positions) > 0
 
-        vel_threshold = 0.25 if has_ball_data else 0.35
-        dive_threshold = 0.40
+        vel_threshold = (0.25 if has_ball_data else 0.35) * bbox_scale
+        dive_threshold = 0.40 * bbox_scale
 
         for i in range(1, len(dets) - 1):
             prev, curr, nxt = dets[i-1], dets[i], dets[i+1]
@@ -360,7 +382,7 @@ class GoalkeeperDetector:
 
     def _detect_one_on_ones(
         self, gk_track: Track, all_tracks: list[Track], fps: float,
-        keeper_role: str = "keeper_a",
+        keeper_role: str = "keeper_a", bbox_scale: float = 1.0,
     ) -> list[Event]:
         """
         Detect one-on-one: GK moves significantly away from goal line.
@@ -371,7 +393,7 @@ class GoalkeeperDetector:
         if len(dets) < 4:
             return events
 
-        deviation_threshold = 0.20
+        deviation_threshold = 0.20 * bbox_scale
         consecutive_required = 3
 
         center_y_values = [d.bbox.center_y for d in dets]
