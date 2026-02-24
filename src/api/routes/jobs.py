@@ -28,7 +28,8 @@ router = APIRouter()
 
 class SubmitJobRequest(BaseModel):
     nas_path: str
-    match_config: MatchConfig
+    match_config: Optional[MatchConfig] = None
+    kit_name: Optional[str] = None
     reel_types: list[str] = ["keeper", "highlights"]
 
 
@@ -45,6 +46,26 @@ def _get_store():
     return JobStore(Path(dyn_cfg.WORKING_DIR) / "jobs")
 
 
+def _build_match_config_from_team(kit_name: str) -> MatchConfig:
+    """Build a MatchConfig from the saved team config + selected kit name."""
+    from src.api.routes.team import load_team_config
+    from src.ingestion.models import KitConfig
+
+    team_cfg = load_team_config()
+    if team_cfg is None:
+        raise HTTPException(400, "No team configured. Run ./setup-team.sh first.")
+    kits = team_cfg.get("kits", {})
+    if kit_name not in kits:
+        available = ", ".join(kits.keys()) if kits else "(none)"
+        raise HTTPException(400, f"Kit '{kit_name}' not found. Available kits: {available}")
+    kit = kits[kit_name]
+    team_name = team_cfg.get("team_name", "My Team")
+    return MatchConfig(
+        team=KitConfig(team_name=team_name, outfield_color=kit["outfield_color"], gk_color=kit["gk_color"]),
+        opponent=KitConfig(team_name="Opponent", outfield_color="white", gk_color="neon_yellow"),
+    )
+
+
 @router.post("", status_code=201)
 @router.post("/", status_code=201, include_in_schema=False)
 def submit_job(request: SubmitJobRequest):
@@ -58,8 +79,14 @@ def submit_job(request: SubmitJobRequest):
     if invalid:
         raise HTTPException(400, f"Invalid reel types: {invalid}. Valid: {sorted(valid_reels)}")
 
+    # Build match_config from team config if not provided directly
+    match_config = request.match_config
+    if match_config is None:
+        kit_name = request.kit_name or "Home"
+        match_config = _build_match_config_from_team(kit_name)
+
     invalid_colors = []
-    for role, kit in [("team", request.match_config.team), ("opponent", request.match_config.opponent)]:
+    for role, kit in [("team", match_config.team), ("opponent", match_config.opponent)]:
         for field, color in [("outfield_color", kit.outfield_color), ("gk_color", kit.gk_color)]:
             key = color.lower().replace(" ", "_").replace("-", "_")
             if key not in JERSEY_COLOR_PALETTE:
@@ -94,7 +121,7 @@ def submit_job(request: SubmitJobRequest):
         log.info("jobs.idempotent", job_id=existing.job_id)
         return existing
 
-    job = create_job(video_file, request.reel_types, store, request.match_config)
+    job = create_job(video_file, request.reel_types, store, match_config)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job

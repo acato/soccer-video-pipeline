@@ -66,14 +66,23 @@ _UI_HTML = r"""<!DOCTYPE html>
   .submit-form { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
                  padding: 20px; margin-bottom: 24px; }
   .submit-form h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
-  .form-row { display: flex; gap: 12px; align-items: flex-end; }
+  .form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
   .form-group { flex: 1; }
   label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 6px; }
   input[type=text] { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
                      border-radius: 6px; color: #e1e4e8; font-size: 14px; }
   input[type=text]:focus { outline: none; border-color: #388bfd; }
+  select { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
+           border-radius: 6px; color: #e1e4e8; font-size: 14px; }
+  select:focus { outline: none; border-color: #388bfd; }
   .btn-primary { background: #238636; border-color: #238636; color: white; padding: 8px 16px; }
   .btn-primary:hover { background: #2ea043; }
+  .team-banner { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+                 padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+  .team-banner .team-name { font-size: 16px; font-weight: 600; }
+  .team-banner .team-hint { font-size: 12px; color: #8b949e; }
+  .no-team-msg { background: #161b22; border: 1px solid #d29922; border-radius: 8px;
+                 padding: 16px 20px; margin-bottom: 24px; color: #d29922; font-size: 14px; }
   .toast { position: fixed; bottom: 24px; right: 24px; background: #238636; color: white;
            padding: 12px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity 0.3s;
            max-width: 320px; }
@@ -95,12 +104,20 @@ _UI_HTML = r"""<!DOCTYPE html>
 </header>
 
 <div class="container">
-  <div class="submit-form">
+  <div id="team-banner-area"></div>
+
+  <div class="submit-form" id="submit-form-area">
     <h2>Submit Match</h2>
     <div class="form-row">
       <div class="form-group">
-        <label>NAS Path (relative to mount)</label>
-        <input type="text" id="nas-path" placeholder="matches/2025_01_15_game.mp4" />
+        <label>Video Filename</label>
+        <input type="text" id="nas-path" placeholder="saturday_game.mp4" />
+      </div>
+      <div class="form-group" style="flex:0 0 160px">
+        <label>Jersey</label>
+        <select id="kit-select">
+          <option value="">Loading...</option>
+        </select>
       </div>
       <div class="form-group" style="flex:0 0 180px">
         <label>Reel Types</label>
@@ -145,6 +162,33 @@ _UI_HTML = r"""<!DOCTYPE html>
 
 <script>
 const API = '';  // Same origin
+let teamConfig = null;
+
+async function loadTeamConfig() {
+  const banner = document.getElementById('team-banner-area');
+  const kitSelect = document.getElementById('kit-select');
+  try {
+    const r = await fetch(API + '/team');
+    if (r.status === 404) {
+      teamConfig = null;
+      banner.innerHTML = '<div class="no-team-msg">Set up your team first! In your terminal, run: <code>./setup-team.sh "Your Team" --kit Home blue teal</code></div>';
+      kitSelect.innerHTML = '<option value="">(no team set up)</option>';
+      return;
+    }
+    if (!r.ok) throw new Error(r.statusText);
+    teamConfig = await r.json();
+    const kits = Object.keys(teamConfig.kits || {});
+    banner.innerHTML = '<div class="team-banner"><span class="team-name">' + (teamConfig.team_name || 'My Team') +
+      '</span><span class="team-hint">' + kits.length + ' jersey' + (kits.length !== 1 ? 's' : '') + ' saved</span></div>';
+    kitSelect.innerHTML = kits.map(k => '<option value="' + k + '">' + k + '</option>').join('');
+    if (!kits.length) {
+      kitSelect.innerHTML = '<option value="">(no jerseys)</option>';
+    }
+  } catch (e) {
+    banner.innerHTML = '';
+    kitSelect.innerHTML = '<option value="">Home</option>';
+  }
+}
 
 async function loadJobs() {
   try {
@@ -221,13 +265,17 @@ function updateStats(jobs) {
 
 async function submitJob() {
   const nasPath = document.getElementById('nas-path').value.trim();
-  if (!nasPath) { showToast('Please enter a NAS path', true); return; }
+  if (!nasPath) { showToast('Please enter a video filename', true); return; }
+  const kitSelect = document.getElementById('kit-select');
+  const kitName = kitSelect.value;
   const reelTypes = document.getElementById('reel-types').value.split(',').map(s => s.trim());
+  const body = { nas_path: nasPath, reel_types: reelTypes };
+  if (kitName) body.kit_name = kitName;
   try {
     const r = await fetch(API + '/jobs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nas_path: nasPath, reel_types: reelTypes }),
+      body: JSON.stringify(body),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
@@ -269,7 +317,8 @@ function showToast(msg, isError = false) {
   setTimeout(() => { t.className = 'toast'; }, 3500);
 }
 
-// Auto-refresh every 10s
+// Load team config once, then auto-refresh jobs every 10s
+loadTeamConfig();
 loadJobs();
 setInterval(loadJobs, 10000);
 </script>

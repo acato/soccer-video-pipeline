@@ -1,5 +1,7 @@
 # Soccer Video Processing Pipeline
 
+> **First time? Start here: [START_HERE.md](START_HERE.md)** — a step-by-step guide that gets you from zero to your first goalkeeper reel.
+
 > **Intended use:** This software is designed for youth and amateur soccer analytics and personal experimentation. It is not affiliated with, endorsed by, or approved by any professional league, federation, or governing body.
 
 Agent-based system that processes 4K soccer match recordings from a NAS and automatically produces:
