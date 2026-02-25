@@ -337,7 +337,9 @@ def identify_gk_by_known_colors(
     track_positions: dict[int, float],
     home_gk_hsv: tuple[float, float, float],
     away_gk_hsv: tuple[float, float, float],
+    outfield_colors: list[tuple[float, float, float]] | None = None,
     min_similarity: float = 0.40,
+    min_separation: float = 0.03,
 ) -> dict[str, Optional[int]]:
     """
     Identify goalkeepers using the known GK jersey colors from match_config.
@@ -352,7 +354,11 @@ def identify_gk_by_known_colors(
         track_positions: {track_id: mean_x} normalized horizontal position
         home_gk_hsv: HSV of the home team GK jersey
         away_gk_hsv: HSV of the away team GK jersey
+        outfield_colors: list of outfield HSV colors; tracks matching an
+            outfield color better than both GK colors are rejected
         min_similarity: minimum similarity score to accept a match (0–1)
+        min_separation: minimum margin between best and second-best match
+            for a given GK color; below this the match is too noisy
 
     Returns:
         {"keeper_a": track_id or None, "keeper_b": track_id or None}
@@ -370,17 +376,37 @@ def identify_gk_by_known_colors(
 
     # Find the best-matching track for each known GK color
     best_home: tuple[Optional[int], float] = (None, -1.0)
+    second_home: float = -1.0
     best_away: tuple[Optional[int], float] = (None, -1.0)
+    second_away: float = -1.0
 
     for tid in common_ids:
         color = track_colors[tid]
         sim_home = compute_jersey_similarity(color, home_gk_hsv)
         sim_away = compute_jersey_similarity(color, away_gk_hsv)
+        best_gk_sim = max(sim_home, sim_away)
+
+        # Outfield rejection: skip tracks that look more like an outfield
+        # player than either GK color (prevents field players from being
+        # misidentified as GK when their jersey drifts toward a GK hue).
+        if outfield_colors:
+            best_outfield_sim = max(
+                compute_jersey_similarity(color, of) for of in outfield_colors
+            )
+            if best_outfield_sim > best_gk_sim:
+                continue
 
         if sim_home > best_home[1]:
+            second_home = best_home[1]
             best_home = (tid, sim_home)
+        elif sim_home > second_home:
+            second_home = sim_home
+
         if sim_away > best_away[1]:
+            second_away = best_away[1]
             best_away = (tid, sim_away)
+        elif sim_away > second_away:
+            second_away = sim_away
 
     home_id, home_sim = best_home
     away_id, away_sim = best_away
@@ -389,6 +415,24 @@ def identify_gk_by_known_colors(
     if home_sim < min_similarity:
         home_id = None
     if away_sim < min_similarity:
+        away_id = None
+
+    # Reject noisy matches: best must beat runner-up by min_separation
+    if home_id is not None and (home_sim - second_home) < min_separation:
+        log.debug(
+            "jersey_classifier.home_gk_too_close",
+            best=round(home_sim, 3),
+            second=round(second_home, 3),
+            margin=round(home_sim - second_home, 3),
+        )
+        home_id = None
+    if away_id is not None and (away_sim - second_away) < min_separation:
+        log.debug(
+            "jersey_classifier.away_gk_too_close",
+            best=round(away_sim, 3),
+            second=round(second_away, 3),
+            margin=round(away_sim - second_away, 3),
+        )
         away_id = None
 
     # If both colors matched the same track, keep the stronger match

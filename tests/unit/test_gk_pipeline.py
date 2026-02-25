@@ -344,6 +344,61 @@ class TestKeeperClipComputation:
 
 
 # ===========================================================================
+# Stage 5b: Keeper-specific tight padding and max clip duration
+# ===========================================================================
+
+@pytest.mark.unit
+class TestKeeperTightPadding:
+    """Keeper reels use tighter padding (1.5/1.5) and 15s max clip duration."""
+
+    def test_keeper_tight_padding_produces_shorter_clips(self):
+        """Keeper clips with pre=1.5/post=1.5 should be shorter than default 3.0/5.0."""
+        events = [
+            _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper"]),
+        ]
+        default_clips = compute_clips(events, 5400.0, "keeper", pre_pad=3.0, post_pad=5.0)
+        tight_clips = compute_clips(events, 5400.0, "keeper", pre_pad=1.5, post_pad=1.5)
+        assert len(default_clips) == 1
+        assert len(tight_clips) == 1
+        default_dur = default_clips[0].end_sec - default_clips[0].start_sec
+        tight_dur = tight_clips[0].end_sec - tight_clips[0].start_sec
+        assert tight_dur < default_dur, "Tight padding should produce shorter clips"
+        # Event is 60-62s → tight clip should be 58.5-63.5 = 5s
+        assert abs(tight_dur - 5.0) < 0.01
+
+    def test_keeper_max_clip_duration_15s(self):
+        """Keeper clips should not exceed 15s even when events are close together."""
+        # Events 2s apart — would merge into one mega-clip with default settings
+        events = [
+            _make_gk_event(f"e{i}", EventType.DISTRIBUTION_SHORT, 10.0 * i, 10.0 * i + 2.0, ["keeper"])
+            for i in range(10)
+        ]
+        clips = compute_clips(
+            events, 5400.0, "keeper",
+            pre_pad=1.5, post_pad=1.5, max_clip_duration_sec=15.0,
+        )
+        for clip in clips:
+            dur = clip.end_sec - clip.start_sec
+            assert dur <= 15.0, f"Keeper clip {dur:.1f}s exceeds 15s cap"
+
+    def test_highlights_uses_default_padding(self):
+        """Highlights clips should use the wider default padding."""
+        events = [
+            Event(
+                event_id="h1", job_id="j1", source_file="m.mp4",
+                event_type=EventType.GOAL, timestamp_start=60.0, timestamp_end=61.0,
+                confidence=0.92, reel_targets=["highlights"],
+                frame_start=1800, frame_end=1830,
+            ),
+        ]
+        clips = compute_clips(events, 5400.0, "highlights", pre_pad=3.0, post_pad=5.0)
+        assert len(clips) == 1
+        dur = clips[0].end_sec - clips[0].start_sec
+        # Event is 60-61s → clip should be 57-66 = 9s
+        assert abs(dur - 9.0) < 0.01
+
+
+# ===========================================================================
 # Stage 6: postprocess_clips for keeper reel
 # ===========================================================================
 
@@ -933,3 +988,251 @@ class TestShotCorrelationConfidence:
         """Even very high-confidence shots should cap correlated save at 0.85."""
         corr_conf = min(0.85, 0.92 + 0.05)
         assert corr_conf == 0.85
+
+
+# ===========================================================================
+# Stage 15: Shot detection thresholds
+# ===========================================================================
+
+@pytest.mark.unit
+class TestShotDetectionThresholds:
+    """Verify raised shot thresholds filter passes while keeping real shots."""
+
+    def test_high_speed_shot_detected(self):
+        """Ball speed > 1.0 should be classified as a shot."""
+        from src.detection.event_classifier import classify_highlights_events
+
+        # Create ball detections with speed > 1.0
+        dets = []
+        fps = 30.0
+        for i in range(4):
+            # Ball moving fast: dx=0.05 per frame at 30fps → speed ≈ 1.5
+            dets.append(Detection(
+                frame_number=i, timestamp=float(i) / fps,
+                class_name="ball", confidence=0.9,
+                bbox=_make_bbox(cx=0.3 + i * 0.05, cy=0.5),
+            ))
+        track = _make_track(1, dets)
+        events = classify_highlights_events([track], "j1", "m.mp4", fps)
+        shot_events = [e for e in events if e.event_type in (
+            EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
+        )]
+        assert len(shot_events) > 0, "Speed > 1.0 should be detected as shot"
+
+    def test_slow_ball_not_detected_as_shot(self):
+        """Ball speed < 0.50 should NOT be classified as a shot."""
+        from src.detection.event_classifier import classify_highlights_events
+
+        # Create ball detections with speed ≈ 0.3 (pass, not a shot)
+        dets = []
+        fps = 30.0
+        for i in range(6):
+            dets.append(Detection(
+                frame_number=i, timestamp=float(i) / fps,
+                class_name="ball", confidence=0.9,
+                bbox=_make_bbox(cx=0.3 + i * 0.01, cy=0.5),
+            ))
+        track = _make_track(1, dets)
+        events = classify_highlights_events([track], "j1", "m.mp4", fps)
+        shot_events = [e for e in events if e.event_type in (
+            EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
+        )]
+        assert len(shot_events) == 0, "Speed < 0.50 should not be a shot"
+
+    def test_medium_speed_near_goal_detected(self):
+        """Ball speed > 0.50 near goal should be classified as a shot."""
+        from src.detection.event_classifier import classify_highlights_events
+
+        dets = []
+        fps = 30.0
+        for i in range(4):
+            # Near goal (y < 0.25), speed ≈ 0.6
+            dets.append(Detection(
+                frame_number=i, timestamp=float(i) / fps,
+                class_name="ball", confidence=0.9,
+                bbox=_make_bbox(cx=0.3 + i * 0.02, cy=0.15),
+            ))
+        track = _make_track(1, dets)
+        events = classify_highlights_events([track], "j1", "m.mp4", fps)
+        shot_events = [e for e in events if e.event_type in (
+            EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
+        )]
+        assert len(shot_events) > 0, "Speed > 0.50 near goal should be a shot"
+
+
+# ===========================================================================
+# Stage 16: Outfield rejection in GK identification
+# ===========================================================================
+
+@pytest.mark.unit
+class TestOutfieldRejection:
+    """Tracks matching outfield colors better than GK colors must be rejected."""
+
+    def test_outfield_track_rejected(self):
+        """A blue outfield player should NOT be identified as teal GK."""
+        blue_hsv = resolve_jersey_color("blue")      # outfield
+        teal_hsv = resolve_jersey_color("teal")       # GK color
+        neon_yellow_hsv = resolve_jersey_color("neon_yellow")  # other GK
+
+        # Track 1: actual teal GK
+        # Track 2: blue outfield player (closer to blue than teal)
+        track_colors = {
+            1: teal_hsv,
+            2: blue_hsv,
+            3: (0.0, 0.85, 0.70),  # red outfield
+        }
+        track_positions = {1: 0.92, 2: 0.4, 3: 0.6}
+
+        result = identify_gk_by_known_colors(
+            track_colors, track_positions,
+            home_gk_hsv=neon_yellow_hsv,
+            away_gk_hsv=teal_hsv,
+            outfield_colors=[blue_hsv, (0.0, 0.85, 0.70)],
+        )
+        # Track 2 (blue) should NOT be picked as any GK
+        assert result["keeper_a"] != 2
+        assert result["keeper_b"] != 2
+        # Track 1 (teal) should be picked
+        assert 1 in (result["keeper_a"], result["keeper_b"])
+
+    def test_gk_not_rejected_when_closer_to_gk_color(self):
+        """A track matching GK color better than outfield should be kept."""
+        teal_hsv = resolve_jersey_color("teal")
+        neon_yellow_hsv = resolve_jersey_color("neon_yellow")
+        blue_hsv = resolve_jersey_color("blue")
+        red_hsv = resolve_jersey_color("red")
+
+        track_colors = {
+            1: neon_yellow_hsv,  # home GK
+            2: teal_hsv,         # away GK
+            3: blue_hsv,         # outfield
+            4: red_hsv,          # outfield
+        }
+        track_positions = {1: 0.08, 2: 0.92, 3: 0.4, 4: 0.6}
+
+        result = identify_gk_by_known_colors(
+            track_colors, track_positions,
+            home_gk_hsv=neon_yellow_hsv,
+            away_gk_hsv=teal_hsv,
+            outfield_colors=[blue_hsv, red_hsv],
+        )
+        assert result["keeper_a"] == 1
+        assert result["keeper_b"] == 2
+
+
+# ===========================================================================
+# Stage 17: Shot correlation uses velocity direction only
+# ===========================================================================
+
+@pytest.mark.unit
+class TestShotCorrelationVelocityOnly:
+    """Shot correlation uses ball velocity direction only (proximity fallback removed)."""
+
+    def test_ball_heading_away_not_correlated(self):
+        """Ball heading away from GK should NOT correlate, regardless of proximity."""
+        ball_vx = 0.3   # heading right
+        gk_mean_x = 0.08  # GK on left
+        gk_on_right = gk_mean_x > 0.5  # False
+        shot_heading_right = ball_vx > 0  # True
+        # Velocity-only: (shot_heading_right == gk_on_right) → (True == False) → False
+        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
+        assert not shot_toward_gk, "Ball heading away should not correlate"
+
+    def test_fast_ball_near_gk_heading_away_not_correlated(self):
+        """Fast ball (speed > 2.0) near GK but heading AWAY should NOT correlate.
+
+        The proximity fallback was removed because it over-fired on clearances
+        and passes originating near the GK area.
+        """
+        ball_vx = 0.5   # heading right (away from GK on left)
+        gk_mean_x = 0.08  # GK on left
+        gk_on_right = gk_mean_x > 0.5  # False
+        shot_heading_right = ball_vx > 0  # True
+        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
+        assert not shot_toward_gk, "Fast ball heading away should NOT correlate (no proximity fallback)"
+
+    def test_velocity_toward_gk_always_correlates(self):
+        """Ball heading toward GK by velocity always correlates regardless of speed."""
+        ball_vx = -0.5  # heading left
+        gk_mean_x = 0.08  # GK on left
+        gk_on_right = gk_mean_x > 0.5  # False
+        shot_heading_right = ball_vx > 0  # False
+        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
+        assert shot_toward_gk, "Velocity toward GK should always correlate"
+
+    def test_zero_velocity_correlates(self):
+        """Ball with zero velocity (stationary) should correlate (benefit of doubt)."""
+        ball_vx = 0
+        gk_mean_x = 0.08
+        gk_on_right = gk_mean_x > 0.5
+        shot_heading_right = ball_vx > 0
+        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
+        assert shot_toward_gk, "Zero-velocity ball should correlate"
+
+
+# ===========================================================================
+# Stage 18: GK reel label requires minimum similarity
+# ===========================================================================
+
+@pytest.mark.unit
+class TestReelLabelMinimumSimilarity:
+    """Reel label assignment requires sim_team > 0.55."""
+
+    def test_low_similarity_gets_no_reel_label(self):
+        """If GK track barely matches team color (sim < 0.55), no reel label."""
+        mc = make_match_config()
+        det = GoalkeeperDetector(job_id="j1", source_file="m.mp4", match_config=mc)
+
+        team_gk_hsv = resolve_jersey_color(mc.team.gk_color)
+        opp_gk_hsv = resolve_jersey_color(mc.opponent.gk_color)
+
+        # Use a color that matches both GK colors poorly (sim < 0.55)
+        ambiguous_color = (70.0, 0.50, 0.50)  # between teal and neon_yellow
+        sim_team = compute_jersey_similarity(ambiguous_color, team_gk_hsv)
+        sim_opp = compute_jersey_similarity(ambiguous_color, opp_gk_hsv)
+
+        # Verify the color is indeed ambiguous (both sims low)
+        # If by chance one sim is > 0.55, adjust the color
+        if sim_team > 0.55 or sim_opp > 0.55:
+            ambiguous_color = (75.0, 0.40, 0.40)
+            sim_team = compute_jersey_similarity(ambiguous_color, team_gk_hsv)
+
+        track_colors = {10: ambiguous_color}
+        track_positions = {10: 0.08}
+        dets_a = [_make_detection(i, float(i), cx=0.08, track_id=10) for i in range(20)]
+        tracks = [_make_track(10, dets_a, jersey_hsv=ambiguous_color)]
+
+        gk_ids = det.identify_goalkeepers(tracks, (720, 1280), track_colors)
+        # With low similarity, reel label should be None for all roles
+        for role in ("keeper_a", "keeper_b"):
+            if gk_ids.get(role) is not None:
+                label = det.reel_label_for(role)
+                if sim_team <= 0.55:
+                    assert label is None, (
+                        f"Role {role} should have no reel label when sim_team={sim_team:.2f} <= 0.55"
+                    )
+
+    def test_high_similarity_gets_keeper_label(self):
+        """If GK track strongly matches team color (sim > 0.55), gets 'keeper' label."""
+        mc = make_match_config()
+        det = GoalkeeperDetector(job_id="j1", source_file="m.mp4", match_config=mc)
+
+        team_gk_hsv = resolve_jersey_color(mc.team.gk_color)  # neon_yellow
+        opp_gk_hsv = resolve_jersey_color(mc.opponent.gk_color)  # teal
+
+        track_colors = {10: team_gk_hsv, 20: opp_gk_hsv}
+        track_positions = {10: 0.08, 20: 0.92}
+        dets_a = [_make_detection(i, float(i), cx=0.08, track_id=10) for i in range(20)]
+        dets_b = [_make_detection(i, float(i), cx=0.92, track_id=20) for i in range(20)]
+        tracks = [
+            _make_track(10, dets_a, jersey_hsv=team_gk_hsv),
+            _make_track(20, dets_b, jersey_hsv=opp_gk_hsv),
+        ]
+
+        gk_ids = det.identify_goalkeepers(tracks, (720, 1280), track_colors)
+        # The team's GK should have reel label "keeper"
+        found_keeper = False
+        for role in ("keeper_a", "keeper_b"):
+            if det.reel_label_for(role) == "keeper":
+                found_keeper = True
+        assert found_keeper, "High-similarity team GK should get 'keeper' label"

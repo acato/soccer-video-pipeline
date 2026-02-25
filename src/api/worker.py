@@ -187,12 +187,22 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
 
     clips_by_reel: dict[str, list] = {}
     for reel_type in job.reel_types:
+        # Keeper clips need tight padding (action + brief aftermath).
+        # Highlights need more context for the viewer.
+        if reel_type in ("keeper", "keeper_a", "keeper_b"):
+            pre_pad, post_pad = 1.5, 1.5
+            max_clip_dur = 15.0
+        else:
+            pre_pad = float(cfg.PRE_EVENT_PAD_SEC)    # default 3.0
+            post_pad = float(cfg.POST_EVENT_PAD_SEC)   # default 5.0
+            max_clip_dur = 90.0
         raw_clips = compute_clips(
             events=all_events,
             video_duration=vf.duration_sec,
             reel_type=reel_type,
-            pre_pad=float(cfg.PRE_EVENT_PAD_SEC),
-            post_pad=float(cfg.POST_EVENT_PAD_SEC),
+            pre_pad=pre_pad,
+            post_pad=post_pad,
+            max_clip_duration_sec=max_clip_dur,
         )
         clips = postprocess_clips(
             raw_clips,

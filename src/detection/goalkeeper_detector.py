@@ -91,13 +91,18 @@ class GoalkeeperDetector:
 
         team_gk_hsv = resolve_jersey_color(self._match_config.team.gk_color)
         opp_gk_hsv = resolve_jersey_color(self._match_config.opponent.gk_color)
+        team_outfield_hsv = resolve_jersey_color(self._match_config.team.outfield_color)
+        opp_outfield_hsv = resolve_jersey_color(self._match_config.opponent.outfield_color)
         result = identify_gk_by_known_colors(
             track_colors,
             track_positions,
             home_gk_hsv=team_gk_hsv,
             away_gk_hsv=opp_gk_hsv,
+            outfield_colors=[team_outfield_hsv, opp_outfield_hsv],
         )
         # Label the team's GK role as "keeper"; leave the opponent's as None.
+        # Require sim_team > 0.55 as an absolute floor — low similarities
+        # (e.g. 0.41 vs 0.40) indicate noisy identification.
         for role in ("keeper_a", "keeper_b"):
             tid = result.get(role)
             if tid is None or tid not in track_colors:
@@ -105,7 +110,10 @@ class GoalkeeperDetector:
                 continue
             sim_team = compute_jersey_similarity(track_colors[tid], team_gk_hsv)
             sim_opp = compute_jersey_similarity(track_colors[tid], opp_gk_hsv)
-            self._gk_reel_labels[role] = "keeper" if sim_team >= sim_opp else None
+            if sim_team >= sim_opp and sim_team > 0.55:
+                self._gk_reel_labels[role] = "keeper"
+            else:
+                self._gk_reel_labels[role] = None
 
         # SUPPLEMENTARY: glove color confidence boost (log only)
         if frames_data:
@@ -276,14 +284,14 @@ class GoalkeeperDetector:
                     job_id=self.job_id,
                     source_file=self.source_file,
                     event_type=event_type,
-                    timestamp_start=max(0, det.timestamp - 1.0),
-                    timestamp_end=det.timestamp + 3.0,
+                    timestamp_start=max(0, det.timestamp - 0.5),
+                    timestamp_end=det.timestamp + 2.0,
                     confidence=confidence,
                     reel_targets=[keeper_role],
                     player_track_id=gk_track.track_id,
                     is_goalkeeper_event=True,
-                    frame_start=max(0, det.frame_number - int(fps)),
-                    frame_end=det.frame_number + int(3 * fps),
+                    frame_start=max(0, det.frame_number - int(0.5 * fps)),
+                    frame_end=det.frame_number + int(2 * fps),
                     bounding_box=det.bbox,
                     metadata={
                         "detection_method": "velocity_transition",
@@ -463,14 +471,14 @@ class GoalkeeperDetector:
                     job_id=self.job_id,
                     source_file=self.source_file,
                     event_type=EventType.ONE_ON_ONE,
-                    timestamp_start=max(0, det.timestamp - 1.0),
-                    timestamp_end=det.timestamp + 4.0,
+                    timestamp_start=max(0, det.timestamp - 0.5),
+                    timestamp_end=det.timestamp + 3.0,
                     confidence=confidence,
                     reel_targets=reel_targets,
                     player_track_id=gk_track.track_id,
                     is_goalkeeper_event=True,
-                    frame_start=max(0, det.frame_number - int(fps)),
-                    frame_end=det.frame_number + int(4 * fps),
+                    frame_start=max(0, det.frame_number - int(0.5 * fps)),
+                    frame_end=det.frame_number + int(3 * fps),
                     bounding_box=det.bbox,
                     metadata={
                         "deviation": round(deviation, 4),
