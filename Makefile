@@ -8,7 +8,7 @@ VENV_PIP    := $(if $(wildcard .venv/bin/pip),.venv/bin/pip,pip)
 help:
 	@echo "Soccer Video Processing Pipeline"
 	@echo ""
-	@echo "  make deploy             Auto-detect hardware, generate .env, start stack"
+	@echo "  make deploy             Auto-detect hardware, reuse or generate .env, start stack"
 	@echo "  make setup              Install Python dependencies (local dev)"
 	@echo "  make generate-fixtures  Generate synthetic test video fixtures"
 	@echo "  make test-unit          Run unit tests (no infra required)"
