@@ -119,6 +119,7 @@ def _detect_shots_from_all(
                 metadata={
                     "ball_speed": round(speed, 4),
                     "ball_vx": round(vx_signed, 4),
+                    "ball_origin_x": round(x_prev, 4),
                 },
             ))
 
@@ -396,9 +397,12 @@ class PipelineRunner:
             hl_events = classify_highlights_events(tracks, self.job_id, self.video_file.path, fps)
             chunk_events.extend(hl_events)
 
-            # Shot-correlation: every shot heading toward our GK → keeper event.
-            # Uses ball velocity direction (ball_vx) instead of ball position,
-            # because the ball is detected mid-trajectory (not at the goal).
+            # Shot-correlation: every shot near our GK → keeper event.
+            # Two signals (either is sufficient):
+            #   1. Ball velocity direction (ball_vx) points toward the GK
+            #   2. Ball position at detection is within 0.30 of GK mean_x
+            #      (handles crosses/corners where ball_vx reflects the
+            #      cross trajectory, not the actual shot direction)
             for hl_ev in hl_events:
                 if hl_ev.event_type not in (EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET):
                     continue
@@ -416,18 +420,29 @@ class PipelineRunner:
                         continue
                     gk_mean_x = sum(d.bbox.center_x for d in gk_tracks[0].detections) / len(gk_tracks[0].detections)
                     gk_on_right = gk_mean_x > 0.5
-                    # Ball heading right (vx>0) → toward right-side GK
-                    # Ball heading left (vx<0) → toward left-side GK
-                    # ball_vx==0 means no direction info — allow as fallback
+                    # Signal 1: ball velocity direction
                     shot_heading_right = ball_vx > 0
-                    shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
+                    toward_by_vx = (shot_heading_right == gk_on_right) or ball_vx == 0
+                    # Signal 2: ball position near GK (within ~30% of frame).
+                    # Check BOTH the ball's current and origin positions — for
+                    # crosses/corners the ball origin is near the defending GK
+                    # even though it ends up on the far side.
+                    shot_x = hl_ev.bounding_box.center_x if hl_ev.bounding_box else 0.5
+                    origin_x = hl_ev.metadata.get("ball_origin_x", shot_x)
+                    near_gk = (
+                        abs(shot_x - gk_mean_x) < 0.30
+                        or abs(origin_x - gk_mean_x) < 0.30
+                    )
+                    shot_toward_gk = toward_by_vx or near_gk
                     if not shot_toward_gk:
                         log.debug(
                             "gk_detector.shot_correlation_skip",
                             keeper_role=reel_label,
                             ball_vx=round(ball_vx, 4),
                             gk_mean_x=round(gk_mean_x, 4),
-                            reason="ball_heading_away",
+                            shot_x=round(shot_x, 4),
+                            origin_x=round(origin_x, 4),
+                            reason="ball_heading_away_and_far",
                         )
                         continue
                     save_type = (
