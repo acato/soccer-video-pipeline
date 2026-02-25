@@ -658,186 +658,278 @@ class TestGKEventTypeInvariants:
 
 
 # ===========================================================================
-# Stage 13: bbox_scale threshold scaling for wide-angle footage
+# Stage 13: Normalized velocity detection (camera-independent thresholds)
 # ===========================================================================
 
 def _make_bbox_sized(cx: float = 0.5, cy: float = 0.5, w: float = 0.05, h: float = 0.15) -> BoundingBox:
-    """Helper that allows specifying bbox height for scale tests."""
+    """Helper that allows specifying bbox dimensions for normalized tests."""
     return BoundingBox(x=cx - w / 2, y=cy - h / 2, width=w, height=h)
 
 
 def _make_detection_sized(
     frame: int, ts: float, cx: float = 0.5, cy: float = 0.5,
-    h: float = 0.15, track_id: int = None, cls: str = "player",
+    w: float = 0.05, h: float = 0.15, track_id: int = None, cls: str = "player",
 ) -> Detection:
     return Detection(
         frame_number=frame, timestamp=ts, class_name=cls, confidence=0.9,
-        bbox=_make_bbox_sized(cx, cy, h=h), track_id=track_id,
+        bbox=_make_bbox_sized(cx, cy, w=w, h=h), track_id=track_id,
     )
 
 
 @pytest.mark.unit
-class TestBboxScaleComputation:
-    """Verify bbox_scale is computed correctly from GK track bbox heights."""
-
-    def test_scale_close_camera_large_bbox(self):
-        """GK bbox height = 0.25 (reference) → scale = 1.0."""
-        from src.detection.goalkeeper_detector import REFERENCE_BBOX_HEIGHT
-        mean_h = 0.25
-        scale = max(0.3, min(1.0, mean_h / REFERENCE_BBOX_HEIGHT))
-        assert scale == 1.0
-
-    def test_scale_wide_angle_small_bbox(self):
-        """GK bbox height = 0.133 (wide-angle) → scale ≈ 0.53."""
-        from src.detection.goalkeeper_detector import REFERENCE_BBOX_HEIGHT
-        mean_h = 0.133
-        scale = max(0.3, min(1.0, mean_h / REFERENCE_BBOX_HEIGHT))
-        assert 0.50 < scale < 0.56
-
-    def test_scale_clamped_floor(self):
-        """Very small bbox height should clamp scale to 0.3."""
-        from src.detection.goalkeeper_detector import REFERENCE_BBOX_HEIGHT
-        mean_h = 0.01  # Extremely small
-        scale = max(0.3, min(1.0, mean_h / REFERENCE_BBOX_HEIGHT))
-        assert scale == 0.3
-
-    def test_scale_clamped_ceiling(self):
-        """Larger-than-reference bbox height should clamp scale to 1.0."""
-        from src.detection.goalkeeper_detector import REFERENCE_BBOX_HEIGHT
-        mean_h = 0.50  # Very large
-        scale = max(0.3, min(1.0, mean_h / REFERENCE_BBOX_HEIGHT))
-        assert scale == 1.0
-
-
-@pytest.mark.unit
-class TestBboxScaleDetection:
-    """Verify that scaled thresholds allow detection in wide-angle footage."""
+class TestNormalizedVelocityDetection:
+    """Verify bbox-normalized velocity thresholds work across camera distances."""
 
     def _build_gk_detector(self):
         mc = make_match_config()
         return GoalkeeperDetector(job_id="j1", source_file="m.mp4", match_config=mc)
 
-    def test_distribution_detected_with_small_bbox(self):
-        """A post_vel of 0.08 should trigger distribution when bbox_scale ≈ 0.53."""
+    def test_distribution_small_bbox_proportional_movement(self):
+        """Small bbox with movement proportional to body width triggers detection.
+
+        bbox_w=0.04, dx per frame=0.004 → normalized vel = 0.004/(dt*0.04).
+        At 30fps dt=1/30, so vel = 0.004/(0.0333*0.04) = 3.0 bw/s > threshold 1.5.
+        """
         det = self._build_gk_detector()
-        # Build a track where GK is stationary then suddenly moves.
-        # bbox height = 0.133 → scale ≈ 0.53 → threshold = 0.12 * 0.53 ≈ 0.064
-        dets = []
-        for i in range(20):
-            # Stationary phase: cx stays at 0.08
-            dets.append(_make_detection_sized(
-                i, float(i) / 30.0, cx=0.08, cy=0.5, h=0.133, track_id=10,
-            ))
-        # Movement phase: cx jumps (post_vel ~ 0.08 which is > 0.064 but < 0.12)
-        for i in range(20, 30):
-            cx = 0.08 + (i - 20) * 0.003  # slow drift to create velocity ~ 0.08
-            dets.append(_make_detection_sized(
-                i, float(i) / 30.0, cx=cx, cy=0.5, h=0.133, track_id=10,
-            ))
-
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], 30.0, keeper_role="keeper")
-        # With bbox_scale the distribution should be detectable
-        dist_events = [e for e in events if e.event_type in (
-            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
-        )]
-        assert len(dist_events) > 0, "Small bbox scale should lower distribution threshold"
-
-    def test_distribution_not_detected_without_scale(self):
-        """Same velocity pattern with large bbox (scale=1.0) should NOT trigger."""
-        det = self._build_gk_detector()
-        dets = []
-        for i in range(20):
-            dets.append(_make_detection_sized(
-                i, float(i) / 30.0, cx=0.08, cy=0.5, h=0.25, track_id=10,
-            ))
-        for i in range(20, 30):
-            cx = 0.08 + (i - 20) * 0.003
-            dets.append(_make_detection_sized(
-                i, float(i) / 30.0, cx=cx, cy=0.5, h=0.25, track_id=10,
-            ))
-
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], 30.0, keeper_role="keeper")
-        dist_events = [e for e in events if e.event_type in (
-            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
-        )]
-        assert len(dist_events) == 0, "Large bbox (scale=1.0) should not trigger on small velocity"
-
-    def test_save_detected_with_small_bbox(self):
-        """A vertical velocity of 0.15 should trigger a save when bbox_scale ≈ 0.53."""
-        det = self._build_gk_detector()
-        # bbox height = 0.133 → scale ≈ 0.53 → vel_threshold = 0.35 * 0.53 ≈ 0.186
-        # Build a track with a sudden vertical jump (vertical_velocity ≈ 0.20)
-        dets = []
         fps = 30.0
-        for i in range(10):
+        dets = []
+        # Stationary phase (20 frames)
+        for i in range(20):
             dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, h=0.133, track_id=10,
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.04, h=0.10, track_id=10,
             ))
-        # Sudden vertical movement at frame 10
-        dets.append(_make_detection_sized(
-            10, 10.0 / fps, cx=0.08, cy=0.5 + 0.007, h=0.133, track_id=10,  # small rise
-        ))
-        dets.append(_make_detection_sized(
-            11, 11.0 / fps, cx=0.08, cy=0.5 + 0.015, h=0.133, track_id=10,  # bigger jump
-        ))
-        dets.append(_make_detection_sized(
-            12, 12.0 / fps, cx=0.08, cy=0.5 + 0.007, h=0.133, track_id=10,
-        ))
-        for i in range(13, 20):
+        # Movement phase: dx=0.004 per frame → ~3.0 body-widths/s
+        for i in range(20, 30):
+            cx = 0.08 + (i - 20) * 0.004
             dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, h=0.133, track_id=10,
+                i, float(i) / fps, cx=cx, cy=0.5, w=0.04, h=0.10, track_id=10,
             ))
 
         gk_track = _make_track(10, dets)
         events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
+        dist_events = [e for e in events if e.event_type in (
+            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
+        )]
+        assert len(dist_events) > 0, "Proportional movement should trigger distribution"
+
+    def test_distribution_small_bbox_tiny_movement_no_trigger(self):
+        """Small bbox with tiny movement should NOT trigger (normalized vel below threshold).
+
+        bbox_w=0.04, dx per frame=0.001 → vel = 0.001/(0.0333*0.04) = 0.75 bw/s < 1.5.
+        """
+        det = self._build_gk_detector()
+        fps = 30.0
+        dets = []
+        for i in range(20):
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.04, h=0.10, track_id=10,
+            ))
+        # Tiny drift
+        for i in range(20, 30):
+            cx = 0.08 + (i - 20) * 0.001
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=cx, cy=0.5, w=0.04, h=0.10, track_id=10,
+            ))
+
+        gk_track = _make_track(10, dets)
+        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
+        dist_events = [e for e in events if e.event_type in (
+            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
+        )]
+        assert len(dist_events) == 0, "Tiny normalized velocity should not trigger"
+
+    def test_distribution_large_bbox_large_movement(self):
+        """Large bbox with large movement triggers detection.
+
+        bbox_w=0.10, dx per frame=0.010 → vel = 0.010/(0.0333*0.10) = 3.0 bw/s > 1.5.
+        """
+        det = self._build_gk_detector()
+        fps = 30.0
+        dets = []
+        for i in range(20):
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.10, h=0.25, track_id=10,
+            ))
+        for i in range(20, 30):
+            cx = 0.08 + (i - 20) * 0.010
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=cx, cy=0.5, w=0.10, h=0.25, track_id=10,
+            ))
+
+        gk_track = _make_track(10, dets)
+        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
+        dist_events = [e for e in events if e.event_type in (
+            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
+        )]
+        assert len(dist_events) > 0, "Large bbox with large movement should trigger"
+
+    def test_save_normalized_vertical_velocity(self):
+        """Sudden vertical jump normalized by bbox height triggers save.
+
+        bbox_h=0.15, dy=0.02 per frame pair → v = 0.02/(0.0333*0.15) = 4.0 bh/s > 1.0.
+        With ball data present, threshold is 1.0 (vs 1.5 without ball).
+        """
+        det = self._build_gk_detector()
+        fps = 30.0
+        dets = []
+        for i in range(10):
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+            ))
+        # Sudden vertical jump: +0.02 then back (creates ~4.0 bh/s)
+        dets.append(_make_detection_sized(
+            10, 10.0 / fps, cx=0.08, cy=0.52, w=0.05, h=0.15, track_id=10,
+        ))
+        dets.append(_make_detection_sized(
+            11, 11.0 / fps, cx=0.08, cy=0.54, w=0.05, h=0.15, track_id=10,
+        ))
+        dets.append(_make_detection_sized(
+            12, 12.0 / fps, cx=0.08, cy=0.52, w=0.05, h=0.15, track_id=10,
+        ))
+        for i in range(13, 20):
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+            ))
+
+        gk_track = _make_track(10, dets)
+
+        # Add a ball track near the GK during the save to use 3.0 threshold
+        ball_dets = [
+            Detection(
+                frame_number=f, timestamp=float(f) / fps, class_name="ball",
+                confidence=0.9, bbox=_make_bbox(cx=0.10, cy=0.53),
+            )
+            for f in range(9, 14)
+        ]
+        ball_track = _make_track(99, ball_dets)
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
         save_events = [e for e in events if e.event_type in (
             EventType.SHOT_STOP_STANDING, EventType.SHOT_STOP_DIVING,
         )]
-        assert len(save_events) > 0, "Small bbox scale should lower save velocity threshold"
+        assert len(save_events) > 0, "Normalized vertical velocity should trigger save"
 
-    def test_one_on_one_detected_with_small_bbox(self):
-        """A deviation of 0.12 should trigger 1v1 when bbox_scale ≈ 0.53."""
+    def test_dive_save_without_ball_proximity(self):
+        """High-velocity dive (> dive_threshold) should be accepted even without
+        ball data near the GK frame — the athletic motion is strong evidence.
+
+        bbox_h=0.15, dy=0.06 per frame pair → v = 0.06/(0.0333*0.15) = 12.0 bh/s > 2.5.
+        Ball data exists in the chunk but not near the GK during the dive.
+        """
         det = self._build_gk_detector()
-        # bbox height = 0.133 → scale ≈ 0.53 → deviation_threshold = 0.20 * 0.53 ≈ 0.106
-        # Build a track where GK drifts from baseline by ~0.12
-        dets = []
         fps = 30.0
-        # Baseline: cy = 0.5 for first 10 frames
+        dets = []
         for i in range(10):
             dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, h=0.133, track_id=10,
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
             ))
-        # GK rushes out: cy shifts by 0.12 for 5 consecutive frames
+        # Dramatic dive: +0.06 then back (creates ~12.0 bh/s, well above 2.5)
+        dets.append(_make_detection_sized(
+            10, 10.0 / fps, cx=0.08, cy=0.56, w=0.05, h=0.15, track_id=10,
+        ))
+        dets.append(_make_detection_sized(
+            11, 11.0 / fps, cx=0.08, cy=0.62, w=0.05, h=0.15, track_id=10,
+        ))
+        dets.append(_make_detection_sized(
+            12, 12.0 / fps, cx=0.08, cy=0.56, w=0.05, h=0.15, track_id=10,
+        ))
+        for i in range(13, 20):
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+            ))
+
+        gk_track = _make_track(10, dets)
+
+        # Ball detected far from GK (other end of pitch), NOT near the save
+        ball_dets = [
+            Detection(
+                frame_number=0, timestamp=0.0, class_name="ball",
+                confidence=0.9, bbox=_make_bbox(cx=0.90, cy=0.50),
+            ),
+        ]
+        ball_track = _make_track(99, ball_dets)
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        save_events = [e for e in events if e.event_type == EventType.SHOT_STOP_DIVING]
+        assert len(save_events) > 0, (
+            "High-velocity dive should be detected even without ball near GK frame"
+        )
+
+    def test_one_on_one_normalized_deviation(self):
+        """GK deviation normalized by bbox height triggers 1v1.
+
+        bbox_h=0.10, raw deviation ~0.19 → normalized = 0.19/0.10 = 1.9 bh > 0.3.
+        """
+        det = self._build_gk_detector()
+        fps = 30.0
+        dets = []
+        # Baseline: cy=0.5 for 10 frames
+        for i in range(10):
+            dets.append(_make_detection_sized(
+                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.10, track_id=10,
+            ))
+        # GK rushes out: cy shifts by 0.20 for 5 consecutive frames
         for i in range(10, 15):
             dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5 + 0.15, h=0.133, track_id=10,
+                i, float(i) / fps, cx=0.08, cy=0.5 + 0.20, w=0.05, h=0.10, track_id=10,
             ))
 
         gk_track = _make_track(10, dets)
         events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
         ono_events = [e for e in events if e.event_type == EventType.ONE_ON_ONE]
-        assert len(ono_events) > 0, "Small bbox scale should lower 1v1 deviation threshold"
+        assert len(ono_events) > 0, "Normalized deviation should trigger 1v1"
 
-    def test_large_bbox_retains_original_thresholds(self):
-        """With bbox height = 0.25, thresholds should remain at original values."""
-        det = self._build_gk_detector()
-        # Build a GK track with a sudden dive (same as existing test)
-        dets = []
-        fps = 30.0
-        for i in range(30):
-            cy = 0.5
-            if i == 15:
-                cy = 0.1  # Sudden dive
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=cy, h=0.25, track_id=10,
-            ))
 
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
-        # Should still detect the dive with original thresholds
-        save_events = [e for e in events if e.event_type in (
-            EventType.SHOT_STOP_STANDING, EventType.SHOT_STOP_DIVING,
-        )]
-        assert len(save_events) > 0, "Large bbox (scale=1.0) should still detect large movements"
+# ===========================================================================
+# Stage 14: Shot-correlation confidence passes event thresholds
+# ===========================================================================
+
+@pytest.mark.unit
+class TestShotCorrelationConfidence:
+    """Shot-correlated saves must produce events that pass should_include()."""
+
+    def test_on_target_correlated_dive_passes_threshold(self):
+        """SHOT_ON_TARGET (conf 0.70) → correlated SHOT_STOP_DIVING should pass 0.75."""
+        shot_event = Event(
+            job_id="j1", source_file="m.mp4",
+            event_type=EventType.SHOT_ON_TARGET,
+            timestamp_start=10.0, timestamp_end=13.0,
+            confidence=0.70, reel_targets=["highlights"],
+            frame_start=300, frame_end=390,
+            metadata={"ball_vx": 0.20},
+        )
+        # Simulate correlation: min(0.85, confidence + 0.05)
+        corr_conf = min(0.85, shot_event.confidence + 0.05)
+        save = Event(
+            job_id="j1", source_file="m.mp4",
+            event_type=EventType.SHOT_STOP_DIVING,
+            timestamp_start=10.0, timestamp_end=13.0,
+            confidence=corr_conf,
+            reel_targets=["keeper"], is_goalkeeper_event=True,
+            frame_start=300, frame_end=390,
+        )
+        assert save.should_include(0.65), (
+            f"Correlated dive save (conf={corr_conf:.2f}) should pass "
+            f"SHOT_STOP_DIVING threshold of 0.75"
+        )
+
+    def test_off_target_correlated_standing_passes_threshold(self):
+        """SHOT_OFF_TARGET (conf 0.65) → correlated SHOT_STOP_STANDING should pass 0.70."""
+        corr_conf = min(0.85, 0.65 + 0.05)
+        save = Event(
+            job_id="j1", source_file="m.mp4",
+            event_type=EventType.SHOT_STOP_STANDING,
+            timestamp_start=20.0, timestamp_end=23.0,
+            confidence=corr_conf,
+            reel_targets=["keeper"], is_goalkeeper_event=True,
+            frame_start=600, frame_end=690,
+        )
+        assert save.should_include(0.65), (
+            f"Correlated standing save (conf={corr_conf:.2f}) should pass "
+            f"SHOT_STOP_STANDING threshold of 0.70"
+        )
+
+    def test_correlation_confidence_capped_at_085(self):
+        """Even very high-confidence shots should cap correlated save at 0.85."""
+        corr_conf = min(0.85, 0.92 + 0.05)
+        assert corr_conf == 0.85

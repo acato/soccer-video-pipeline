@@ -31,13 +31,6 @@ GOAL_LINE_LEFT_X = 0.0
 GOAL_LINE_RIGHT_X = 105.0
 PITCH_WIDTH = 68.0
 
-# Reference GK bbox height (normalized) for threshold calibration.
-# Thresholds were tuned for a close-camera view where the GK bbox is ~25% of
-# frame height.  For wide-angle footage the GK appears much smaller, so we
-# scale thresholds proportionally.
-REFERENCE_BBOX_HEIGHT = 0.25
-
-
 class GoalkeeperDetector:
     """
     Identifies goalkeeper tracks and classifies GK-specific events.
@@ -210,29 +203,30 @@ class GoalkeeperDetector:
         Classify GK-specific events from the GK track.
         Returns list of Events with reel_targets=[keeper_role].
 
-        Velocity/deviation thresholds are scaled by the GK's apparent size
-        (mean bbox height) so that wide-angle footage with a small GK bbox
-        uses proportionally lower thresholds.
+        All velocity/deviation values are normalized by the GK's own bbox
+        dimensions (width for horizontal, height for vertical) so thresholds
+        are camera-independent ("body-widths/s" or "body-heights/s").
         """
         events = []
 
         if not gk_track.detections:
             return events
 
-        mean_h = sum(d.bbox.height for d in gk_track.detections) / len(gk_track.detections)
-        bbox_scale = max(0.3, min(1.0, mean_h / REFERENCE_BBOX_HEIGHT))
+        n = len(gk_track.detections)
+        mean_w = sum(d.bbox.width for d in gk_track.detections) / n
+        mean_h = sum(d.bbox.height for d in gk_track.detections) / n
 
         log.info(
-            "gk_detector.bbox_scale",
+            "gk_detector.bbox_dims",
             keeper_role=keeper_role,
+            mean_bbox_width=round(mean_w, 4),
             mean_bbox_height=round(mean_h, 4),
-            bbox_scale=round(bbox_scale, 3),
-            num_detections=len(gk_track.detections),
+            num_detections=n,
         )
 
-        events.extend(self._detect_distribution(gk_track, source_fps, keeper_role, bbox_scale))
-        events.extend(self._detect_saves(gk_track, all_tracks, source_fps, keeper_role, bbox_scale))
-        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps, keeper_role, bbox_scale))
+        events.extend(self._detect_distribution(gk_track, source_fps, keeper_role))
+        events.extend(self._detect_saves(gk_track, all_tracks, source_fps, keeper_role))
+        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps, keeper_role))
 
         return events
 
@@ -240,11 +234,11 @@ class GoalkeeperDetector:
 
     def _detect_distribution(
         self, gk_track: Track, fps: float, keeper_role: str = "keeper_a",
-        bbox_scale: float = 1.0,
     ) -> list[Event]:
         """
         Detect goal kicks and distribution from GK track.
         Uses velocity analysis: sudden bbox position change after stationary period.
+        Velocities are normalized by bbox width (body-widths per second).
         """
         events = []
         dets = gk_track.detections
@@ -255,14 +249,25 @@ class GoalkeeperDetector:
         for i in range(1, len(dets)):
             dx = dets[i].bbox.center_x - dets[i-1].bbox.center_x
             dt = dets[i].timestamp - dets[i-1].timestamp
-            velocities.append(abs(dx / dt) if dt > 0 else 0)
+            bbox_w = dets[i].bbox.width or 0.01
+            velocities.append(abs(dx / (dt * bbox_w)) if dt > 0 else 0)
 
-        window = 10
+        threshold = 1.5  # body-widths per second
+        pre_vel_limit = 1.0  # "stationary" in normalized units (jitter ≈ 0.3-0.6)
+        max_post_vel = 0.0
+        best_candidate = None
+
+        # Adaptive window: sparse GK tracks (avg 8 dets/chunk) need small windows
+        window = min(10, max(3, len(velocities) // 3))
         for i in range(window, len(velocities)):
             pre_vel = np.mean(velocities[max(0, i-window):i])
             post_vel = np.mean(velocities[i:min(len(velocities), i+5)])
 
-            if pre_vel < 0.01 and post_vel > 0.12 * bbox_scale:
+            if pre_vel < pre_vel_limit and post_vel > max_post_vel:
+                max_post_vel = post_vel
+                best_candidate = (pre_vel, post_vel)
+
+            if pre_vel < pre_vel_limit and post_vel > threshold:
                 det = dets[i]
                 event_type = self._classify_distribution_type(det)
                 vel_ratio = post_vel / max(pre_vel, 0.001)
@@ -288,15 +293,26 @@ class GoalkeeperDetector:
                     },
                 ))
 
+        if not events:
+            log.debug(
+                "gk_detector.distribution_miss",
+                num_dets=len(dets),
+                max_post_vel=round(max_post_vel, 4),
+                threshold=threshold,
+                best_candidate=best_candidate,
+                keeper_role=keeper_role,
+            )
+
         return events
 
     def _detect_saves(
         self, gk_track: Track, all_tracks: list[Track], fps: float,
-        keeper_role: str = "keeper_a", bbox_scale: float = 1.0,
+        keeper_role: str = "keeper_a",
     ) -> list[Event]:
         """
         Detect save events: GK makes sudden vertical or lateral movement
         coinciding with ball proximity.
+        Velocities are normalized by bbox height (body-heights per second).
         """
         events = []
         dets = gk_track.detections
@@ -310,8 +326,9 @@ class GoalkeeperDetector:
                     ball_positions[det.frame_number] = (det.bbox.center_x, det.bbox.center_y)
         has_ball_data = len(ball_positions) > 0
 
-        vel_threshold = (0.25 if has_ball_data else 0.35) * bbox_scale
-        dive_threshold = 0.40 * bbox_scale
+        vel_threshold = 1.0 if has_ball_data else 1.5  # body-heights per second
+        dive_threshold = 2.5  # body-heights per second
+        max_vertical_velocity = 0.0
 
         for i in range(1, len(dets) - 1):
             prev, curr, nxt = dets[i-1], dets[i], dets[i+1]
@@ -324,9 +341,13 @@ class GoalkeeperDetector:
             if dt_prev <= 0 or dt_next <= 0:
                 continue
 
-            v_prev = dy_prev / dt_prev
-            v_next = dy_next / dt_next
+            bbox_h = curr.bbox.height or 0.01
+            v_prev = dy_prev / (dt_prev * bbox_h)
+            v_next = dy_next / (dt_next * bbox_h)
             vertical_velocity = (v_prev + v_next) / 2.0
+
+            if vertical_velocity > max_vertical_velocity:
+                max_vertical_velocity = vertical_velocity
 
             if vertical_velocity <= vel_threshold:
                 continue
@@ -334,14 +355,22 @@ class GoalkeeperDetector:
             ball_distance = None
             gk_x, gk_y = curr.bbox.center_x, curr.bbox.center_y
             frame = curr.frame_number
-            for f_offset in range(-2, 3):
+            # ±5 frames covers adjacent detection-step frames even at step=3
+            for f_offset in range(-5, 6):
                 if (frame + f_offset) in ball_positions:
                     bx, by = ball_positions[frame + f_offset]
                     dist = ((gk_x - bx) ** 2 + (gk_y - by) ** 2) ** 0.5
                     if ball_distance is None or dist < ball_distance:
                         ball_distance = dist
 
-            if has_ball_data and (ball_distance is None or ball_distance > 0.15):
+            # For sub-dive velocities, require ball proximity when available.
+            # For dive-threshold velocities (unmistakable athletic motion),
+            # only reject if the ball is confirmed far away — allow missing
+            # ball data since the dive itself is strong evidence.
+            if vertical_velocity <= dive_threshold:
+                if has_ball_data and (ball_distance is None or ball_distance > 0.15):
+                    continue
+            elif has_ball_data and ball_distance is not None and ball_distance > 0.30:
                 continue
 
             event_type = (
@@ -378,30 +407,45 @@ class GoalkeeperDetector:
                 metadata=metadata,
             ))
 
+        if not events:
+            log.debug(
+                "gk_detector.saves_miss",
+                num_dets=len(dets),
+                max_vertical_velocity=round(max_vertical_velocity, 4),
+                vel_threshold=round(vel_threshold, 4),
+                has_ball_data=has_ball_data,
+                keeper_role=keeper_role,
+            )
+
         return self._merge_nearby_events(events, min_gap_sec=2.0)
 
     def _detect_one_on_ones(
         self, gk_track: Track, all_tracks: list[Track], fps: float,
-        keeper_role: str = "keeper_a", bbox_scale: float = 1.0,
+        keeper_role: str = "keeper_a",
     ) -> list[Event]:
         """
         Detect one-on-one: GK moves significantly away from goal line.
         Requires 3 consecutive frames beyond threshold to filter noise.
+        Deviation is normalized by bbox height (body-heights from baseline).
         """
         events = []
         dets = gk_track.detections
         if len(dets) < 4:
             return events
 
-        deviation_threshold = 0.20 * bbox_scale
+        deviation_threshold = 0.3  # body-heights from baseline
         consecutive_required = 3
+        max_deviation = 0.0
 
         center_y_values = [d.bbox.center_y for d in dets]
         consecutive_count = 0
 
         for i, det in enumerate(dets):
             baseline_y = np.mean(center_y_values[:max(1, i)])
-            deviation = abs(det.bbox.center_y - baseline_y)
+            deviation = abs(det.bbox.center_y - baseline_y) / (det.bbox.height or 0.01)
+
+            if deviation > max_deviation:
+                max_deviation = deviation
 
             if deviation > deviation_threshold:
                 consecutive_count += 1
@@ -435,6 +479,15 @@ class GoalkeeperDetector:
                     },
                 ))
                 consecutive_count = 0
+
+        if not events:
+            log.debug(
+                "gk_detector.one_on_one_miss",
+                num_dets=len(dets),
+                max_deviation=round(max_deviation, 4),
+                deviation_threshold=round(deviation_threshold, 4),
+                keeper_role=keeper_role,
+            )
 
         return self._merge_nearby_events(events, min_gap_sec=5.0)
 

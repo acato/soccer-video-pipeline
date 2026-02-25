@@ -40,12 +40,13 @@ def classify_highlights_events(
     - Tackle: rapid proximity + sudden velocity change between two tracks
     """
     events = []
-    ball_tracks = [t for t in tracks if any(d.class_name == "ball" for d in t.detections)]
     player_tracks = [t for t in tracks if any(d.class_name in ("player", "goalkeeper") for d in t.detections)]
 
     # ── Shot detection via ball velocity ──────────────────────────────────
-    for ball_track in ball_tracks:
-        events.extend(_detect_shots(ball_track, job_id, source_file, source_fps))
+    # Ball detections may be mixed into player tracks by class-agnostic
+    # ByteTrack, so scan ALL tracks for ball detections instead of filtering
+    # for dedicated ball tracks.
+    events.extend(_detect_shots_from_all(tracks, job_id, source_file, source_fps))
 
     # ── Tackle detection via player proximity ─────────────────────────────
     events.extend(_detect_tackles(player_tracks, job_id, source_file, source_fps))
@@ -56,44 +57,76 @@ def classify_highlights_events(
     return events
 
 
-def _detect_shots(
-    ball_track: Track, job_id: str, source_file: str, fps: float
+def _detect_shots_from_all(
+    tracks: list[Track], job_id: str, source_file: str, fps: float
 ) -> list[Event]:
-    """Detect shots: ball with increasing horizontal velocity near goal area."""
-    events = []
-    dets = ball_track.detections
-    if len(dets) < 4:
-        return events
+    """Detect shots by scanning ALL tracks for ball detections.
 
-    for i in range(2, len(dets) - 1):
-        prev, curr = dets[i-2], dets[i]
-        dt = curr.timestamp - prev.timestamp
-        if dt <= 0:
+    ByteTrack is class-agnostic so ball detections often get merged into player
+    tracks.  We collect every ball detection across all tracks, sort by frame,
+    then compute inter-frame velocities to find shots.
+    """
+    from src.detection.models import BoundingBox
+
+    # Collect all ball detections across every track
+    ball_dets: list[tuple[int, float, float, float, BoundingBox]] = []
+    for track in tracks:
+        for det in track.detections:
+            if det.class_name == "ball":
+                ball_dets.append((
+                    det.frame_number, det.timestamp,
+                    det.bbox.center_x, det.bbox.center_y, det.bbox,
+                ))
+
+    if len(ball_dets) < 4:
+        return []
+
+    ball_dets.sort(key=lambda d: d[0])  # sort by frame
+
+    events = []
+    for i in range(2, len(ball_dets) - 1):
+        f_prev, t_prev, x_prev, y_prev, _ = ball_dets[i - 2]
+        f_curr, t_curr, x_curr, y_curr, bbox_curr = ball_dets[i]
+        dt = t_curr - t_prev
+        if dt <= 0 or dt > 2.0:  # skip if > 2s gap (different play)
             continue
 
-        vx = abs(curr.bbox.center_x - prev.bbox.center_x) / dt
-        vy = abs(curr.bbox.center_y - prev.bbox.center_y) / dt
+        vx_signed = (x_curr - x_prev) / dt  # Signed: positive = moving right
+        vy = abs(y_curr - y_prev) / dt
+        vx = abs(vx_signed)
         speed = (vx**2 + vy**2) ** 0.5
 
-        # High speed ball near goal (top or bottom 15% of frame = near goal)
-        near_goal = curr.bbox.center_y < 0.2 or curr.bbox.center_y > 0.8
-        near_sides = curr.bbox.center_x < 0.1 or curr.bbox.center_x > 0.9
+        near_goal = y_curr < 0.25 or y_curr > 0.75
+        near_sides = x_curr < 0.15 or x_curr > 0.85
 
-        if speed > 0.4 and (near_goal or near_sides):
+        # High-speed ball (>0.30) is almost certainly a shot regardless of
+        # position — covers shots from outside the box, corners, etc.
+        is_shot = (speed > 0.30) or (speed > 0.15 and (near_goal or near_sides))
+
+        if is_shot:
             event_type = EventType.SHOT_ON_TARGET if near_goal else EventType.SHOT_OFF_TARGET
             events.append(Event(
                 job_id=job_id,
                 source_file=source_file,
                 event_type=event_type,
-                timestamp_start=max(0, prev.timestamp - 1.0),
-                timestamp_end=curr.timestamp + 3.0,
+                timestamp_start=max(0, t_prev - 1.0),
+                timestamp_end=t_curr + 3.0,
                 confidence=min(0.90, 0.55 + speed * 0.5),
                 reel_targets=EVENT_REEL_MAP[event_type],
-                frame_start=prev.frame_number,
-                frame_end=curr.frame_number + int(3 * fps),
-                bounding_box=curr.bbox,
-                metadata={"ball_speed_px_per_sec": speed},
+                frame_start=f_prev,
+                frame_end=f_curr + int(3 * fps),
+                bounding_box=bbox_curr,
+                metadata={
+                    "ball_speed": round(speed, 4),
+                    "ball_vx": round(vx_signed, 4),
+                },
             ))
+
+    log.debug(
+        "highlights.shot_detection",
+        ball_detections=len(ball_dets),
+        shots_found=len(events),
+    )
 
     return _merge_nearby(events, 2.0)
 
@@ -362,6 +395,77 @@ class PipelineRunner:
             # Highlights events
             hl_events = classify_highlights_events(tracks, self.job_id, self.video_file.path, fps)
             chunk_events.extend(hl_events)
+
+            # Shot-correlation: every shot heading toward our GK → keeper event.
+            # Uses ball velocity direction (ball_vx) instead of ball position,
+            # because the ball is detected mid-trajectory (not at the goal).
+            for hl_ev in hl_events:
+                if hl_ev.event_type not in (EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET):
+                    continue
+                ball_vx = hl_ev.metadata.get("ball_vx", 0)
+                for keeper_role in ("keeper_a", "keeper_b"):
+                    reel_label = self.gk_detector.reel_label_for(keeper_role)
+                    if reel_label is None:
+                        continue
+                    gk_id = gk_ids.get(keeper_role)
+                    if gk_id is None:
+                        continue
+                    # Determine GK position to check ball direction
+                    gk_tracks = [t for t in tracks if t.track_id == gk_id]
+                    if not gk_tracks or not gk_tracks[0].detections:
+                        continue
+                    gk_mean_x = sum(d.bbox.center_x for d in gk_tracks[0].detections) / len(gk_tracks[0].detections)
+                    gk_on_right = gk_mean_x > 0.5
+                    # Ball heading right (vx>0) → toward right-side GK
+                    # Ball heading left (vx<0) → toward left-side GK
+                    # ball_vx==0 means no direction info — allow as fallback
+                    shot_heading_right = ball_vx > 0
+                    shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
+                    if not shot_toward_gk:
+                        log.debug(
+                            "gk_detector.shot_correlation_skip",
+                            keeper_role=reel_label,
+                            ball_vx=round(ball_vx, 4),
+                            gk_mean_x=round(gk_mean_x, 4),
+                            reason="ball_heading_away",
+                        )
+                        continue
+                    save_type = (
+                        EventType.SHOT_STOP_DIVING
+                        if hl_ev.event_type == EventType.SHOT_ON_TARGET
+                        else EventType.SHOT_STOP_STANDING
+                    )
+                    # Direction-validated shot toward GK: boost confidence
+                    # slightly (+0.05) since direction check adds certainty.
+                    # Cap at 0.85 so direct-detection saves still rank higher.
+                    corr_conf = min(0.85, hl_ev.confidence + 0.05)
+                    chunk_events.append(Event(
+                        job_id=self.job_id,
+                        source_file=self.video_file.path,
+                        event_type=save_type,
+                        timestamp_start=hl_ev.timestamp_start,
+                        timestamp_end=hl_ev.timestamp_end,
+                        confidence=corr_conf,
+                        reel_targets=[reel_label],
+                        player_track_id=gk_id,
+                        is_goalkeeper_event=True,
+                        frame_start=hl_ev.frame_start,
+                        frame_end=hl_ev.frame_end,
+                        bounding_box=hl_ev.bounding_box,
+                        metadata={
+                            "detection_method": "shot_correlation",
+                            "source_shot_type": hl_ev.event_type.value,
+                            "ball_vx": round(ball_vx, 4),
+                        },
+                    ))
+                    log.info(
+                        "gk_detector.shot_correlated_save",
+                        keeper_role=reel_label,
+                        shot_type=hl_ev.event_type.value,
+                        timestamp=hl_ev.timestamp_start,
+                        ball_vx=round(ball_vx, 4),
+                        gk_mean_x=round(gk_mean_x, 4),
+                    )
 
             # Filter by confidence and write to log
             passing = [e for e in chunk_events if e.should_include(self.min_confidence)]

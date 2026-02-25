@@ -237,12 +237,14 @@ function renderJobs(jobs) {
     const created = new Date(job.created_at).toLocaleString();
     const filename = job.video_file?.filename || '—';
 
-    const reelLinks = (job.reel_types || []).map(rt => {
-      if (job.output_paths && job.output_paths[rt]) {
-        return `<a class="reel-link" href="/reels/${job.job_id}/${rt}/download" target="_blank">⬇ ${rt}</a>`;
-      }
-      return `<span style="color:#8b949e;font-size:12px">${rt}</span>`;
-    }).join('');
+    const produced = Object.keys(job.output_paths || {});
+    const requested = job.reel_types || [];
+    const missing = requested.filter(rt => !produced.includes(rt));
+    const reelLinks = produced.map(rt =>
+      `<a class="reel-link" href="/reels/${job.job_id}/${rt}/download" target="_blank">⬇ ${rt}</a>`
+    ).join('') + (missing.length && job.status === 'complete'
+      ? missing.map(rt => `<span style="color:#f85149;font-size:11px" title="No ${rt} events detected">✕ ${rt}</span>`).join('')
+      : missing.map(rt => `<span style="color:#8b949e;font-size:11px">${rt}</span>`).join(''));
 
     const retryBtn = job.status === 'failed'
       ? `<button class="btn btn-sm" onclick="retryJob('${job.job_id}')">↩ Retry</button>`
@@ -350,6 +352,7 @@ setInterval(loadJobs, 10000);
 
 
 @router.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+@router.get("/ui/", response_class=HTMLResponse, include_in_schema=False)
 async def monitoring_ui():
     """Embedded monitoring dashboard."""
     return HTMLResponse(_UI_HTML, headers={"Cache-Control": "no-store"})
