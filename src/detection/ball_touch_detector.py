@@ -381,6 +381,7 @@ class BallTouchDetector:
     ) -> list[Event]:
         """
         For each touch frame, find the nearest player and classify by jersey.
+        Then post-filter: reclassify dead-ball collections as goal kicks.
         """
         from src.detection.jersey_classifier import (
             compute_jersey_similarity,
@@ -461,7 +462,149 @@ class BallTouchDetector:
             if event is not None:
                 events.append(event)
 
+        # Post-filter: reclassify dead-ball collections → goal kicks
+        events = self._reclassify_dead_ball_collections(events, trajectory, fps)
+
         return events
+
+    def _reclassify_dead_ball_collections(
+        self,
+        events: list[Event],
+        trajectory: BallTrajectory,
+        fps: float,
+    ) -> list[Event]:
+        """
+        Detect dead-ball → goal kick sequences and reclassify.
+
+        Pattern: GK collects ball (save/catch) → ball stationary for >1s →
+        ball kicked (speed spike).  The collection is dead time, not a save.
+        Replace with a GOAL_KICK event at the kick moment.
+
+        Also suppresses save/catch events where the ball was already slow
+        before the GK touched it (dead-ball retrieval, not a shot).
+        """
+        if not events:
+            return events
+
+        result: list[Event] = []
+        frames = trajectory.frames
+
+        # Minimum stationary duration to qualify as "placed for goal kick"
+        min_stationary_sec = 1.0
+        # Maximum speed to be considered stationary (normalized coords/sec)
+        stationary_speed = 0.05
+        # How far ahead to look for the kick (seconds)
+        lookahead_sec = 10.0
+
+        for event in events:
+            reason = event.metadata.get("touch_reason", "")
+
+            # Only check save/catch events for dead-ball pattern
+            if event.event_type not in (
+                EventType.SHOT_STOP_STANDING,
+                EventType.SHOT_STOP_DIVING,
+                EventType.CATCH,
+            ):
+                result.append(event)
+                continue
+
+            touch_frame = int(event.frame_end)  # approximate touch frame
+            touch_ts = event.timestamp_end
+            lookahead_end = touch_ts + lookahead_sec
+
+            # Scan trajectory after the touch for stationary period → kick
+            goal_kick = self._find_goal_kick_after(
+                trajectory, frames, fps, touch_ts, lookahead_end,
+                stationary_speed, min_stationary_sec,
+            )
+
+            if goal_kick is not None:
+                kick_ts, kick_frame = goal_kick
+                log.info(
+                    "ball_touch.dead_ball_reclassified",
+                    original_type=event.event_type.value,
+                    original_frame=touch_frame,
+                    kick_frame=kick_frame,
+                    kick_ts=round(kick_ts, 1),
+                )
+                # Replace save/catch with GOAL_KICK at kick moment
+                result.append(Event(
+                    job_id=event.job_id,
+                    source_file=event.source_file,
+                    event_type=EventType.GOAL_KICK,
+                    timestamp_start=max(0, kick_ts - 0.5),
+                    timestamp_end=kick_ts + 2.0,
+                    confidence=event.confidence,
+                    reel_targets=["keeper"],
+                    player_track_id=event.player_track_id,
+                    is_goalkeeper_event=True,
+                    frame_start=max(0, int((kick_ts - 0.5) * fps)),
+                    frame_end=int((kick_ts + 2.0) * fps),
+                    bounding_box=event.bounding_box,
+                    metadata={
+                        "detection_method": "ball_touch",
+                        "touch_reason": "goal_kick",
+                        "original_reason": reason,
+                        "sim_team_gk": event.metadata.get("sim_team_gk"),
+                        "player_track_id": event.player_track_id,
+                    },
+                ))
+            else:
+                result.append(event)
+
+        return result
+
+    @staticmethod
+    def _find_goal_kick_after(
+        trajectory: BallTrajectory,
+        frames: list[int],
+        fps: float,
+        touch_ts: float,
+        lookahead_end: float,
+        stationary_speed: float,
+        min_stationary_sec: float,
+    ) -> Optional[tuple[float, int]]:
+        """
+        Look for a stationary-then-kick pattern after a touch.
+
+        Returns (kick_timestamp, kick_frame) if found, else None.
+        """
+        # Find frames in the lookahead window
+        post_frames = [
+            f for f in frames
+            if trajectory.timestamp_at(f) is not None
+            and touch_ts < trajectory.timestamp_at(f) <= lookahead_end
+        ]
+
+        if len(post_frames) < 5:
+            return None
+
+        # Find a stationary period: consecutive frames with low speed
+        stationary_start_ts = None
+        stationary_frames = 0
+
+        for i, frame in enumerate(post_frames):
+            speed = trajectory.speed_at(frame, window=3)
+            if speed is None:
+                continue
+
+            if speed < stationary_speed:
+                if stationary_start_ts is None:
+                    stationary_start_ts = trajectory.timestamp_at(frame)
+                stationary_frames += 1
+            else:
+                # Ball moving again — was it stationary long enough?
+                if (stationary_start_ts is not None
+                        and stationary_frames >= 3):
+                    current_ts = trajectory.timestamp_at(frame)
+                    if current_ts - stationary_start_ts >= min_stationary_sec:
+                        # Ball was placed, now kicked — this is the goal kick
+                        return (current_ts, frame)
+                # Reset
+                stationary_start_ts = None
+                stationary_frames = 0
+
+        return None
 
     def _classify_touch(
         self,

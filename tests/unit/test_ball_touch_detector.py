@@ -622,3 +622,220 @@ class TestBallTouchIntegration:
         assert len(merged) == 1
         assert merged[0].confidence == 0.85
         assert merged[0].timestamp_end == 11.5
+
+
+# ===========================================================================
+# Dead-ball reclassification tests
+# ===========================================================================
+
+@pytest.mark.unit
+class TestDeadBallReclassification:
+    """
+    Tests for _reclassify_dead_ball_collections:
+    GK collects ball → ball stationary >1s → kicked → reclassify as GOAL_KICK.
+    """
+
+    def _make_detector(self, **kwargs) -> BallTouchDetector:
+        mc = make_match_config()
+        defaults = dict(
+            job_id="job-001",
+            source_file="match.mp4",
+            match_config=mc,
+        )
+        defaults.update(kwargs)
+        return BallTouchDetector(**defaults)
+
+    def _make_save_event(self, ts: float = 10.0, fps: float = 30.0,
+                         event_type=EventType.CATCH) -> Event:
+        """Create a save/catch event at the given timestamp."""
+        return Event(
+            job_id="job-001",
+            source_file="match.mp4",
+            event_type=event_type,
+            timestamp_start=max(0, ts - 0.5),
+            timestamp_end=ts + 0.5,
+            confidence=0.80,
+            reel_targets=["keeper"],
+            is_goalkeeper_event=True,
+            frame_start=max(0, int((ts - 0.5) * fps)),
+            frame_end=int((ts + 0.5) * fps),
+            metadata={
+                "detection_method": "ball_touch",
+                "touch_reason": "ball_caught",
+                "sim_team_gk": 0.75,
+                "player_track_id": 99,
+            },
+        )
+
+    def _build_trajectory_with_stationary(
+        self, fps: float = 30.0, touch_ts: float = 10.0,
+        stationary_dur: float = 2.0, kick_speed: float = 0.04,
+    ) -> BallTrajectory:
+        """
+        Build a trajectory: ball moving → stationary for stationary_dur → kicked.
+        touch_ts is when the GK catches the ball, then it goes stationary.
+        """
+        dets = []
+        # Pre-touch: ball moving fast toward GK (before the catch event)
+        for i in range(int(touch_ts * fps) - 30, int(touch_ts * fps)):
+            t = i / fps
+            dets.append(_ball_det(i, t, 0.30 - (int(touch_ts * fps) - i) * 0.005, 0.50))
+
+        # Post-touch: ball stationary (GK placed it)
+        stationary_start = touch_ts + 0.5  # just after the catch event ends
+        stationary_end = stationary_start + stationary_dur
+        for i in range(int(stationary_start * fps), int(stationary_end * fps)):
+            t = i / fps
+            dets.append(_ball_det(i, t, 0.10, 0.50))  # ball sitting still
+
+        # Kick: ball starts moving again
+        kick_start = stationary_end
+        for i in range(int(kick_start * fps), int(kick_start * fps) + 15):
+            t = i / fps
+            dets.append(_ball_det(i, t, 0.10 + (i - int(kick_start * fps)) * kick_speed, 0.50))
+
+        track = _ball_track(1, dets)
+        return BallTrajectory().build([track])
+
+    def test_catch_then_stationary_then_kick_becomes_goal_kick(self):
+        """GK catches ball, places it, kicks → GOAL_KICK replaces CATCH."""
+        fps = 30.0
+        save_event = self._make_save_event(ts=10.0, fps=fps)
+        trajectory = self._build_trajectory_with_stationary(
+            fps=fps, touch_ts=10.0, stationary_dur=2.0, kick_speed=0.04,
+        )
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([save_event], trajectory, fps)
+
+        assert len(result) == 1
+        assert result[0].event_type == EventType.GOAL_KICK
+        assert result[0].is_goalkeeper_event
+        assert "keeper" in result[0].reel_targets
+        assert result[0].metadata["touch_reason"] == "goal_kick"
+        assert result[0].metadata["original_reason"] == "ball_caught"
+
+    def test_standing_stop_reclassified_too(self):
+        """SHOT_STOP_STANDING followed by stationary+kick → GOAL_KICK."""
+        fps = 30.0
+        save_event = self._make_save_event(
+            ts=10.0, fps=fps, event_type=EventType.SHOT_STOP_STANDING,
+        )
+        save_event.metadata["touch_reason"] = "speed_drop"
+        trajectory = self._build_trajectory_with_stationary(
+            fps=fps, touch_ts=10.0, stationary_dur=2.0, kick_speed=0.04,
+        )
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([save_event], trajectory, fps)
+
+        assert len(result) == 1
+        assert result[0].event_type == EventType.GOAL_KICK
+
+    def test_no_stationary_period_keeps_save(self):
+        """If ball doesn't go stationary after catch, keep original event."""
+        fps = 30.0
+        save_event = self._make_save_event(ts=10.0, fps=fps)
+
+        # Build trajectory where ball bounces immediately after touch (no stationary)
+        dets = []
+        for i in range(int(10.0 * fps) - 30, int(10.0 * fps)):
+            t = i / fps
+            dets.append(_ball_det(i, t, 0.30 - (int(10.0 * fps) - i) * 0.005, 0.50))
+        # Ball continues moving after touch (deflection, not placed)
+        for i in range(int(10.5 * fps), int(10.5 * fps) + 30):
+            t = i / fps
+            dets.append(_ball_det(i, t, 0.10 + (i - int(10.5 * fps)) * 0.02, 0.40))
+        trajectory = BallTrajectory().build([_ball_track(1, dets)])
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([save_event], trajectory, fps)
+
+        assert len(result) == 1
+        assert result[0].event_type == EventType.CATCH  # preserved
+
+    def test_short_stationary_keeps_save(self):
+        """Ball stationary for <1s → not a goal kick, keep original."""
+        fps = 30.0
+        save_event = self._make_save_event(ts=10.0, fps=fps)
+        trajectory = self._build_trajectory_with_stationary(
+            fps=fps, touch_ts=10.0, stationary_dur=0.5, kick_speed=0.04,
+        )
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([save_event], trajectory, fps)
+
+        assert len(result) == 1
+        assert result[0].event_type == EventType.CATCH  # kept as save
+
+    def test_non_save_events_pass_through(self):
+        """Non-save events (distribution, goals) are not reclassified."""
+        fps = 30.0
+        dist_event = Event(
+            job_id="job-001", source_file="match.mp4",
+            event_type=EventType.DISTRIBUTION_LONG,
+            timestamp_start=10.0, timestamp_end=11.0, confidence=0.80,
+            reel_targets=["keeper"], is_goalkeeper_event=True,
+            frame_start=300, frame_end=330,
+            metadata={"detection_method": "ball_touch", "touch_reason": "speed_spike"},
+        )
+        trajectory = self._build_trajectory_with_stationary(
+            fps=fps, touch_ts=10.0, stationary_dur=2.0,
+        )
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([dist_event], trajectory, fps)
+
+        assert len(result) == 1
+        assert result[0].event_type == EventType.DISTRIBUTION_LONG  # unchanged
+
+    def test_mixed_events_only_saves_reclassified(self):
+        """Mix of saves and non-saves: only saves with dead-ball pattern change."""
+        fps = 30.0
+        save = self._make_save_event(ts=10.0, fps=fps)
+        shot = Event(
+            job_id="job-001", source_file="match.mp4",
+            event_type=EventType.SHOT_ON_TARGET,
+            timestamp_start=20.0, timestamp_end=21.0, confidence=0.70,
+            reel_targets=["highlights"], is_goalkeeper_event=False,
+            frame_start=600, frame_end=630,
+            metadata={"detection_method": "ball_touch", "touch_reason": "speed_drop"},
+        )
+        trajectory = self._build_trajectory_with_stationary(
+            fps=fps, touch_ts=10.0, stationary_dur=2.0,
+        )
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([save, shot], trajectory, fps)
+
+        assert len(result) == 2
+        assert result[0].event_type == EventType.GOAL_KICK  # reclassified
+        assert result[1].event_type == EventType.SHOT_ON_TARGET  # unchanged
+
+    def test_goal_kick_event_compatible_with_distribution_plugin(self):
+        """Reclassified GOAL_KICK events have correct fields for KeeperDistributionPlugin."""
+        fps = 30.0
+        save_event = self._make_save_event(ts=10.0, fps=fps)
+        trajectory = self._build_trajectory_with_stationary(
+            fps=fps, touch_ts=10.0, stationary_dur=2.0,
+        )
+
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([save_event], trajectory, fps)
+
+        assert len(result) == 1
+        gk_event = result[0]
+        assert gk_event.event_type == EventType.GOAL_KICK
+        assert gk_event.is_goalkeeper_event
+        assert "keeper" in gk_event.reel_targets
+        # Verify it would be picked up by KeeperDistributionPlugin
+        from src.reel_plugins.keeper import KeeperDistributionPlugin, _DISTRIBUTION_TYPES
+        assert gk_event.event_type in _DISTRIBUTION_TYPES
+
+    def test_empty_events_returns_empty(self):
+        """Empty event list → empty result."""
+        fps = 30.0
+        trajectory = self._build_trajectory_with_stationary(fps=fps, touch_ts=10.0)
+        det = self._make_detector()
+        result = det._reclassify_dead_ball_collections([], trajectory, fps)
+        assert result == []
