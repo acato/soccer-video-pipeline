@@ -128,6 +128,8 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     from src.detection.goalkeeper_detector import GoalkeeperDetector
     from src.detection.player_detector import PlayerDetector
     from src.ingestion.models import JobStatus
+    from src.reel_plugins.base import PipelineContext
+    from src.reel_plugins.registry import PluginRegistry
     from src.segmentation.clipper import compute_clips
     from src.segmentation.deduplicator import postprocess_clips
 
@@ -185,66 +187,97 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     all_events = event_log.read_all()
     event_conf_map = {e.event_id: e.confidence for e in all_events}
 
+    # Build plugin registry — use env override or default built-ins
+    plugin_cfg = getattr(cfg, "REEL_PLUGINS", None)
+    if isinstance(plugin_cfg, str) and plugin_cfg.strip():
+        plugin_names = [n.strip() for n in plugin_cfg.split(",") if n.strip()]
+        registry = PluginRegistry.from_config(plugin_names)
+    else:
+        registry = PluginRegistry.default()
+
+    ctx = PipelineContext(
+        video_duration_sec=vf.duration_sec,
+        match_config=job.match_config,
+        keeper_track_ids=getattr(runner, "keeper_ids", {}) or {},
+        job_id=job_id,
+    )
+
+    # Only produce reels the job requested.
+    requested_reels = set(job.reel_types)
+
     clips_by_reel: dict[str, list] = {}
-    for reel_type in job.reel_types:
-        # Keeper clips need tight padding (action + brief aftermath).
-        # Highlights need more context for the viewer.
-        if reel_type in ("keeper", "keeper_a", "keeper_b"):
-            pre_pad, post_pad = 1.5, 1.5
-            max_clip_dur = 15.0
-        else:
-            pre_pad = float(cfg.PRE_EVENT_PAD_SEC)    # default 3.0
-            post_pad = float(cfg.POST_EVENT_PAD_SEC)   # default 5.0
-            max_clip_dur = 90.0
-        raw_clips = compute_clips(
-            events=all_events,
-            video_duration=vf.duration_sec,
-            reel_type=reel_type,
-            pre_pad=pre_pad,
-            post_pad=post_pad,
-            max_clip_duration_sec=max_clip_dur,
-        )
+    for reel_name in registry.get_all_reel_names():
+        # Skip reels not requested by this job.  Match both exact
+        # ("keeper") and prefix ("keeper" matches job's "keeper_a").
+        if not any(
+            reel_name == rt or reel_name.startswith(rt + "_") or rt.startswith(reel_name + "_")
+            or reel_name == rt
+            for rt in requested_reels
+        ):
+            continue
+
+        plugins = registry.get_plugins_for_reel(reel_name)
+        reel_clips: list = []
+        for plugin in plugins:
+            selected = plugin.select_events(all_events, ctx)
+            if not selected:
+                continue
+            p = plugin.clip_params
+            raw_clips = compute_clips(
+                events=selected,
+                video_duration=vf.duration_sec,
+                reel_type=reel_name,
+                pre_pad=p.pre_pad_sec,
+                post_pad=p.post_pad_sec,
+                max_clip_duration_sec=p.max_clip_duration_sec,
+            )
+            raw_clips = plugin.post_filter_clips(raw_clips)
+            reel_clips.extend(raw_clips)
+
+        # Merge clips from multiple plugins, then deduplicate.
+        reel_clips.sort(key=lambda c: c.start_sec)
         clips = postprocess_clips(
-            raw_clips,
-            reel_type=reel_type,
+            reel_clips,
+            reel_type=reel_name,
+            max_reel_duration_sec=max(
+                p.max_reel_duration_sec for p in (pl.clip_params for pl in plugins)
+            ) if plugins else None,
             event_confidence_map=event_conf_map,
         )
-        clips_by_reel[reel_type] = clips
-        log.info("pipeline.clips_ready", reel_type=reel_type, clips=len(clips))
+        clips_by_reel[reel_name] = clips
+        log.info("pipeline.clips_ready", reel_type=reel_name, clips=len(clips))
 
     # ── Stage: ASSEMBLING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.ASSEMBLING, progress=70.0)
 
     output_paths: dict[str, str] = {}
-    reel_count = len(job.reel_types)
+    reel_names = [r for r in clips_by_reel if clips_by_reel[r]]
+    reel_count = max(len(reel_names), 1)
 
-    for idx, reel_type in enumerate(job.reel_types):
-        clips = clips_by_reel.get(reel_type, [])
-        if not clips:
-            log.warning("pipeline.no_clips_for_reel", reel_type=reel_type)
-            continue
+    for idx, reel_name in enumerate(reel_names):
+        clips = clips_by_reel[reel_name]
 
         composer = ReelComposer(
             job_id=job_id,
-            reel_type=reel_type,
+            reel_type=reel_name,
             working_dir=str(working),
             codec=cfg.OUTPUT_CODEC,
             crf=int(cfg.OUTPUT_CRF),
         )
 
-        local_reel = str(working / f"{reel_type}_reel.mp4")
+        local_reel = str(working / f"{reel_name}_reel.mp4")
         ok = composer.compose(clips=clips, output_path=local_reel)
         if not ok:
             continue
 
         try:
             nas_path = write_reel_to_nas(
-                local_reel, cfg.NAS_OUTPUT_PATH, job_id, reel_type,
+                local_reel, cfg.NAS_OUTPUT_PATH, job_id, reel_name,
                 max_retries=int(cfg.MAX_NAS_RETRY),
             )
-            output_paths[reel_type] = nas_path
+            output_paths[reel_name] = nas_path
         except Exception as exc:
-            log.error("pipeline.nas_write_failed", reel_type=reel_type, error=str(exc))
+            log.error("pipeline.nas_write_failed", reel_type=reel_name, error=str(exc))
 
         store.update_status(
             job_id, JobStatus.ASSEMBLING,

@@ -267,12 +267,17 @@ class TestGoalkeeperDetectorReelLabels:
         gk_track = _make_track(10, gk_dets)
         gk_track.is_goalkeeper = True
 
-        # Ball approaches GK then disappears (caught) — triggers ball-contact
+        # Fast ball (shot) approaches GK then disappears (caught) — triggers ball-contact
+        # Sparse detections far out, denser near GK (realistic tracking pattern)
         ball_dets = [
             Detection(frame_number=f, timestamp=float(f) / fps, class_name="ball",
-                      confidence=0.9, bbox=_make_bbox(cx=0.08 + (30 - f) * 0.01, cy=0.50))
-            for f in range(6, 28, 3)
+                      confidence=0.9, bbox=_make_bbox(cx=0.08 + (30 - f) * 0.015, cy=0.50))
+            for f in range(6, 25, 3)
         ] + [
+            Detection(frame_number=26, timestamp=26.0 / fps, class_name="ball",
+                      confidence=0.9, bbox=_make_bbox(cx=0.14, cy=0.50)),
+            Detection(frame_number=28, timestamp=28.0 / fps, class_name="ball",
+                      confidence=0.9, bbox=_make_bbox(cx=0.11, cy=0.50)),
             Detection(frame_number=30, timestamp=30.0 / fps, class_name="ball",
                       confidence=0.9, bbox=_make_bbox(cx=0.09, cy=0.50)),
         ]
@@ -356,22 +361,22 @@ class TestKeeperClipComputation:
 
 @pytest.mark.unit
 class TestKeeperTightPadding:
-    """Keeper reels use tighter padding (1.5/1.5) and 15s max clip duration."""
+    """Keeper reels use pre=2.0/post=1.5 padding and 15s max clip duration."""
 
     def test_keeper_tight_padding_produces_shorter_clips(self):
-        """Keeper clips with pre=1.5/post=1.5 should be shorter than default 3.0/5.0."""
+        """Keeper clips with pre=2.0/post=1.5 should be shorter than highlights 3.0/5.0."""
         events = [
             _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper"]),
         ]
-        default_clips = compute_clips(events, 5400.0, "keeper", pre_pad=3.0, post_pad=5.0)
-        tight_clips = compute_clips(events, 5400.0, "keeper", pre_pad=1.5, post_pad=1.5)
-        assert len(default_clips) == 1
-        assert len(tight_clips) == 1
-        default_dur = default_clips[0].end_sec - default_clips[0].start_sec
-        tight_dur = tight_clips[0].end_sec - tight_clips[0].start_sec
-        assert tight_dur < default_dur, "Tight padding should produce shorter clips"
-        # Event is 60-62s → tight clip should be 58.5-63.5 = 5s
-        assert abs(tight_dur - 5.0) < 0.01
+        highlight_clips = compute_clips(events, 5400.0, "keeper", pre_pad=3.0, post_pad=5.0)
+        keeper_clips = compute_clips(events, 5400.0, "keeper", pre_pad=2.0, post_pad=1.5)
+        assert len(highlight_clips) == 1
+        assert len(keeper_clips) == 1
+        hl_dur = highlight_clips[0].end_sec - highlight_clips[0].start_sec
+        keeper_dur = keeper_clips[0].end_sec - keeper_clips[0].start_sec
+        assert keeper_dur < hl_dur, "Keeper padding should produce shorter clips than highlights"
+        # Event is 60-62s → keeper clip should be 58.0-63.5 = 5.5s
+        assert abs(keeper_dur - 5.5) < 0.01
 
     def test_keeper_max_clip_duration_15s(self):
         """Keeper clips should not exceed 15s even when events are close together."""
@@ -382,7 +387,7 @@ class TestKeeperTightPadding:
         ]
         clips = compute_clips(
             events, 5400.0, "keeper",
-            pre_pad=1.5, post_pad=1.5, max_clip_duration_sec=15.0,
+            pre_pad=2.0, post_pad=1.5, max_clip_duration_sec=15.0,
         )
         for clip in clips:
             dur = clip.end_sec - clip.start_sec
@@ -786,8 +791,8 @@ class TestBallContactDetection:
         assert events[0].metadata["detection_method"] == "ball_contact"
         assert events[0].metadata["trajectory_reason"] == "direction_change"
 
-    def test_catch_ball_disappears(self):
-        """Ball approaches GK and disappears (caught) → detected."""
+    def test_catch_fast_shot_detected(self):
+        """Fast ball approaches GK and disappears (save catch) → detected."""
         det = self._build_gk_detector()
         fps = 30.0
         gk_dets = [_make_detection_sized(
@@ -795,20 +800,39 @@ class TestBallContactDetection:
         ) for i in range(60)]
         gk_track = _make_track(10, gk_dets)
 
-        # Ball approaches, reaches GK at frame 30, then no more detections
+        # Fast shot approaches, denser near GK, then disappears (caught)
         ball_frames = (
-            [(f, 0.08 + (30 - f) * 0.01, 0.50) for f in range(6, 28, 3)]
-            + [(30, 0.09, 0.50)]  # contact near GK
+            [(f, 0.08 + (30 - f) * 0.015, 0.50) for f in range(6, 25, 3)]
+            + [(26, 0.14, 0.50), (28, 0.11, 0.50), (30, 0.09, 0.50)]
             # no ball detections after → caught
         )
         ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 
         events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
-        assert len(events) > 0, "Ball caught (disappears) should be detected"
+        assert len(events) > 0, "Fast shot caught (disappears) should be detected"
         assert events[0].metadata["trajectory_reason"] == "ball_caught"
 
-    def test_gk_throw_ball_appears(self):
-        """No ball, then GK throws/kicks — ball appears near GK → detected."""
+    def test_catch_slow_backpass_ignored(self):
+        """Slow ball (back-pass) picked up by GK → NOT detected (buildout noise)."""
+        det = self._build_gk_detector()
+        fps = 30.0
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(60)]
+        gk_track = _make_track(10, gk_dets)
+
+        # Slow ball (back-pass) drifts toward GK then disappears
+        ball_frames = (
+            [(f, 0.08 + (30 - f) * 0.003, 0.50) for f in range(6, 28, 3)]
+            + [(30, 0.09, 0.50)]
+        )
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) == 0, "Slow back-pass pickup should NOT trigger"
+
+    def test_gk_distribution_ignored(self):
+        """GK throw/kick (ball appears and flies away) → NOT detected (distribution)."""
         det = self._build_gk_detector()
         fps = 30.0
         gk_dets = [_make_detection_sized(
@@ -818,14 +842,15 @@ class TestBallContactDetection:
 
         # No ball before, then ball appears near GK and flies away
         ball_frames = (
-            [(30, 0.09, 0.50)]  # ball appears at GK
-            + [(f, 0.09 + (f - 30) * 0.02, 0.50) for f in range(33, 55, 3)]  # flies away
+            [(28, 0.09, 0.50)]
+            + [(30, 0.09, 0.50)]
+            + [(32, 0.10, 0.50)]
+            + [(f, 0.10 + (f - 32) * 0.01, 0.50) for f in range(35, 55, 3)]
         )
         ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 
         events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
-        assert len(events) > 0, "GK throw (ball appears) should be detected"
-        assert events[0].metadata["trajectory_reason"] == "ball_released"
+        assert len(events) == 0, "GK distribution (throw/kick) should NOT trigger"
 
     def test_ball_passing_by_no_event(self):
         """Ball passes near GK without trajectory change → no event.
@@ -880,7 +905,7 @@ class TestBallContactDetection:
         assert len(events) == 0, "No ball data should produce no events"
 
     def test_speed_drop_detected(self):
-        """Ball moving fast toward GK, then nearly stops → speed_drop contact."""
+        """Fast shot toward GK, then nearly stops → speed_drop save."""
         det = self._build_gk_detector()
         fps = 30.0
         gk_dets = [_make_detection_sized(
@@ -888,19 +913,19 @@ class TestBallContactDetection:
         ) for i in range(90)]
         gk_track = _make_track(10, gk_dets)
 
-        # Fast ball approaches, then nearly stops at GK (controlled/caught on ground)
+        # Fast shot (pre_speed > 0.35) approaches, then nearly stops at GK
         ball_frames = (
-            [(f, 0.08 + (45 - f) * 0.015, 0.50) for f in range(6, 43, 3)]  # fast approach
+            [(f, 0.08 + (45 - f) * 0.02, 0.50) for f in range(6, 43, 3)]  # fast approach
             + [(45, 0.09, 0.50)]  # at GK
             + [(f, 0.09 + (f - 45) * 0.001, 0.50) for f in range(48, 76, 3)]  # nearly stopped
         )
         ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 
         events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
-        assert len(events) > 0, "Speed drop at GK should be detected"
+        assert len(events) > 0, "Fast shot stopped by GK should be detected"
 
     def test_event_window_tight(self):
-        """Event window should be ±0.5s (clips add ±1.5s padding → ±2s final)."""
+        """Event window should be ±0.5s (clips add ±2.0/1.5s padding → ~4.5s final)."""
         det = self._build_gk_detector()
         fps = 30.0
         gk_dets = [_make_detection_sized(
@@ -908,10 +933,10 @@ class TestBallContactDetection:
         ) for i in range(60)]
         gk_track = _make_track(10, gk_dets)
 
-        # Ball caught at frame 30
+        # Fast shot caught at frame 30 (denser near GK)
         ball_frames = (
-            [(f, 0.08 + (30 - f) * 0.01, 0.50) for f in range(6, 28, 3)]
-            + [(30, 0.09, 0.50)]
+            [(f, 0.08 + (30 - f) * 0.015, 0.50) for f in range(6, 25, 3)]
+            + [(26, 0.14, 0.50), (28, 0.11, 0.50), (30, 0.09, 0.50)]
         )
         ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 

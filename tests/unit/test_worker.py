@@ -56,6 +56,7 @@ def _make_string_config(tmp_path):
     cfg.OUTPUT_AUDIO_CODEC = "copy"
     cfg.NAS_OUTPUT_PATH = str(tmp_path / "output")
     cfg.MAX_NAS_RETRY = "3"
+    cfg.REEL_PLUGINS = ""
     return cfg
 
 
@@ -172,17 +173,18 @@ class TestRunPipelineTypeCasting:
     def test_compute_clips_receives_float_padding(self, tmp_path):
         from src.detection.models import Event, EventType
 
-        # Keeper reel uses tight padding (1.5/1.5) instead of default (3.0/5.0)
+        # Keeper saves plugin provides tight padding (2.0/1.5)
         event = Event(
             job_id="test-job-001", source_file="match.mp4",
             event_type=EventType.CATCH, timestamp_start=10.0,
             timestamp_end=12.0, confidence=0.80,
             reel_targets=["keeper"], frame_start=300, frame_end=360,
+            is_goalkeeper_event=True,
         )
         mocks = _run_pipeline_with_mocks(tmp_path, events=[event])
         cc_call = mocks["compute_clips"].call_args
         assert isinstance(cc_call.kwargs["pre_pad"], float)
-        assert cc_call.kwargs["pre_pad"] == 1.5
+        assert cc_call.kwargs["pre_pad"] == 2.0
         assert isinstance(cc_call.kwargs["post_pad"], float)
         assert cc_call.kwargs["post_pad"] == 1.5
         assert cc_call.kwargs["max_clip_duration_sec"] == 15.0

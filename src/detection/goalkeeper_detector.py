@@ -156,11 +156,21 @@ class GoalkeeperDetector:
                 if tid in track_positions:
                     self._prev_gk_positions[role] = (track_positions[tid], 0.5)
 
-        # Assign "keeper" label to at most one role (best team match)
+        # Assign "keeper" label to at most one role (best team match).
+        # Require sim_team > 0.55 — below that the color match is too
+        # noisy to trust (e.g. 0.45 vs 0.44 = random).
         if team_candidates:
             team_candidates.sort(key=lambda c: c[2], reverse=True)
-            best_role, best_tid, _ = team_candidates[0]
-            self._gk_reel_labels[best_role] = "keeper"
+            best_role, best_tid, best_sim = team_candidates[0]
+            if best_sim > 0.55:
+                self._gk_reel_labels[best_role] = "keeper"
+            else:
+                self._gk_reel_labels[best_role] = None
+                log.debug(
+                    "gk_detector.keeper_label_rejected",
+                    role=best_role, sim_team=round(best_sim, 3),
+                    reason="below_0.55_threshold",
+                )
             for role, _, _ in team_candidates[1:]:
                 self._gk_reel_labels[role] = None
 
@@ -282,11 +292,11 @@ class GoalkeeperDetector:
         # Sorted ball frame numbers for trajectory lookups.
         sorted_ball_frames = sorted(ball_by_frame.keys())
 
-        # Proximity reach beyond GK bbox edge.  Generous (~goal area)
-        # because the trajectory-change gate handles precision.
-        ARM_REACH = 0.12
+        # Proximity reach beyond GK bbox edge.  Tight: ball must be
+        # within ~1 body-width of the GK to count as a contact.
+        ARM_REACH = 0.06
         # Trajectory analysis window (frames before/after contact).
-        TRAJ_WINDOW = 30  # ~1s at 30fps
+        TRAJ_WINDOW = 15  # ~0.5s at 30fps — tighter window reduces noise
 
         # Use mean GK position for the entire chunk.  The GK stays in
         # the goal area, so the mean is a stable reference — avoids the
@@ -297,6 +307,19 @@ class GoalkeeperDetector:
         mean_cy = sum(d.bbox.center_y for d in dets) / n
         mean_w  = sum((d.bbox.width or 0.05) for d in dets) / n
         mean_h  = sum((d.bbox.height or 0.15) for d in dets) / n
+
+        # Skip if GK is too small (far from camera).  Clips from tiny
+        # GKs show a wide shot where the keeper is a speck — unwatchable.
+        # 0.03 ≈ 58px on 1920px frame = minimum for visible GK action.
+        MIN_GK_WIDTH = 0.03
+        if mean_w < MIN_GK_WIDTH:
+            log.debug(
+                "gk_detector.ball_contacts_gk_too_small",
+                keeper_role=keeper_role,
+                mean_w=round(mean_w, 4),
+                threshold=MIN_GK_WIDTH,
+            )
+            return events
 
         gk_left   = mean_cx - mean_w / 2
         gk_right  = mean_cx + mean_w / 2
@@ -345,13 +368,14 @@ class GoalkeeperDetector:
                 for skip_off in range(-5, 6):
                     seen_ball_frames.add(ball_frame + skip_off)
 
-        if not contact_moments:
+        if not contact_moments or candidates < 2:
             log.debug(
                 "gk_detector.ball_contacts_none",
                 keeper_role=keeper_role,
                 gk_dets=len(dets),
                 ball_frames=len(ball_by_frame),
                 proximity_candidates=candidates,
+                contact_moments=len(contact_moments),
                 min_ball_dist=round(min_dist, 4) if min_dist < float("inf") else None,
             )
             return events
@@ -429,16 +453,33 @@ class GoalkeeperDetector:
         hi2 = bisect.bisect_right(sorted_frames, contact_frame + window)
         post_frames = sorted_frames[lo2:hi2]
 
-        has_pre = len(pre_frames) >= 2
-        has_post = len(post_frames) >= 2
+        has_pre = len(pre_frames) >= 3
+        has_post = len(post_frames) >= 3
 
-        # Ball disappears after contact → catch.
-        if has_pre and not has_post:
-            return "ball_caught"
+        # -- Only detect SAVES (inbound ball), not distributions (outbound). --
+        # Distributions (goal kicks, throws, back-pass pickups) are routine
+        # and flood the reel.  We detect saves by requiring the ball to be
+        # moving fast BEFORE contact (incoming shot/cross).
 
-        # Ball appears after contact → GK throw/kick from hands.
-        if not has_pre and has_post:
-            return "ball_released"
+        # Ball disappears after contact → save catch.
+        # Require fast incoming ball (shot) to distinguish from GK
+        # picking up a slow back-pass.
+        if has_pre and len(post_frames) == 0:
+            # Compute pre-speed to reject slow pickups.
+            if len(pre_frames) >= 2:
+                x0, y0 = ball_by_frame[pre_frames[0]][1], ball_by_frame[pre_frames[0]][2]
+                x1, y1 = ball_by_frame[pre_frames[-1]][1], ball_by_frame[pre_frames[-1]][2]
+                dt = ball_by_frame[pre_frames[-1]][0] - ball_by_frame[pre_frames[0]][0]
+                if dt > 0:
+                    spd = ((x1 - x0)**2 + (y1 - y0)**2)**0.5 / dt
+                    if spd > 0.30:
+                        return "ball_caught"
+            return None
+
+        # Ball appears near GK → distribution (throw/kick).  Skip —
+        # these are outbound actions, not saves.
+        if len(pre_frames) == 0 and has_post:
+            return None  # was "ball_released" — removed to cut buildout noise
 
         if not has_pre or not has_post:
             return None  # not enough data
@@ -463,21 +504,19 @@ class GoalkeeperDetector:
         post_vy = (y1_post - y0_post) / dt_post
         post_speed = (post_vx**2 + post_vy**2) ** 0.5
 
-        # Speed drop → catch/control.
-        if pre_speed > 0.15 and post_speed < pre_speed * 0.4:
+        # Speed drop → save catch/control.  Require fast incoming ball
+        # (>0.35 = shot-level speed) and strong deceleration (>70%).
+        if pre_speed > 0.35 and post_speed < pre_speed * 0.3:
             return "speed_drop"
 
-        # Direction change > 45°.
-        if pre_speed > 0.15 and post_speed > 0.15:
+        # Direction change > 60° — classic deflection save.
+        # Require decent incoming speed (>0.25) to filter slow passes.
+        if pre_speed > 0.25 and post_speed > 0.15:
             dot = pre_vx * post_vx + pre_vy * post_vy
             cos_angle = dot / (pre_speed * post_speed)
             cos_angle = max(-1.0, min(1.0, cos_angle))
-            if cos_angle < 0.707:  # cos(45°) ≈ 0.707
+            if cos_angle < 0.5:  # cos(60°) = 0.5
                 return "direction_change"
-
-        # Speed spike → GK kick/throw (ball was slow/stationary, now fast).
-        if post_speed > 0.3 and (pre_speed < 0.1 or post_speed > pre_speed * 3):
-            return "speed_spike"
 
         return None
 
