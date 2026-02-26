@@ -21,6 +21,9 @@ from src.ingestion.models import VideoFile
 from src.tracking.gk_tracker import MatchDualGoalkeeperTracker
 from src.tracking.tracker import PlayerTracker
 
+# Lazy import to avoid circular dependency — used only when ball_touch_detector is set
+# from src.detection.ball_touch_detector import BallTouchDetector
+
 log = structlog.get_logger(__name__)
 
 
@@ -286,6 +289,7 @@ class PipelineRunner:
         chunk_sec: int = 30,
         overlap_sec: float = 2.0,
         min_confidence: float = 0.65,
+        ball_touch_detector=None,
     ):
         self.job_id = job_id
         self.video_file = video_file
@@ -295,6 +299,7 @@ class PipelineRunner:
         self.chunk_sec = chunk_sec
         self.overlap_sec = overlap_sec
         self.min_confidence = min_confidence
+        self.ball_touch_detector = ball_touch_detector
         self._tracker = PlayerTracker()
         self._gk_tracker = MatchDualGoalkeeperTracker(job_id)
 
@@ -378,22 +383,27 @@ class PipelineRunner:
             # Classify events
             chunk_events: list[Event] = []
 
-            # GK events — only for the team's GK (opponent's label is None)
-            for keeper_role in ("keeper_a", "keeper_b"):
-                gk_id = gk_ids.get(keeper_role)
-                if gk_id is None:
-                    continue
-                reel_label = self.gk_detector.reel_label_for(keeper_role)
-                if reel_label is None:
-                    continue
-                gk_tracks = [t for t in tracks if t.track_id == gk_id]
-                if gk_tracks:
-                    gk_track = gk_tracks[0]
-                    gk_track.is_goalkeeper = True
-                    gk_events = self.gk_detector.classify_gk_events(
-                        gk_track, tracks, fps, keeper_role=reel_label,
-                    )
-                    chunk_events.extend(gk_events)
+            if self.ball_touch_detector is not None:
+                # Ball-first path: trajectory → touches → jersey classification
+                touch_events = self.ball_touch_detector.detect_touches(tracks, fps)
+                chunk_events.extend(touch_events)
+            else:
+                # GK-first path: identify GK → ball contacts near GK
+                for keeper_role in ("keeper_a", "keeper_b"):
+                    gk_id = gk_ids.get(keeper_role)
+                    if gk_id is None:
+                        continue
+                    reel_label = self.gk_detector.reel_label_for(keeper_role)
+                    if reel_label is None:
+                        continue
+                    gk_tracks = [t for t in tracks if t.track_id == gk_id]
+                    if gk_tracks:
+                        gk_track = gk_tracks[0]
+                        gk_track.is_goalkeeper = True
+                        gk_events = self.gk_detector.classify_gk_events(
+                            gk_track, tracks, fps, keeper_role=reel_label,
+                        )
+                        chunk_events.extend(gk_events)
 
             # Highlights events
             hl_events = classify_highlights_events(tracks, self.job_id, self.video_file.path, fps)

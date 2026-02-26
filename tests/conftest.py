@@ -161,6 +161,45 @@ def sample_events_jsonl(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Shared detection helpers — used across test_gk_pipeline and test_ball_touch_detector
+# ---------------------------------------------------------------------------
+
+def make_bbox(cx: float = 0.5, cy: float = 0.5, w: float = 0.05, h: float = 0.15):
+    """Create a BoundingBox centered at (cx, cy) with given width/height."""
+    from src.detection.models import BoundingBox
+    return BoundingBox(x=cx - w / 2, y=cy - h / 2, width=w, height=h)
+
+
+def make_detection(
+    frame: int, ts: float, cls: str = "player", track_id: int = None,
+    cx: float = 0.5, cy: float = 0.5, w: float = 0.05, h: float = 0.15,
+    jersey_hsv: list = None,
+):
+    """Create a Detection with optional jersey HSV metadata."""
+    from src.detection.models import Detection
+    det = Detection(
+        frame_number=frame,
+        timestamp=ts,
+        class_name=cls,
+        confidence=0.9,
+        bbox=make_bbox(cx, cy, w, h),
+        track_id=track_id,
+    )
+    if jersey_hsv is not None:
+        det.metadata["jersey_hsv"] = jersey_hsv
+    return det
+
+
+def make_track(track_id: int, detections: list, jersey_hsv=None):
+    """Create a Track with optional pre-set jersey_color_hsv."""
+    from src.detection.models import Track
+    track = Track(track_id=track_id, detections=detections)
+    if jersey_hsv is not None:
+        track.jersey_color_hsv = jersey_hsv
+    return track
+
+
+# ---------------------------------------------------------------------------
 # Mock config
 # ---------------------------------------------------------------------------
 @pytest.fixture

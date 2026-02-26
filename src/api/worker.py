@@ -165,6 +165,18 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     event_log = EventLog(working / "events.jsonl")
     event_log.clear()  # Remove stale events from previous failed runs
 
+    # Optionally use ball-first touch detector instead of GK-first path
+    ball_touch_detector = None
+    use_ball_touch = str(cfg.USE_BALL_TOUCH_DETECTOR).lower() in ("1", "true", "yes")
+    if use_ball_touch and job.match_config:
+        from src.detection.ball_touch_detector import BallTouchDetector
+        ball_touch_detector = BallTouchDetector(
+            job_id=job_id,
+            source_file=vf.path,
+            match_config=job.match_config,
+        )
+        log.info("worker.ball_touch_detector_enabled", job_id=job_id)
+
     runner = PipelineRunner(
         job_id=job_id,
         video_file=vf,
@@ -174,6 +186,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         chunk_sec=int(cfg.CHUNK_DURATION_SEC),
         overlap_sec=float(cfg.CHUNK_OVERLAP_SEC),
         min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
+        ball_touch_detector=ball_touch_detector,
     )
 
     def on_detect_progress(pct: float):
