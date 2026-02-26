@@ -182,6 +182,7 @@ class _Config:
             "WATCH_POLL_INTERVAL_SEC": ("WATCH_POLL_INTERVAL_SEC", "10.0"),
             "WATCH_STABLE_TIME_SEC": ("WATCH_STABLE_TIME_SEC", "30.0"),
             "PREVENT_SLEEP": ("PREVENT_SLEEP", "true"),
+            "USE_BALL_TOUCH_DETECTOR": ("USE_BALL_TOUCH_DETECTOR", "false"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
