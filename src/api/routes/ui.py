@@ -51,6 +51,8 @@ _UI_HTML = r"""<!DOCTYPE html>
   .dot-ingesting, .dot-detecting, .dot-segmenting, .dot-assembling { background: #388bfd; animation: pulse 1.5s infinite; }
   .dot-complete { background: #3fb950; }
   .dot-failed { background: #f85149; }
+  .dot-paused { background: #d29922; }
+  .dot-cancelled { background: #8b949e; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .progress-bar { width: 80px; height: 6px; background: #21262d; border-radius: 3px; overflow: hidden; }
   .progress-fill { height: 100%; background: #388bfd; border-radius: 3px; transition: width 0.5s; }
@@ -58,6 +60,10 @@ _UI_HTML = r"""<!DOCTYPE html>
          font-size: 12px; background: #21262d; color: #e1e4e8; transition: background 0.15s; }
   .btn:hover { background: #30363d; }
   .btn-sm { padding: 3px 8px; font-size: 11px; }
+  .btn-warn { border-color: #d29922; color: #d29922; }
+  .btn-warn:hover { background: #d2992222; }
+  .btn-danger { border-color: #f85149; color: #f85149; }
+  .btn-danger:hover { background: #f8514922; }
   .reel-links { display: flex; gap: 6px; }
   .reel-link { color: #388bfd; text-decoration: none; font-size: 12px;
                padding: 2px 6px; border: 1px solid #388bfd33; border-radius: 4px; }
@@ -246,10 +252,20 @@ function renderJobs(jobs) {
       ? missing.map(rt => `<span style="color:#f85149;font-size:11px" title="No ${rt} events detected">✕ ${rt}</span>`).join('')
       : missing.map(rt => `<span style="color:#8b949e;font-size:11px">${rt}</span>`).join(''));
 
-    const retryBtn = job.status === 'failed'
+    const activeStatuses = new Set(['pending', 'ingesting', 'detecting', 'segmenting', 'assembling']);
+    const pauseBtn = activeStatuses.has(job.status)
+      ? `<button class="btn btn-sm btn-warn" onclick="pauseJob('${job.job_id}')">⏸ Pause</button>`
+      : '';
+    const cancelBtn = (activeStatuses.has(job.status) || job.status === 'paused')
+      ? `<button class="btn btn-sm btn-danger" onclick="cancelJob('${job.job_id}')">✕ Cancel</button>`
+      : '';
+    const resumeBtn = job.status === 'paused'
+      ? `<button class="btn btn-sm" style="color:#3fb950;border-color:#3fb95033" onclick="resumeJob('${job.job_id}')">▶ Resume</button>`
+      : '';
+    const retryBtn = (job.status === 'failed' || job.status === 'cancelled')
       ? `<button class="btn btn-sm" onclick="retryJob('${job.job_id}')">↩ Retry</button>`
       : '';
-    const deleteBtn = (job.status === 'failed' || job.status === 'complete')
+    const deleteBtn = (job.status === 'failed' || job.status === 'complete' || job.status === 'paused' || job.status === 'cancelled')
       ? `<button class="btn btn-sm" style="color:#f85149;border-color:#f8514933" onclick="deleteJob('${job.job_id}')">✕ Delete</button>`
       : '';
 
@@ -264,7 +280,7 @@ function renderJobs(jobs) {
       </td>
       <td><div class="reel-links">${reelLinks}</div></td>
       <td style="font-size:12px;color:#8b949e">${created}</td>
-      <td style="display:flex;gap:4px">${retryBtn}${deleteBtn}</td>
+      <td style="display:flex;gap:4px">${pauseBtn}${resumeBtn}${cancelBtn}${retryBtn}${deleteBtn}</td>
     </tr>`;
   }).join('');
 }
@@ -273,10 +289,10 @@ function updateStats(jobs) {
   const counts = { pending: 0, processing: 0, complete: 0, failed: 0 };
   const processingStatuses = new Set(['ingesting', 'detecting', 'segmenting', 'assembling']);
   for (const job of jobs) {
-    if (job.status === 'pending') counts.pending++;
+    if (job.status === 'pending' || job.status === 'paused') counts.pending++;
     else if (processingStatuses.has(job.status)) counts.processing++;
     else if (job.status === 'complete') counts.complete++;
-    else if (job.status === 'failed') counts.failed++;
+    else if (job.status === 'failed' || job.status === 'cancelled') counts.failed++;
   }
   document.getElementById('stat-pending').textContent = counts.pending;
   document.getElementById('stat-processing').textContent = counts.processing;
@@ -331,6 +347,40 @@ async function deleteJob(jobId) {
     loadJobs();
   } catch (e) {
     showToast('Delete failed: ' + e.message, true);
+  }
+}
+
+async function pauseJob(jobId) {
+  try {
+    const r = await fetch(API + '/jobs/' + jobId + '/pause', { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    showToast('Pause requested');
+    loadJobs();
+  } catch (e) {
+    showToast('Pause failed: ' + e.message, true);
+  }
+}
+
+async function cancelJob(jobId) {
+  if (!confirm('Cancel this job? This cannot be undone.')) return;
+  try {
+    const r = await fetch(API + '/jobs/' + jobId + '/cancel', { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    showToast('Job cancelled');
+    loadJobs();
+  } catch (e) {
+    showToast('Cancel failed: ' + e.message, true);
+  }
+}
+
+async function resumeJob(jobId) {
+  try {
+    const r = await fetch(API + '/jobs/' + jobId + '/resume', { method: 'POST' });
+    if (!r.ok) throw new Error((await r.json()).detail);
+    showToast('Job resumed');
+    loadJobs();
+  } catch (e) {
+    showToast('Resume failed: ' + e.message, true);
   }
 }
 

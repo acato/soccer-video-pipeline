@@ -154,6 +154,61 @@ def get_job_status(job_id: str):
     )
 
 
+@router.post("/{job_id}/pause")
+def pause_job(job_id: str):
+    """Request pause of an active job. Takes effect at next chunk boundary."""
+    from src.ingestion.models import JobStatus
+    store = _get_store()
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Job not found: {job_id}")
+    active = {JobStatus.PENDING, JobStatus.INGESTING, JobStatus.DETECTING,
+              JobStatus.SEGMENTING, JobStatus.ASSEMBLING}
+    if job.status not in active:
+        raise HTTPException(400, f"Only active jobs can be paused (current: {job.status})")
+    if job.status == JobStatus.PENDING:
+        # Not yet picked up by a worker — go directly to PAUSED
+        store.update_status(job_id, JobStatus.PAUSED, progress=0.0)
+    else:
+        store.request_pause(job_id)
+    return store.get(job_id)
+
+
+@router.post("/{job_id}/cancel")
+def cancel_job(job_id: str):
+    """Request cancellation. Takes effect at next chunk boundary."""
+    from src.ingestion.models import JobStatus
+    store = _get_store()
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Job not found: {job_id}")
+    terminal = {JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.CANCELLED}
+    if job.status in terminal:
+        raise HTTPException(400, f"Cannot cancel a {job.status} job")
+    if job.status in (JobStatus.PAUSED, JobStatus.PENDING):
+        # No worker running — set CANCELLED directly
+        store.update_status(job_id, JobStatus.CANCELLED, error="Cancelled by user")
+    else:
+        store.request_cancel(job_id)
+    return store.get(job_id)
+
+
+@router.post("/{job_id}/resume")
+def resume_job(job_id: str):
+    """Resume a paused job. Re-queues from the beginning."""
+    from src.ingestion.models import JobStatus
+    store = _get_store()
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(404, f"Job not found: {job_id}")
+    if job.status != JobStatus.PAUSED:
+        raise HTTPException(400, f"Only paused jobs can be resumed (current: {job.status})")
+    store.update_status(job_id, JobStatus.PENDING, progress=0.0, error=None)
+    process_match_task.delay(job_id)
+    log.info("jobs.resumed", job_id=job_id)
+    return store.get(job_id)
+
+
 @router.post("/{job_id}/retry")
 def retry_job(job_id: str):
     from src.ingestion.models import JobStatus
@@ -161,8 +216,8 @@ def retry_job(job_id: str):
     job = store.get(job_id)
     if job is None:
         raise HTTPException(404, f"Job not found: {job_id}")
-    if job.status not in (JobStatus.FAILED,):
-        raise HTTPException(400, f"Job must be FAILED to retry (current: {job.status})")
+    if job.status not in (JobStatus.FAILED, JobStatus.CANCELLED):
+        raise HTTPException(400, f"Job must be FAILED or CANCELLED to retry (current: {job.status})")
     updated = store.update_status(job_id, JobStatus.PENDING, progress=0.0, error=None)
     process_match_task.delay(job_id)
     log.info("jobs.retry", job_id=job_id)
@@ -171,15 +226,16 @@ def retry_job(job_id: str):
 
 @router.delete("/{job_id}")
 def delete_job(job_id: str):
-    """Delete a completed or failed job."""
+    """Delete a completed, failed, paused, or cancelled job."""
     from src.ingestion.models import JobStatus
     store = _get_store()
     job = store.get(job_id)
     if job is None:
         raise HTTPException(404, f"Job not found: {job_id}")
-    if job.status not in (JobStatus.COMPLETE, JobStatus.FAILED):
+    deletable = {JobStatus.COMPLETE, JobStatus.FAILED, JobStatus.PAUSED, JobStatus.CANCELLED}
+    if job.status not in deletable:
         raise HTTPException(
-            400, f"Only completed or failed jobs can be deleted (current: {job.status})"
+            400, f"Only completed, failed, paused, or cancelled jobs can be deleted (current: {job.status})"
         )
     store.delete(job_id)
     log.info("jobs.deleted", job_id=job_id)

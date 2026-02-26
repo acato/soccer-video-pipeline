@@ -21,6 +21,8 @@ class JobStatus(str, Enum):
     ASSEMBLING = "assembling"
     COMPLETE = "complete"
     FAILED = "failed"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
 
 
 class KitConfig(BaseModel):
@@ -77,6 +79,8 @@ class Job(BaseModel):
     output_paths: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
     progress_pct: float = 0.0
+    pause_requested: bool = False
+    cancel_requested: bool = False
 
     def with_status(self, status: JobStatus, progress: float = None, error: str = None) -> "Job":
         """Return a new Job with updated status (immutable update pattern)."""
@@ -89,4 +93,10 @@ class Job(BaseModel):
             data["error"] = error
         elif status != JobStatus.FAILED:
             data["error"] = None          # clear stale error on non-failure transitions
+        # Clear flags when resuming (PENDING) or cancelling
+        if status == JobStatus.PENDING:
+            data["pause_requested"] = False
+            data["cancel_requested"] = False
+        elif status == JobStatus.CANCELLED:
+            data["pause_requested"] = False
         return Job(**data)

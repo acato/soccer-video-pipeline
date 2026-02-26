@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -75,6 +76,28 @@ class JobStore:
             except Exception as exc:
                 log.warning("job.corrupt_file", path=str(p), error=str(exc))
         return sorted(jobs, key=lambda j: j.created_at, reverse=True)
+
+    def request_pause(self, job_id: str) -> Optional[Job]:
+        """Set pause_requested flag on a job."""
+        job = self.get(job_id)
+        if job is None:
+            return None
+        data = job.model_dump()
+        data["pause_requested"] = True
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        updated = Job(**data)
+        return self.save(updated)
+
+    def request_cancel(self, job_id: str) -> Optional[Job]:
+        """Set cancel_requested flag on a job."""
+        job = self.get(job_id)
+        if job is None:
+            return None
+        data = job.model_dump()
+        data["cancel_requested"] = True
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        updated = Job(**data)
+        return self.save(updated)
 
     def delete(self, job_id: str) -> bool:
         """Remove a job file from disk. Returns True if deleted, False if not found."""

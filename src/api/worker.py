@@ -20,6 +20,14 @@ import structlog
 log = structlog.get_logger(__name__)
 
 
+class PipelinePaused(Exception):
+    """Raised when a pause request is detected between chunks."""
+
+
+class PipelineCancelled(Exception):
+    """Raised when a cancel request is detected between chunks."""
+
+
 # ---------------------------------------------------------------------------
 # Celery app — created lazily to allow import without Celery installed
 # ---------------------------------------------------------------------------
@@ -91,6 +99,13 @@ def _make_real_task():
             prevent = str(cfg.PREVENT_SLEEP).lower() in ("1", "true", "yes")
             with SleepInhibitor(job_id=job_id, enabled=prevent):
                 return _run_pipeline(job_id, store, cfg)
+        except PipelinePaused:
+            log.info("pipeline.paused", job_id=job_id)
+            return {"job_id": job_id, "status": "paused"}
+        except PipelineCancelled:
+            log.info("pipeline.cancelled", job_id=job_id)
+            store.update_status(job_id, JobStatus.CANCELLED, error="Cancelled by user")
+            return {"job_id": job_id, "status": "cancelled"}
         except Exception as exc:
             tb = traceback.format_exc()
             log.error("pipeline.failed", job_id=job_id, error=str(exc), traceback=tb)
@@ -189,11 +204,30 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         ball_touch_detector=ball_touch_detector,
     )
 
+    # interrupted tracks whether the user paused/cancelled mid-detection.
+    # When set, we still finish segmenting + assembling with partial events,
+    # then set the final status to PAUSED or CANCELLED instead of COMPLETE.
+    interrupted: str | None = None  # "paused" | "cancelled" | None
+
     def on_detect_progress(pct: float):
+        job = store.get(job_id)
+        if job and job.cancel_requested:
+            raise PipelineCancelled(f"Job {job_id} cancelled by user")
+        if job and job.pause_requested:
+            raise PipelinePaused(f"Job {job_id} paused by user")
         store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.60)
 
-    total_events = runner.run(progress_callback=on_detect_progress)
-    log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
+    try:
+        total_events = runner.run(progress_callback=on_detect_progress)
+    except PipelinePaused:
+        interrupted = "paused"
+        log.info("pipeline.paused_partial", job_id=job_id)
+    except PipelineCancelled:
+        interrupted = "cancelled"
+        log.info("pipeline.cancelled_partial", job_id=job_id)
+
+    if not interrupted:
+        log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
 
     # ── Stage: SEGMENTING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.SEGMENTING, progress=65.0)
@@ -297,7 +331,22 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             progress=70.0 + (idx + 1) / reel_count * 28.0,
         )
 
-    # ── Stage: COMPLETE ───────────────────────────────────────────────────
+    # ── Final status ────────────────────────────────────────────────────
+    if interrupted == "paused":
+        store.update_status(
+            job_id, JobStatus.PAUSED, progress=100.0, output_paths=output_paths,
+        )
+        log.info("pipeline.paused", job_id=job_id, reels=list(output_paths.keys()))
+        return {"job_id": job_id, "status": "paused", "output_paths": output_paths}
+
+    if interrupted == "cancelled":
+        store.update_status(
+            job_id, JobStatus.CANCELLED, progress=100.0, output_paths=output_paths,
+            error="Cancelled by user",
+        )
+        log.info("pipeline.cancelled", job_id=job_id, reels=list(output_paths.keys()))
+        return {"job_id": job_id, "status": "cancelled", "output_paths": output_paths}
+
     null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
     if not output_paths and job.reel_types and not null_mode:
         # Collect diagnostic info for the error message
