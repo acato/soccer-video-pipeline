@@ -126,6 +126,26 @@ class TestComputeClips:
         for clip in clips:
             assert clip.end_sec - clip.start_sec <= 90.0
 
+    def test_max_clip_duration_no_overlap(self):
+        """When max_clip_duration blocks a merge, the new clip must not overlap the previous one."""
+        # Three events close together: merge would create a ~24s clip, exceeding 15s cap
+        events = [
+            _make_event("e1", EventType.SHOT_STOP_DIVING, 100.0, 102.0, ["keeper"]),
+            _make_event("e2", EventType.SHOT_STOP_STANDING, 108.0, 110.0, ["keeper"]),
+            _make_event("e3", EventType.SHOT_STOP_DIVING, 116.0, 118.0, ["keeper"]),
+        ]
+        clips = compute_clips(
+            events, 5400.0, "keeper",
+            pre_pad=1.5, post_pad=1.5, merge_gap_sec=2.0,
+            max_clip_duration_sec=15.0,
+        )
+        assert len(clips) >= 2, "Should split due to duration cap"
+        # Verify no overlaps
+        for i in range(1, len(clips)):
+            assert clips[i].start_sec >= clips[i - 1].end_sec, (
+                f"Clip {i} starts at {clips[i].start_sec} before clip {i-1} ends at {clips[i-1].end_sec}"
+            )
+
     def test_primary_event_is_highest_confidence(self):
         events = [
             _make_event("e1", EventType.SHOT_ON_TARGET, 100.0, 101.0, ["highlights"], confidence=0.70),

@@ -78,7 +78,11 @@ def compute_clips(
             if new_end - prev_start <= max_clip_duration_sec:
                 merged[-1] = (prev_start, new_end, prev_events + [event])
             else:
-                merged.append((start, end, [event]))
+                # Duration cap prevented merge — trim start to avoid
+                # overlapping with the previous clip.
+                safe_start = max(start, prev_end)
+                if safe_start < end:
+                    merged.append((safe_start, end, [event]))
         else:
             merged.append((start, end, [event]))
 

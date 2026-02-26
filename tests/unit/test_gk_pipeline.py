@@ -261,18 +261,25 @@ class TestGoalkeeperDetectorReelLabels:
         mc = make_match_config()
         det = GoalkeeperDetector(job_id="j1", source_file="m.mp4", match_config=mc)
 
-        # Build a GK track with a sudden vertical movement (save)
-        dets = []
-        for i in range(30):
-            cy = 0.5
-            if i == 15:
-                cy = 0.1  # Sudden dive
-            dets.append(_make_detection(i, float(i) / 30.0, cx=0.08, cy=cy, track_id=10))
-
-        gk_track = _make_track(10, dets)
+        fps = 30.0
+        # Build a GK track
+        gk_dets = [_make_detection(i, float(i) / fps, cx=0.08, cy=0.5, track_id=10) for i in range(60)]
+        gk_track = _make_track(10, gk_dets)
         gk_track.is_goalkeeper = True
 
-        events = det.classify_gk_events(gk_track, [gk_track], 30.0, keeper_role="keeper")
+        # Ball approaches GK then disappears (caught) — triggers ball-contact
+        ball_dets = [
+            Detection(frame_number=f, timestamp=float(f) / fps, class_name="ball",
+                      confidence=0.9, bbox=_make_bbox(cx=0.08 + (30 - f) * 0.01, cy=0.50))
+            for f in range(6, 28, 3)
+        ] + [
+            Detection(frame_number=30, timestamp=30.0 / fps, class_name="ball",
+                      confidence=0.9, bbox=_make_bbox(cx=0.09, cy=0.50)),
+        ]
+        ball_track = _make_track(99, ball_dets)
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) > 0, "Ball caught by GK should produce events"
         for ev in events:
             assert "keeper" in ev.reel_targets, f"GK event {ev.event_type} missing keeper target"
             assert ev.is_goalkeeper_event is True
@@ -732,262 +739,186 @@ def _make_detection_sized(
 
 
 @pytest.mark.unit
-class TestNormalizedVelocityDetection:
-    """Verify bbox-normalized velocity thresholds work across camera distances."""
+class TestBallContactDetection:
+    """Ball-contact detection: proximity + trajectory change.
+
+    The algorithm requires BOTH:
+    1. Ball within ARM_REACH (0.06) of GK bbox edge
+    2. Ball trajectory changes (direction, speed drop, disappears, or appears)
+
+    Test ball trajectories use frames spaced by 3 (detection step).
+    """
 
     def _build_gk_detector(self):
         mc = make_match_config()
         return GoalkeeperDetector(job_id="j1", source_file="m.mp4", match_config=mc)
 
-    def test_distribution_small_bbox_proportional_movement(self):
-        """Small bbox with movement proportional to body width triggers detection.
+    def _make_ball_trajectory(self, frames_xy, fps=30.0):
+        """Build ball detections from list of (frame, x, y) tuples."""
+        return [Detection(
+            frame_number=f, timestamp=float(f) / fps, class_name="ball",
+            confidence=0.9, bbox=_make_bbox(cx=x, cy=y),
+        ) for f, x, y in frames_xy]
 
-        bbox_w=0.04, dx per frame=0.004 → normalized vel = 0.004/(dt*0.04).
-        At 30fps dt=1/30, so vel = 0.004/(0.0333*0.04) = 3.0 bw/s > threshold 1.5.
+    def test_save_deflection_detected(self):
+        """Ball heading toward GK, changes direction at contact → detected.
+
+        Ball approaches from right (x decreasing), reaches GK at frame 30,
+        then deflects upward (y decreasing) — classic save.
         """
         det = self._build_gk_detector()
         fps = 30.0
-        dets = []
-        # Stationary phase (20 frames)
-        for i in range(20):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.04, h=0.10, track_id=10,
-            ))
-        # Movement phase: dx=0.004 per frame → ~3.0 body-widths/s
-        for i in range(20, 30):
-            cx = 0.08 + (i - 20) * 0.004
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=cx, cy=0.5, w=0.04, h=0.10, track_id=10,
-            ))
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(60)]
+        gk_track = _make_track(10, gk_dets)
 
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
-        dist_events = [e for e in events if e.event_type in (
-            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
-        )]
-        assert len(dist_events) > 0, "Proportional movement should trigger distribution"
+        # Ball: approaching from right, then deflects upward at GK
+        ball_frames = (
+            [(f, 0.08 + (30 - f) * 0.01, 0.50) for f in range(6, 28, 3)]  # approach
+            + [(30, 0.09, 0.50)]  # contact near GK
+            + [(f, 0.09 + (f - 30) * 0.005, 0.50 - (f - 30) * 0.01) for f in range(33, 55, 3)]  # deflect up
+        )
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 
-    def test_distribution_small_bbox_tiny_movement_no_trigger(self):
-        """Small bbox with tiny movement should NOT trigger (normalized vel below threshold).
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) > 0, "Save deflection should be detected"
+        assert events[0].metadata["detection_method"] == "ball_contact"
+        assert events[0].metadata["trajectory_reason"] == "direction_change"
 
-        bbox_w=0.04, dx per frame=0.001 → vel = 0.001/(0.0333*0.04) = 0.75 bw/s < 1.5.
+    def test_catch_ball_disappears(self):
+        """Ball approaches GK and disappears (caught) → detected."""
+        det = self._build_gk_detector()
+        fps = 30.0
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(60)]
+        gk_track = _make_track(10, gk_dets)
+
+        # Ball approaches, reaches GK at frame 30, then no more detections
+        ball_frames = (
+            [(f, 0.08 + (30 - f) * 0.01, 0.50) for f in range(6, 28, 3)]
+            + [(30, 0.09, 0.50)]  # contact near GK
+            # no ball detections after → caught
+        )
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) > 0, "Ball caught (disappears) should be detected"
+        assert events[0].metadata["trajectory_reason"] == "ball_caught"
+
+    def test_gk_throw_ball_appears(self):
+        """No ball, then GK throws/kicks — ball appears near GK → detected."""
+        det = self._build_gk_detector()
+        fps = 30.0
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(60)]
+        gk_track = _make_track(10, gk_dets)
+
+        # No ball before, then ball appears near GK and flies away
+        ball_frames = (
+            [(30, 0.09, 0.50)]  # ball appears at GK
+            + [(f, 0.09 + (f - 30) * 0.02, 0.50) for f in range(33, 55, 3)]  # flies away
+        )
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) > 0, "GK throw (ball appears) should be detected"
+        assert events[0].metadata["trajectory_reason"] == "ball_released"
+
+    def test_ball_passing_by_no_event(self):
+        """Ball passes near GK without trajectory change → no event.
+
+        Ball moves steadily from right to left, passing within proximity
+        but maintaining constant velocity (no touch).
         """
         det = self._build_gk_detector()
         fps = 30.0
-        dets = []
-        for i in range(20):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.04, h=0.10, track_id=10,
-            ))
-        # Tiny drift
-        for i in range(20, 30):
-            cx = 0.08 + (i - 20) * 0.001
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=cx, cy=0.5, w=0.04, h=0.10, track_id=10,
-            ))
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(90)]
+        gk_track = _make_track(10, gk_dets)
 
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
-        dist_events = [e for e in events if e.event_type in (
-            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
-        )]
-        assert len(dist_events) == 0, "Tiny normalized velocity should not trigger"
-
-    def test_distribution_large_bbox_large_movement(self):
-        """Large bbox with large movement triggers detection.
-
-        bbox_w=0.10, dx per frame=0.010 → vel = 0.010/(0.0333*0.10) = 3.0 bw/s > 1.5.
-        """
-        det = self._build_gk_detector()
-        fps = 30.0
-        dets = []
-        for i in range(20):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.10, h=0.25, track_id=10,
-            ))
-        for i in range(20, 30):
-            cx = 0.08 + (i - 20) * 0.010
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=cx, cy=0.5, w=0.10, h=0.25, track_id=10,
-            ))
-
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
-        dist_events = [e for e in events if e.event_type in (
-            EventType.GOAL_KICK, EventType.DISTRIBUTION_SHORT, EventType.DISTRIBUTION_LONG,
-        )]
-        assert len(dist_events) > 0, "Large bbox with large movement should trigger"
-
-    def test_save_normalized_vertical_velocity(self):
-        """Sudden vertical jump normalized by bbox height triggers save.
-
-        bbox_h=0.15, dy=0.02 per frame pair → v = 0.02/(0.0333*0.15) = 4.0 bh/s > 1.0.
-        With ball data present, threshold is 1.0 (vs 1.5 without ball).
-        """
-        det = self._build_gk_detector()
-        fps = 30.0
-        dets = []
-        for i in range(10):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
-            ))
-        # Sudden vertical jump: +0.02 then back (creates ~4.0 bh/s)
-        dets.append(_make_detection_sized(
-            10, 10.0 / fps, cx=0.08, cy=0.52, w=0.05, h=0.15, track_id=10,
-        ))
-        dets.append(_make_detection_sized(
-            11, 11.0 / fps, cx=0.08, cy=0.54, w=0.05, h=0.15, track_id=10,
-        ))
-        dets.append(_make_detection_sized(
-            12, 12.0 / fps, cx=0.08, cy=0.52, w=0.05, h=0.15, track_id=10,
-        ))
-        for i in range(13, 20):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
-            ))
-
-        gk_track = _make_track(10, dets)
-
-        # Add a ball track near the GK during the save to use 3.0 threshold
-        ball_dets = [
-            Detection(
-                frame_number=f, timestamp=float(f) / fps, class_name="ball",
-                confidence=0.9, bbox=_make_bbox(cx=0.10, cy=0.53),
-            )
-            for f in range(9, 14)
+        # Ball passes near GK in a straight line at constant speed
+        ball_frames = [
+            (f, 0.08 + (45 - f) * 0.005, 0.45) for f in range(6, 85, 3)
         ]
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
+
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) == 0, "Ball passing by without trajectory change should NOT trigger"
+
+    def test_ball_far_away_no_event(self):
+        """Ball at opposite end of pitch → no contact."""
+        det = self._build_gk_detector()
+        fps = 30.0
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(20)]
+        gk_track = _make_track(10, gk_dets)
+
+        ball_dets = [Detection(
+            frame_number=10, timestamp=10.0 / fps, class_name="ball",
+            confidence=0.9, bbox=_make_bbox(cx=0.90, cy=0.50),
+        )]
         ball_track = _make_track(99, ball_dets)
 
         events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
-        save_events = [e for e in events if e.event_type in (
-            EventType.SHOT_STOP_STANDING, EventType.SHOT_STOP_DIVING,
-        )]
-        assert len(save_events) > 0, "Normalized vertical velocity should trigger save"
+        assert len(events) == 0, "Ball far from GK should not trigger"
 
-    def test_dive_save_without_ball_proximity(self):
-        """High-velocity dive (> dive_threshold) should be accepted even without
-        ball data near the GK frame — the athletic motion is strong evidence.
-
-        bbox_h=0.15, dy=0.06 per frame pair → v = 0.06/(0.0333*0.15) = 12.0 bh/s > 2.5.
-        Ball data exists in the chunk but not near the GK during the dive.
-        """
+    def test_no_ball_data_no_events(self):
+        """No ball detections in chunk → no contact events."""
         det = self._build_gk_detector()
         fps = 30.0
-        dets = []
-        for i in range(10):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
-            ))
-        # Dramatic dive: +0.06 then back (creates ~12.0 bh/s, well above 2.5)
-        dets.append(_make_detection_sized(
-            10, 10.0 / fps, cx=0.08, cy=0.56, w=0.05, h=0.15, track_id=10,
-        ))
-        dets.append(_make_detection_sized(
-            11, 11.0 / fps, cx=0.08, cy=0.62, w=0.05, h=0.15, track_id=10,
-        ))
-        dets.append(_make_detection_sized(
-            12, 12.0 / fps, cx=0.08, cy=0.56, w=0.05, h=0.15, track_id=10,
-        ))
-        for i in range(13, 20):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
-            ))
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(20)]
+        gk_track = _make_track(10, gk_dets)
 
-        gk_track = _make_track(10, dets)
+        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
+        assert len(events) == 0, "No ball data should produce no events"
 
-        # Ball detected far from GK (other end of pitch), NOT near the save
-        ball_dets = [
-            Detection(
-                frame_number=0, timestamp=0.0, class_name="ball",
-                confidence=0.9, bbox=_make_bbox(cx=0.90, cy=0.50),
-            ),
-        ]
-        ball_track = _make_track(99, ball_dets)
+    def test_speed_drop_detected(self):
+        """Ball moving fast toward GK, then nearly stops → speed_drop contact."""
+        det = self._build_gk_detector()
+        fps = 30.0
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(90)]
+        gk_track = _make_track(10, gk_dets)
+
+        # Fast ball approaches, then nearly stops at GK (controlled/caught on ground)
+        ball_frames = (
+            [(f, 0.08 + (45 - f) * 0.015, 0.50) for f in range(6, 43, 3)]  # fast approach
+            + [(45, 0.09, 0.50)]  # at GK
+            + [(f, 0.09 + (f - 45) * 0.001, 0.50) for f in range(48, 76, 3)]  # nearly stopped
+        )
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 
         events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
-        save_events = [e for e in events if e.event_type == EventType.SHOT_STOP_DIVING]
-        assert len(save_events) > 0, (
-            "High-velocity dive should be detected even without ball near GK frame"
-        )
+        assert len(events) > 0, "Speed drop at GK should be detected"
 
-    def test_one_on_one_normalized_deviation(self):
-        """GK deviation normalized by bbox height triggers 1v1.
-
-        bbox_h=0.10, raw deviation ~0.19 → normalized = 0.19/0.10 = 1.9 bh > 0.3.
-        """
+    def test_event_window_tight(self):
+        """Event window should be ±0.5s (clips add ±1.5s padding → ±2s final)."""
         det = self._build_gk_detector()
         fps = 30.0
-        dets = []
-        # Baseline: cy=0.5 for 10 frames
-        for i in range(10):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.10, track_id=10,
-            ))
-        # GK rushes out: cy shifts by 0.20 for 5 consecutive frames
-        for i in range(10, 15):
-            dets.append(_make_detection_sized(
-                i, float(i) / fps, cx=0.08, cy=0.5 + 0.20, w=0.05, h=0.10, track_id=10,
-            ))
+        gk_dets = [_make_detection_sized(
+            i, float(i) / fps, cx=0.08, cy=0.5, w=0.05, h=0.15, track_id=10,
+        ) for i in range(60)]
+        gk_track = _make_track(10, gk_dets)
 
-        gk_track = _make_track(10, dets)
-        events = det.classify_gk_events(gk_track, [gk_track], fps, keeper_role="keeper")
-        ono_events = [e for e in events if e.event_type == EventType.ONE_ON_ONE]
-        assert len(ono_events) > 0, "Normalized deviation should trigger 1v1"
-
-
-# ===========================================================================
-# Stage 14: Shot-correlation confidence passes event thresholds
-# ===========================================================================
-
-@pytest.mark.unit
-class TestShotCorrelationConfidence:
-    """Shot-correlated saves must produce events that pass should_include()."""
-
-    def test_on_target_correlated_dive_passes_threshold(self):
-        """SHOT_ON_TARGET (conf 0.70) → correlated SHOT_STOP_DIVING should pass 0.75."""
-        shot_event = Event(
-            job_id="j1", source_file="m.mp4",
-            event_type=EventType.SHOT_ON_TARGET,
-            timestamp_start=10.0, timestamp_end=13.0,
-            confidence=0.70, reel_targets=["highlights"],
-            frame_start=300, frame_end=390,
-            metadata={"ball_vx": 0.20},
+        # Ball caught at frame 30
+        ball_frames = (
+            [(f, 0.08 + (30 - f) * 0.01, 0.50) for f in range(6, 28, 3)]
+            + [(30, 0.09, 0.50)]
         )
-        # Simulate correlation: min(0.85, confidence + 0.05)
-        corr_conf = min(0.85, shot_event.confidence + 0.05)
-        save = Event(
-            job_id="j1", source_file="m.mp4",
-            event_type=EventType.SHOT_STOP_DIVING,
-            timestamp_start=10.0, timestamp_end=13.0,
-            confidence=corr_conf,
-            reel_targets=["keeper"], is_goalkeeper_event=True,
-            frame_start=300, frame_end=390,
-        )
-        assert save.should_include(0.65), (
-            f"Correlated dive save (conf={corr_conf:.2f}) should pass "
-            f"SHOT_STOP_DIVING threshold of 0.75"
-        )
+        ball_track = _make_track(99, self._make_ball_trajectory(ball_frames, fps))
 
-    def test_off_target_correlated_standing_passes_threshold(self):
-        """SHOT_OFF_TARGET (conf 0.65) → correlated SHOT_STOP_STANDING should pass 0.70."""
-        corr_conf = min(0.85, 0.65 + 0.05)
-        save = Event(
-            job_id="j1", source_file="m.mp4",
-            event_type=EventType.SHOT_STOP_STANDING,
-            timestamp_start=20.0, timestamp_end=23.0,
-            confidence=corr_conf,
-            reel_targets=["keeper"], is_goalkeeper_event=True,
-            frame_start=600, frame_end=690,
-        )
-        assert save.should_include(0.65), (
-            f"Correlated standing save (conf={corr_conf:.2f}) should pass "
-            f"SHOT_STOP_STANDING threshold of 0.70"
-        )
-
-    def test_correlation_confidence_capped_at_085(self):
-        """Even very high-confidence shots should cap correlated save at 0.85."""
-        corr_conf = min(0.85, 0.92 + 0.05)
-        assert corr_conf == 0.85
+        events = det.classify_gk_events(gk_track, [gk_track, ball_track], fps, keeper_role="keeper")
+        assert len(events) == 1
+        ev = events[0]
+        assert ev.timestamp_end - ev.timestamp_start <= 1.5, "Event window should be ~1s (±0.5s)"
 
 
 # ===========================================================================
@@ -1121,57 +1052,7 @@ class TestOutfieldRejection:
 
 
 # ===========================================================================
-# Stage 17: Shot correlation uses velocity direction only
-# ===========================================================================
-
-@pytest.mark.unit
-class TestShotCorrelationVelocityOnly:
-    """Shot correlation uses ball velocity direction only (proximity fallback removed)."""
-
-    def test_ball_heading_away_not_correlated(self):
-        """Ball heading away from GK should NOT correlate, regardless of proximity."""
-        ball_vx = 0.3   # heading right
-        gk_mean_x = 0.08  # GK on left
-        gk_on_right = gk_mean_x > 0.5  # False
-        shot_heading_right = ball_vx > 0  # True
-        # Velocity-only: (shot_heading_right == gk_on_right) → (True == False) → False
-        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
-        assert not shot_toward_gk, "Ball heading away should not correlate"
-
-    def test_fast_ball_near_gk_heading_away_not_correlated(self):
-        """Fast ball (speed > 2.0) near GK but heading AWAY should NOT correlate.
-
-        The proximity fallback was removed because it over-fired on clearances
-        and passes originating near the GK area.
-        """
-        ball_vx = 0.5   # heading right (away from GK on left)
-        gk_mean_x = 0.08  # GK on left
-        gk_on_right = gk_mean_x > 0.5  # False
-        shot_heading_right = ball_vx > 0  # True
-        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
-        assert not shot_toward_gk, "Fast ball heading away should NOT correlate (no proximity fallback)"
-
-    def test_velocity_toward_gk_always_correlates(self):
-        """Ball heading toward GK by velocity always correlates regardless of speed."""
-        ball_vx = -0.5  # heading left
-        gk_mean_x = 0.08  # GK on left
-        gk_on_right = gk_mean_x > 0.5  # False
-        shot_heading_right = ball_vx > 0  # False
-        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
-        assert shot_toward_gk, "Velocity toward GK should always correlate"
-
-    def test_zero_velocity_correlates(self):
-        """Ball with zero velocity (stationary) should correlate (benefit of doubt)."""
-        ball_vx = 0
-        gk_mean_x = 0.08
-        gk_on_right = gk_mean_x > 0.5
-        shot_heading_right = ball_vx > 0
-        shot_toward_gk = (shot_heading_right == gk_on_right) or ball_vx == 0
-        assert shot_toward_gk, "Zero-velocity ball should correlate"
-
-
-# ===========================================================================
-# Stage 18: GK reel label requires minimum similarity
+# Stage 17: GK reel label requires minimum similarity
 # ===========================================================================
 
 @pytest.mark.unit
@@ -1236,3 +1117,36 @@ class TestReelLabelMinimumSimilarity:
             if det.reel_label_for(role) == "keeper":
                 found_keeper = True
         assert found_keeper, "High-similarity team GK should get 'keeper' label"
+
+    def test_only_one_keeper_gets_label_when_both_qualify(self):
+        """If both GK tracks pass sim_team > 0.55 threshold, only the stronger match gets 'keeper'."""
+        mc = make_match_config()
+        det = GoalkeeperDetector(job_id="j1", source_file="m.mp4", match_config=mc)
+
+        team_gk_hsv = resolve_jersey_color(mc.team.gk_color)  # teal
+        opp_gk_hsv = resolve_jersey_color(mc.opponent.gk_color)  # purple
+
+        # Make a second color that's a slightly noisy version of team GK color
+        # so it also passes sim_team > 0.55 but with lower similarity
+        noisy_team_color = (team_gk_hsv[0] + 15, team_gk_hsv[1] * 0.8, team_gk_hsv[2] * 0.8)
+
+        track_colors = {10: team_gk_hsv, 20: noisy_team_color}
+        dets_a = [_make_detection(i, float(i), cx=0.08, track_id=10) for i in range(20)]
+        dets_b = [_make_detection(i, float(i), cx=0.92, track_id=20) for i in range(20)]
+        tracks = [
+            _make_track(10, dets_a, jersey_hsv=team_gk_hsv),
+            _make_track(20, dets_b, jersey_hsv=noisy_team_color),
+        ]
+
+        # Both tracks match team GK better than opponent, verify prerequisite
+        sim_10 = compute_jersey_similarity(team_gk_hsv, team_gk_hsv)
+        sim_20 = compute_jersey_similarity(noisy_team_color, team_gk_hsv)
+        assert sim_10 > 0.55 and sim_20 > 0.55, "Both should qualify individually"
+
+        gk_ids = det.identify_goalkeepers(tracks, (720, 1280), track_colors)
+
+        # Only ONE role should have "keeper" label
+        keeper_roles = [r for r in ("keeper_a", "keeper_b") if det.reel_label_for(r) == "keeper"]
+        assert len(keeper_roles) == 1, (
+            f"Expected exactly 1 keeper label, got {len(keeper_roles)}: {keeper_roles}"
+        )

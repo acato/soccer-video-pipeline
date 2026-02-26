@@ -72,18 +72,16 @@ class GoalkeeperDetector:
         frames_data: Optional[dict[int, np.ndarray]] = None,
     ) -> dict[str, Optional[int]]:
         """
-        Identify both goalkeepers using known GK jersey colors from match_config.
+        Identify goalkeepers using edge heuristic + color confirmation.
 
-        PRIMARY: supervised color matching against team/opponent GK colors
-        SUPPLEMENTARY: glove color confidence boost, edge heuristic cross-check
+        1. Edge heuristic finds GK by position (near goal line, isolated, stable)
+        2. Jersey color check: team GK (→ "keeper" label) vs opponent (→ None)
 
         Returns {"keeper_a": track_id or None, "keeper_b": track_id or None}
         """
         from src.detection.jersey_classifier import (
-            identify_gk_by_known_colors,
             resolve_jersey_color,
             compute_jersey_similarity,
-            detect_glove_color,
         )
 
         # Build track position map (mean_x per track)
@@ -91,74 +89,80 @@ class GoalkeeperDetector:
 
         team_gk_hsv = resolve_jersey_color(self._match_config.team.gk_color)
         opp_gk_hsv = resolve_jersey_color(self._match_config.opponent.gk_color)
-        team_outfield_hsv = resolve_jersey_color(self._match_config.team.outfield_color)
-        opp_outfield_hsv = resolve_jersey_color(self._match_config.opponent.outfield_color)
-        result = identify_gk_by_known_colors(
-            track_colors,
-            track_positions,
-            home_gk_hsv=team_gk_hsv,
-            away_gk_hsv=opp_gk_hsv,
-            outfield_colors=[team_outfield_hsv, opp_outfield_hsv],
-        )
-        # Label the team's GK role as "keeper"; leave the opponent's as None.
-        # Require sim_team > 0.55 as an absolute floor — low similarities
-        # (e.g. 0.41 vs 0.40) indicate noisy identification.
-        for role in ("keeper_a", "keeper_b"):
-            tid = result.get(role)
-            if tid is None or tid not in track_colors:
-                self._gk_reel_labels[role] = None
-                continue
-            sim_team = compute_jersey_similarity(track_colors[tid], team_gk_hsv)
-            sim_opp = compute_jersey_similarity(track_colors[tid], opp_gk_hsv)
-            if sim_team >= sim_opp and sim_team > 0.55:
-                self._gk_reel_labels[role] = "keeper"
-            else:
-                self._gk_reel_labels[role] = None
 
-        # SUPPLEMENTARY: glove color confidence boost (log only)
-        if frames_data:
-            for role in ("keeper_a", "keeper_b"):
-                tid = result.get(role)
-                if tid is None:
+        result: dict[str, Optional[int]] = {"keeper_a": None, "keeper_b": None}
+
+        # STEP 1: Edge heuristic finds GK candidates per half
+        edge_per_half = self._identify_edge_per_half(tracks)
+        if not edge_per_half:
+            return result
+
+        # STEP 2: Among edge candidates, find best team-GK color match per half.
+        # The edge filter removes midfield players; color matching among the
+        # remaining edge-region players identifies the team's GK.
+        team_candidates: list[tuple[str, int, float]] = []  # (role, tid, sim_team)
+        for role, candidates_list in edge_per_half.items():
+            best_team_tid = None
+            best_team_sim = -1.0
+            best_opp_tid = None
+            best_opp_sim = -1.0
+
+            for tid, edge_score in candidates_list:
+                if tid not in track_colors:
                     continue
-                track = next((t for t in tracks if t.track_id == tid), None)
-                if track and track.detections:
-                    det = track.detections[0]
-                    if det.frame_number in frames_data:
-                        glove_score = detect_glove_color(
-                            frames_data[det.frame_number], det.bbox, frame_shape
-                        )
-                        if glove_score is not None:
-                            log.debug(
-                                "gk_detector.glove_score",
-                                role=role,
-                                track_id=tid,
-                                glove_score=round(glove_score, 3),
-                            )
+                sim_team = compute_jersey_similarity(track_colors[tid], team_gk_hsv)
+                sim_opp = compute_jersey_similarity(track_colors[tid], opp_gk_hsv)
+                if sim_team > sim_opp and sim_team > best_team_sim:
+                    best_team_tid = tid
+                    best_team_sim = sim_team
+                if sim_opp >= sim_team and sim_opp > best_opp_sim:
+                    best_opp_tid = tid
+                    best_opp_sim = sim_opp
 
-        # SUPPLEMENTARY: edge heuristic cross-check (log agreement/disagreement)
-        edge_gk = self._identify_by_edge_heuristic(tracks)
-        if edge_gk is not None:
-            for role in ("keeper_a", "keeper_b"):
-                if result.get(role) == edge_gk:
-                    log.debug("gk_detector.edge_confirms_jersey", role=role, track_id=edge_gk)
-                    break
+            # Prefer the team-color match for this half
+            if best_team_tid is not None:
+                result[role] = best_team_tid
+                team_candidates.append((role, best_team_tid, best_team_sim))
+                log.info(
+                    "gk_detector.team_gk_confirmed",
+                    role=role, track_id=best_team_tid,
+                    sim_team=round(best_team_sim, 3),
+                    edge_candidates=len(candidates_list),
+                )
+            elif best_opp_tid is not None:
+                result[role] = best_opp_tid
+                self._gk_reel_labels[role] = None
+                log.info(
+                    "gk_detector.opponent_gk",
+                    role=role, track_id=best_opp_tid,
+                    sim_opp=round(best_opp_sim, 3),
+                    edge_candidates=len(candidates_list),
+                )
             else:
-                if any(result.get(r) is not None for r in ("keeper_a", "keeper_b")):
-                    log.debug(
-                        "gk_detector.edge_disagrees",
-                        edge_id=edge_gk,
-                        jersey_ids=result,
-                    )
+                # No color data — carry forward previous label
+                if candidates_list:
+                    result[role] = candidates_list[0][0]
+                log.debug(
+                    "gk_detector.no_color_data",
+                    role=role,
+                    carried_label=self._gk_reel_labels.get(role),
+                )
 
-        # Update internal state
+        # Update internal state for cross-chunk continuity
         for role in ("keeper_a", "keeper_b"):
             tid = result.get(role)
             if tid is not None:
                 self._gk_track_ids[role] = tid
-            # Save position for cross-chunk continuity
-            if tid is not None and tid in track_positions:
-                self._prev_gk_positions[role] = (track_positions[tid], 0.5)
+                if tid in track_positions:
+                    self._prev_gk_positions[role] = (track_positions[tid], 0.5)
+
+        # Assign "keeper" label to at most one role (best team match)
+        if team_candidates:
+            team_candidates.sort(key=lambda c: c[2], reverse=True)
+            best_role, best_tid, _ = team_candidates[0]
+            self._gk_reel_labels[best_role] = "keeper"
+            for role, _, _ in team_candidates[1:]:
+                self._gk_reel_labels[role] = None
 
         return result
 
@@ -211,9 +215,10 @@ class GoalkeeperDetector:
         Classify GK-specific events from the GK track.
         Returns list of Events with reel_targets=[keeper_role].
 
-        All velocity/deviation values are normalized by the GK's own bbox
-        dimensions (width for horizontal, height for vertical) so thresholds
-        are camera-independent ("body-widths/s" or "body-heights/s").
+        Detects ball touches using proximity + trajectory change:
+        the ball must be near the GK AND change direction, slow down,
+        or disappear (caught).  Event windows are ±0.5s so that with
+        keeper reel padding (±1.5s) the final clip is ±2s.
         """
         events = []
 
@@ -232,13 +237,249 @@ class GoalkeeperDetector:
             num_detections=n,
         )
 
-        events.extend(self._detect_distribution(gk_track, source_fps, keeper_role))
-        events.extend(self._detect_saves(gk_track, all_tracks, source_fps, keeper_role))
-        events.extend(self._detect_one_on_ones(gk_track, all_tracks, source_fps, keeper_role))
+        events.extend(self._detect_ball_contacts(gk_track, all_tracks, source_fps, keeper_role))
 
         return events
 
     # -- Private detection methods --
+
+    def _detect_ball_contacts(
+        self, gk_track: Track, all_tracks: list[Track], fps: float,
+        keeper_role: str = "keeper_a",
+    ) -> list[Event]:
+        """
+        Detect when GK touches the ball: proximity + trajectory change.
+
+        Two-gate filter:
+        1. **Proximity**: ball within ARM_REACH (0.06) of GK bbox edge.
+        2. **Trajectory change**: ball changes direction (>45°), speed
+           drops (>60%), ball disappears (catch), or ball appears (throw).
+
+        A ball merely passing near the GK keeps its trajectory and is
+        rejected.  Only actual touches alter the ball's behaviour.
+        """
+        events: list[Event] = []
+        dets = gk_track.detections
+        if not dets:
+            return events
+
+        # Collect all ball detections indexed by frame number.
+        ball_by_frame: dict[int, tuple[float, float, float]] = {}  # frame → (ts, x, y)
+        for track in all_tracks:
+            for det in track.detections:
+                if det.class_name == "ball":
+                    ball_by_frame[det.frame_number] = (
+                        det.timestamp, det.bbox.center_x, det.bbox.center_y,
+                    )
+
+        if not ball_by_frame:
+            log.debug(
+                "gk_detector.ball_contacts_no_ball_data",
+                keeper_role=keeper_role,
+            )
+            return events
+
+        # Sorted ball frame numbers for trajectory lookups.
+        sorted_ball_frames = sorted(ball_by_frame.keys())
+
+        # Proximity reach beyond GK bbox edge.  Generous (~goal area)
+        # because the trajectory-change gate handles precision.
+        ARM_REACH = 0.12
+        # Trajectory analysis window (frames before/after contact).
+        TRAJ_WINDOW = 30  # ~1s at 30fps
+
+        # Use mean GK position for the entire chunk.  The GK stays in
+        # the goal area, so the mean is a stable reference — avoids the
+        # problem of sparse GK detections (3–12 per 30s chunk) making
+        # frame-by-frame matching miss most ball frames.
+        n = len(dets)
+        mean_cx = sum(d.bbox.center_x for d in dets) / n
+        mean_cy = sum(d.bbox.center_y for d in dets) / n
+        mean_w  = sum((d.bbox.width or 0.05) for d in dets) / n
+        mean_h  = sum((d.bbox.height or 0.15) for d in dets) / n
+
+        gk_left   = mean_cx - mean_w / 2
+        gk_right  = mean_cx + mean_w / 2
+        gk_top    = mean_cy - mean_h / 2
+        gk_bottom = mean_cy + mean_h / 2
+
+        log.debug(
+            "gk_detector.ball_contact_area",
+            keeper_role=keeper_role,
+            gk_cx=round(mean_cx, 3), gk_cy=round(mean_cy, 3),
+            gk_w=round(mean_w, 3), gk_h=round(mean_h, 3),
+            zone_x=(round(gk_left - ARM_REACH, 3), round(gk_right + ARM_REACH, 3)),
+            zone_y=(round(gk_top - ARM_REACH, 3), round(gk_bottom + ARM_REACH, 3)),
+        )
+
+        # Iterate over ALL ball detections (dense, hundreds per chunk)
+        # and check proximity to the GK's area.
+        contact_moments: list[tuple[float, float, float, str]] = []  # (ts, bx, by, reason)
+        candidates = 0
+        min_dist = float("inf")
+        seen_ball_frames: set[int] = set()
+
+        for ball_frame in sorted_ball_frames:
+            if ball_frame in seen_ball_frames:
+                continue
+            ball_ts, bx, by = ball_by_frame[ball_frame]
+
+            # Gate 1: proximity to mean GK bbox.
+            dx = max(gk_left - bx, 0, bx - gk_right)
+            dy = max(gk_top - by, 0, by - gk_bottom)
+            dist = (dx**2 + dy**2) ** 0.5
+            if dist < min_dist:
+                min_dist = dist
+            if dist > ARM_REACH:
+                continue
+
+            candidates += 1
+
+            # Gate 2: trajectory change.
+            reason = self._check_trajectory_change(
+                ball_frame, ball_by_frame, sorted_ball_frames, TRAJ_WINDOW,
+            )
+            if reason:
+                contact_moments.append((ball_ts, bx, by, reason))
+                # Skip nearby ball frames to avoid duplicate contacts.
+                for skip_off in range(-5, 6):
+                    seen_ball_frames.add(ball_frame + skip_off)
+
+        if not contact_moments:
+            log.debug(
+                "gk_detector.ball_contacts_none",
+                keeper_role=keeper_role,
+                gk_dets=len(dets),
+                ball_frames=len(ball_by_frame),
+                proximity_candidates=candidates,
+                min_ball_dist=round(min_dist, 4) if min_dist < float("inf") else None,
+            )
+            return events
+
+        # Group contacts within 2s into single events.
+        contact_moments.sort()
+        groups: list[list[tuple[float, float, float, str]]] = [[contact_moments[0]]]
+        for moment in contact_moments[1:]:
+            if moment[0] - groups[-1][-1][0] < 2.0:
+                groups[-1].append(moment)
+            else:
+                groups.append([moment])
+
+        for group in groups:
+            ts_center = (group[0][0] + group[-1][0]) / 2.0
+            events.append(Event(
+                job_id=self.job_id,
+                source_file=self.source_file,
+                event_type=EventType.SHOT_STOP_STANDING,
+                timestamp_start=max(0, ts_center - 0.5),
+                timestamp_end=ts_center + 0.5,
+                confidence=0.85,
+                reel_targets=[keeper_role],
+                player_track_id=gk_track.track_id,
+                is_goalkeeper_event=True,
+                frame_start=max(0, int((ts_center - 0.5) * fps)),
+                frame_end=int((ts_center + 0.5) * fps),
+                bounding_box=gk_track.detections[0].bbox,
+                metadata={
+                    "detection_method": "ball_contact",
+                    "keeper_role": keeper_role,
+                    "contact_count": len(group),
+                    "trajectory_reason": group[0][3],
+                },
+            ))
+
+        log.info(
+            "gk_detector.ball_contacts",
+            keeper_role=keeper_role,
+            contacts=len(groups),
+            raw_contact_frames=len(contact_moments),
+            proximity_candidates=candidates,
+        )
+        return self._merge_nearby_events(events, min_gap_sec=2.0)
+
+    @staticmethod
+    def _check_trajectory_change(
+        contact_frame: int,
+        ball_by_frame: dict[int, tuple[float, float, float]],
+        sorted_frames: list[int],
+        window: int,
+    ) -> Optional[str]:
+        """
+        Check if ball trajectory changes around *contact_frame*.
+
+        Returns a reason string if trajectory changed, or None if the ball
+        maintained consistent motion (i.e. just passed by without being touched).
+
+        Checks:
+        - **direction_change**: pre/post velocity angle > 45°
+        - **speed_drop**: post speed < 40% of pre speed (catch/control)
+        - **ball_caught**: ball detected before but disappears after
+        - **ball_released**: ball absent before but appears after (throw/kick)
+        - **speed_spike**: post speed >> pre speed (GK kick)
+        """
+        import bisect
+
+        # Find ball positions BEFORE contact (window frames back, skip ±3 near contact).
+        lo = bisect.bisect_left(sorted_frames, contact_frame - window)
+        hi = bisect.bisect_left(sorted_frames, contact_frame - 2)
+        pre_frames = sorted_frames[lo:hi]
+
+        # Find ball positions AFTER contact (window frames forward, skip ±3 near contact).
+        lo2 = bisect.bisect_right(sorted_frames, contact_frame + 2)
+        hi2 = bisect.bisect_right(sorted_frames, contact_frame + window)
+        post_frames = sorted_frames[lo2:hi2]
+
+        has_pre = len(pre_frames) >= 2
+        has_post = len(post_frames) >= 2
+
+        # Ball disappears after contact → catch.
+        if has_pre and not has_post:
+            return "ball_caught"
+
+        # Ball appears after contact → GK throw/kick from hands.
+        if not has_pre and has_post:
+            return "ball_released"
+
+        if not has_pre or not has_post:
+            return None  # not enough data
+
+        # Compute pre-contact velocity vector.
+        x0_pre, y0_pre = ball_by_frame[pre_frames[0]][1], ball_by_frame[pre_frames[0]][2]
+        x1_pre, y1_pre = ball_by_frame[pre_frames[-1]][1], ball_by_frame[pre_frames[-1]][2]
+        dt_pre = ball_by_frame[pre_frames[-1]][0] - ball_by_frame[pre_frames[0]][0]
+        if dt_pre <= 0:
+            return None
+        pre_vx = (x1_pre - x0_pre) / dt_pre
+        pre_vy = (y1_pre - y0_pre) / dt_pre
+        pre_speed = (pre_vx**2 + pre_vy**2) ** 0.5
+
+        # Compute post-contact velocity vector.
+        x0_post, y0_post = ball_by_frame[post_frames[0]][1], ball_by_frame[post_frames[0]][2]
+        x1_post, y1_post = ball_by_frame[post_frames[-1]][1], ball_by_frame[post_frames[-1]][2]
+        dt_post = ball_by_frame[post_frames[-1]][0] - ball_by_frame[post_frames[0]][0]
+        if dt_post <= 0:
+            return None
+        post_vx = (x1_post - x0_post) / dt_post
+        post_vy = (y1_post - y0_post) / dt_post
+        post_speed = (post_vx**2 + post_vy**2) ** 0.5
+
+        # Speed drop → catch/control.
+        if pre_speed > 0.15 and post_speed < pre_speed * 0.4:
+            return "speed_drop"
+
+        # Direction change > 45°.
+        if pre_speed > 0.15 and post_speed > 0.15:
+            dot = pre_vx * post_vx + pre_vy * post_vy
+            cos_angle = dot / (pre_speed * post_speed)
+            cos_angle = max(-1.0, min(1.0, cos_angle))
+            if cos_angle < 0.707:  # cos(45°) ≈ 0.707
+                return "direction_change"
+
+        # Speed spike → GK kick/throw (ball was slow/stationary, now fast).
+        if post_speed > 0.3 and (pre_speed < 0.1 or post_speed > pre_speed * 3):
+            return "speed_spike"
+
+        return None
 
     def _detect_distribution(
         self, gk_track: Track, fps: float, keeper_role: str = "keeper_a",
@@ -526,8 +767,26 @@ class GoalkeeperDetector:
     def _identify_by_edge_heuristic(
         self, tracks: list[Track], min_detections: int = 15,
     ) -> Optional[int]:
+        """Return the single best GK candidate (backward compat)."""
+        per_half = self._identify_edge_per_half(tracks, min_detections)
+        if not per_half:
+            return None
+        # Return the one with the higher score across all halves
+        all_candidates = [c for candidates in per_half.values() for c in candidates]
+        if not all_candidates:
+            return None
+        best = max(all_candidates, key=lambda x: x[1])
+        return best[0]
+
+    def _identify_edge_per_half(
+        self, tracks: list[Track], min_detections: int = 15,
+    ) -> dict[str, list[tuple[int, float]]]:
         """
-        Identify GK without homography using normalized bbox coordinates.
+        Find edge-region GK candidates per half, sorted by edge score.
+
+        Returns {"keeper_a": [(track_id, score), ...], "keeper_b": [(track_id, score), ...]}
+        Each list is sorted by descending score.  Caller picks the best
+        team-color match from these candidates.
 
         Multi-signal scoring:
           - Edge proximity (30%): mean_x near frame edge (< 0.12 from edge)
@@ -552,9 +811,9 @@ class GoalkeeperDetector:
             track_means[track.track_id] = (float(np.mean(xs)), float(np.mean(ys)))
 
         if not track_means:
-            return None
+            return {}
 
-        candidates: list[tuple[int, float, dict]] = []
+        candidates: list[tuple[int, float, dict, bool]] = []  # (id, score, scores, is_left)
 
         for track in tracks:
             if track.track_id not in track_means:
@@ -625,30 +884,37 @@ class GoalkeeperDetector:
                 "stability": round(stability, 3),
                 "isolation": round(isolation, 3),
                 "behind_line": round(behind_line, 3),
-            }))
+            }, candidate_half_left))
 
         if not candidates:
-            return None
+            return {}
 
-        candidates.sort(key=lambda c: c[1], reverse=True)
-        best_id, best_score, best_scores = candidates[0]
+        # All qualifying candidates per half, sorted by score
+        result: dict[str, list[tuple[int, float]]] = {}
+        min_score = 0.45
+        left = [(tid, s, sc) for tid, s, sc, is_left in candidates if is_left]
+        right = [(tid, s, sc) for tid, s, sc, is_left in candidates if not is_left]
 
-        if best_score < 0.45:
-            log.debug(
-                "gk_detector.edge_heuristic_rejected",
-                best_score=round(best_score, 3),
+        for role, group in (("keeper_a", left), ("keeper_b", right)):
+            if not group:
+                continue
+            group.sort(key=lambda c: c[1], reverse=True)
+            qualified = [(tid, s) for tid, s, sc in group if s >= min_score]
+            if not qualified:
+                continue
+            best_id, best_score = qualified[0]
+            best_scores = next(sc for tid, s, sc in group if tid == best_id)
+            log.info(
+                "gk_detector.edge_heuristic_result",
+                role=role,
+                track_id=best_id,
+                score=round(best_score, 3),
                 scores=best_scores,
+                candidates=len(qualified),
             )
-            return None
+            result[role] = qualified
 
-        log.info(
-            "gk_detector.edge_heuristic_result",
-            track_id=best_id,
-            score=round(best_score, 3),
-            scores=best_scores,
-            candidates=len(candidates),
-        )
-        return best_id
+        return result
 
     def _identify_by_position(
         self, tracks: list[Track], frame_shape: tuple[int, int]
