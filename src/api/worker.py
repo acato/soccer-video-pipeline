@@ -201,6 +201,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         overlap_sec=float(cfg.CHUNK_OVERLAP_SEC),
         min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
         ball_touch_detector=ball_touch_detector,
+        game_start_sec=job.game_start_sec,
     )
 
     # interrupted tracks whether the user paused/cancelled mid-detection.

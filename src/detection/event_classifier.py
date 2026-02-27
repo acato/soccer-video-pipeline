@@ -290,6 +290,7 @@ class PipelineRunner:
         overlap_sec: float = 2.0,
         min_confidence: float = 0.65,
         ball_touch_detector=None,
+        game_start_sec: float = 0.0,
     ):
         self.job_id = job_id
         self.video_file = video_file
@@ -300,6 +301,7 @@ class PipelineRunner:
         self.overlap_sec = overlap_sec
         self.min_confidence = min_confidence
         self.ball_touch_detector = ball_touch_detector
+        self.game_start_sec = game_start_sec
         self._tracker = PlayerTracker()
         self._gk_tracker = MatchDualGoalkeeperTracker(job_id)
 
@@ -439,7 +441,7 @@ class PipelineRunner:
 
     def _chunk_starts(self, duration: float) -> list[float]:
         starts = []
-        t = 0.0
+        t = self.game_start_sec
         step = self.chunk_sec
         while t < duration:
             starts.append(t)

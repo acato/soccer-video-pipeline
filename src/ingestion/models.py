@@ -79,6 +79,7 @@ class Job(BaseModel):
     output_paths: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
     progress_pct: float = 0.0
+    game_start_sec: float = 0.0
     pause_requested: bool = False
     cancel_requested: bool = False
 

@@ -31,6 +31,7 @@ class SubmitJobRequest(BaseModel):
     match_config: Optional[MatchConfig] = None
     kit_name: Optional[str] = None
     reel_types: list[str] = ["keeper", "highlights"]
+    game_start_sec: float = 0.0
 
 
 class JobStatusResponse(BaseModel):
@@ -121,7 +122,7 @@ def submit_job(request: SubmitJobRequest):
         log.info("jobs.idempotent", job_id=existing.job_id)
         return existing
 
-    job = create_job(video_file, request.reel_types, store, match_config)
+    job = create_job(video_file, request.reel_types, store, match_config, game_start_sec=request.game_start_sec)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job

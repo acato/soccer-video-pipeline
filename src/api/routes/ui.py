@@ -75,9 +75,9 @@ _UI_HTML = r"""<!DOCTYPE html>
   .form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
   .form-group { flex: 1; }
   label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 6px; }
-  input[type=text] { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
+  input[type=text], input[type=number] { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
                      border-radius: 6px; color: #e1e4e8; font-size: 14px; }
-  input[type=text]:focus { outline: none; border-color: #388bfd; }
+  input[type=text]:focus, input[type=number]:focus { outline: none; border-color: #388bfd; }
   select { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
            border-radius: 6px; color: #e1e4e8; font-size: 14px; }
   select:focus { outline: none; border-color: #388bfd; }
@@ -137,6 +137,10 @@ _UI_HTML = r"""<!DOCTYPE html>
           <label><input type="checkbox" id="reel-gk" checked /> Goalkeeper</label>
           <label><input type="checkbox" id="reel-hl" checked /> Highlights</label>
         </div>
+      </div>
+      <div class="form-group" style="flex:0 0 120px">
+        <label>Game start (min)</label>
+        <input type="number" id="game-start-min" value="0" min="0" step="0.5" />
       </div>
       <button class="btn btn-primary" onclick="submitJob()">Submit Job</button>
     </div>
@@ -309,7 +313,8 @@ async function submitJob() {
   if (document.getElementById('reel-gk').checked) reelTypes.push('keeper');
   if (document.getElementById('reel-hl').checked) reelTypes.push('highlights');
   if (!reelTypes.length) { showToast('Select at least one reel type', true); return; }
-  const body = { nas_path: nasPath, reel_types: reelTypes };
+  const gameStartMin = parseFloat(document.getElementById('game-start-min').value) || 0;
+  const body = { nas_path: nasPath, reel_types: reelTypes, game_start_sec: gameStartMin * 60 };
   if (kitName) body.kit_name = kitName;
   try {
     const r = await fetch(API + '/jobs', {

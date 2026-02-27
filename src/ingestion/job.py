@@ -119,12 +119,13 @@ def create_job(
     reel_types: list[str],
     store: JobStore,
     match_config: Optional[MatchConfig] = None,
+    game_start_sec: float = 0.0,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
     Returns the newly created Job.
     """
-    job = Job(video_file=video_file, reel_types=reel_types, match_config=match_config)
+    job = Job(video_file=video_file, reel_types=reel_types, match_config=match_config, game_start_sec=game_start_sec)
     store.save(job)
     log.info(
         "job.created",
