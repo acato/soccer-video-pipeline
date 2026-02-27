@@ -47,7 +47,6 @@ def get_celery_app():
             result_serializer="json",
             accept_content=["json"],
             task_track_started=True,
-            task_acks_late=True,
             worker_prefetch_multiplier=1,
             task_time_limit=14400,
             task_soft_time_limit=13500,

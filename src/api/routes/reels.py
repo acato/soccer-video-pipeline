@@ -52,7 +52,8 @@ def get_reel_info(job_id: str, reel_type: str):
     from src.ingestion.models import JobStatus
     job = _get_job_or_404(job_id)
 
-    if job.status != JobStatus.COMPLETE:
+    has_reels = {JobStatus.COMPLETE, JobStatus.PAUSED, JobStatus.CANCELLED}
+    if job.status not in has_reels:
         raise HTTPException(
             409,
             f"Job not complete yet (status: {job.status}, {job.progress_pct:.0f}%)"
@@ -77,7 +78,8 @@ def download_reel(job_id: str, reel_type: str):
     """Stream the reel MP4 file."""
     from src.ingestion.models import JobStatus
     job = _get_job_or_404(job_id)
-    if job.status != JobStatus.COMPLETE:
+    has_reels = {JobStatus.COMPLETE, JobStatus.PAUSED, JobStatus.CANCELLED}
+    if job.status not in has_reels:
         raise HTTPException(409, "Job not complete")
 
     reel_path = job.output_paths.get(reel_type)
