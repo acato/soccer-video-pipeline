@@ -32,7 +32,7 @@ Four cards showing real-time counts across all jobs:
 
 | Card | Color | Meaning |
 |------|-------|---------|
-| **Pending** | Yellow | Queued, waiting for a worker |
+| **Pending** | Yellow | Queued or paused — waiting for a worker or user action |
 | **Processing** | Blue | Currently in one of: ingesting, detecting, segmenting, assembling |
 | **Complete** | Green | Finished — reels ready for download |
 | **Failed** | Red | Something went wrong (click Retry in the table) |
