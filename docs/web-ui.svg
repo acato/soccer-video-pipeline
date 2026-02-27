@@ -22,30 +22,35 @@
 
   <!-- Video File dropdown -->
   <text x="50" y="175" fill="#8b949e" font-size="11">VIDEO FILE</text>
-  <rect x="50" y="180" width="400" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
+  <rect x="50" y="180" width="280" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
   <text x="62" y="199" fill="#e1e4e8" font-size="13">saturday_game.mp4</text>
-  <polygon points="436,192 442,192 439,198" fill="#8b949e"/>
+  <polygon points="316,192 322,192 319,198" fill="#8b949e"/>
 
   <!-- Jersey dropdown -->
-  <text x="470" y="175" fill="#8b949e" font-size="11">JERSEY</text>
-  <rect x="470" y="180" width="130" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
-  <text x="482" y="199" fill="#e1e4e8" font-size="13">Home</text>
-  <polygon points="586,192 592,192 589,198" fill="#8b949e"/>
+  <text x="350" y="175" fill="#8b949e" font-size="11">JERSEY</text>
+  <rect x="350" y="180" width="100" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
+  <text x="362" y="199" fill="#e1e4e8" font-size="13">Home</text>
+  <polygon points="436,192 442,192 439,198" fill="#8b949e"/>
 
   <!-- Reel checkboxes -->
-  <text x="620" y="175" fill="#8b949e" font-size="11">REELS</text>
+  <text x="470" y="175" fill="#8b949e" font-size="11">REELS</text>
   <!-- Goalkeeper checkbox (checked) -->
-  <rect x="620" y="186" width="14" height="14" fill="#388bfd" rx="3"/>
-  <polyline points="623,193 627,197 633,189" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="640" y="198" fill="#e1e4e8" font-size="13">Goalkeeper</text>
+  <rect x="470" y="186" width="14" height="14" fill="#388bfd" rx="3"/>
+  <polyline points="473,193 477,197 483,189" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="490" y="198" fill="#e1e4e8" font-size="13">Goalkeeper</text>
   <!-- Highlights checkbox (checked) -->
-  <rect x="720" y="186" width="14" height="14" fill="#388bfd" rx="3"/>
-  <polyline points="723,193 727,197 733,189" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="740" y="198" fill="#e1e4e8" font-size="13">Highlights</text>
+  <rect x="570" y="186" width="14" height="14" fill="#388bfd" rx="3"/>
+  <polyline points="573,193 577,197 583,189" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="590" y="198" fill="#e1e4e8" font-size="13">Highlights</text>
+
+  <!-- Game start input -->
+  <text x="680" y="175" fill="#8b949e" font-size="11">GAME START (MIN)</text>
+  <rect x="680" y="180" width="80" height="28" fill="#0d1117" stroke="#30363d" rx="6"/>
+  <text x="692" y="199" fill="#e1e4e8" font-size="13">0</text>
 
   <!-- Submit button -->
-  <rect x="840" y="180" width="100" height="28" fill="#238636" rx="6"/>
-  <text x="860" y="199" fill="white" font-size="12" font-weight="600">Submit Job</text>
+  <rect x="790" y="180" width="100" height="28" fill="#238636" rx="6"/>
+  <text x="810" y="199" fill="white" font-size="12" font-weight="600">Submit Job</text>
 
   <!-- Stats row -->
   <!-- Pending -->
@@ -101,7 +106,7 @@
   <text x="950" y="409" fill="#f85149" font-size="10">&#10005; Delete</text>
   <line x1="30" y1="424" x2="1070" y2="424" stroke="#21262d"/>
 
-  <!-- Row 2: detecting (in progress) -->
+  <!-- Row 2: detecting (in progress) — Pause + Cancel -->
   <text x="50" y="450" fill="#e1e4e8" font-size="13">sunday_cup_final.mp4</text>
   <circle cx="318" cy="446" r="4" fill="#388bfd"/>
   <text x="328" y="450" fill="#e1e4e8" font-size="13">detecting</text>
@@ -112,6 +117,12 @@
   <text x="620" y="450" fill="#8b949e" font-size="11">keeper</text>
   <text x="670" y="450" fill="#8b949e" font-size="11">highlights</text>
   <text x="780" y="450" fill="#8b949e" font-size="11">2/23/2026, 9:05 AM</text>
+  <!-- Pause button -->
+  <rect x="940" y="438" width="54" height="18" fill="#21262d" stroke="#d2992233" rx="4"/>
+  <text x="949" y="451" fill="#d29922" font-size="10">Pause</text>
+  <!-- Cancel button -->
+  <rect x="1000" y="438" width="60" height="18" fill="#21262d" stroke="#f8514933" rx="4"/>
+  <text x="1010" y="451" fill="#f85149" font-size="10">&#10005; Cancel</text>
   <line x1="30" y1="466" x2="1070" y2="466" stroke="#21262d"/>
 
   <!-- Row 3: complete -->
@@ -128,18 +139,26 @@
   <text x="950" y="493" fill="#f85149" font-size="10">&#10005; Delete</text>
   <line x1="30" y1="508" x2="1070" y2="508" stroke="#21262d"/>
 
-  <!-- Row 4: pending -->
+  <!-- Row 4: paused — Resume + Cancel -->
   <text x="50" y="534" fill="#e1e4e8" font-size="13">weeknight_league.mp4</text>
   <circle cx="318" cy="530" r="4" fill="#d29922"/>
-  <text x="328" y="534" fill="#e1e4e8" font-size="13">pending</text>
+  <text x="328" y="534" fill="#e1e4e8" font-size="13">paused</text>
+  <!-- Progress bar 32% (yellow) -->
   <rect x="460" y="526" width="80" height="6" fill="#21262d" rx="3"/>
-  <text x="548" y="534" fill="#8b949e" font-size="11">0%</text>
+  <rect x="460" y="526" width="26" height="6" fill="#d29922" rx="3"/>
+  <text x="548" y="534" fill="#8b949e" font-size="11">32%</text>
   <text x="620" y="534" fill="#8b949e" font-size="11">keeper</text>
   <text x="670" y="534" fill="#8b949e" font-size="11">highlights</text>
   <text x="780" y="534" fill="#8b949e" font-size="11">2/23/2026, 9:08 AM</text>
+  <!-- Resume button -->
+  <rect x="940" y="522" width="64" height="18" fill="#21262d" stroke="#3fb95033" rx="4"/>
+  <text x="949" y="535" fill="#3fb950" font-size="10">&#8617; Resume</text>
+  <!-- Cancel button -->
+  <rect x="1010" y="522" width="56" height="18" fill="#21262d" stroke="#f8514933" rx="4"/>
+  <text x="1019" y="535" fill="#f85149" font-size="10">&#10005; Cancel</text>
   <line x1="30" y1="550" x2="1070" y2="550" stroke="#21262d"/>
 
-  <!-- Row 5: failed -->
+  <!-- Row 5: failed — Retry + Delete -->
   <text x="50" y="576" fill="#e1e4e8" font-size="13">corrupt_file.mp4</text>
   <circle cx="318" cy="572" r="4" fill="#f85149"/>
   <text x="328" y="576" fill="#e1e4e8" font-size="13">failed</text>
