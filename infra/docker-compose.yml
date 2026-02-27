@@ -52,6 +52,7 @@ services:
       - NAS_MOUNT_PATH=/mnt/nas/source
       - NAS_OUTPUT_PATH=/mnt/nas/output
       - WORKING_DIR=/tmp/soccer-pipeline
+      - YOLO_MODEL_PATH=/models/yolov8m.pt
     volumes:
       - nas_source:/mnt/nas/source:ro
       - nas_output:/mnt/nas/output

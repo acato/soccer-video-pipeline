@@ -2,6 +2,11 @@
 # Do not edit manually; re-run setup.sh to regenerate.
 services:
   worker:
+    build:
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu121
+    environment:
+      - YOLO_MODEL_PATH=/models/yolov8m.pt
     deploy:
       replicas: ${GPU_COUNT:-1}
       resources:

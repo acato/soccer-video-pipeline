@@ -3,6 +3,16 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Install CUDA-enabled PyTorch first (Linux pip default is CPU-only).
+# This is a no-op on CPU-only builds where torch is reinstalled below,
+# but on GPU builds the --index-url ensures we get the CUDA wheels.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir \
+    torch>=2.2.0 torchvision>=0.17.0 \
+    --index-url ${TORCH_INDEX_URL}
+
+# Install remaining dependencies (torch/torchvision already satisfied).
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
