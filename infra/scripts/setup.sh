@@ -192,6 +192,9 @@ REDIS_URL=redis://$REDIS_HOST:6379/0
 GPU_COUNT=$GPU_COUNT
 USE_GPU=$USE_GPU
 
+# ── Models ────────────────────────────────────────────────────────────────────
+MODEL_WEIGHTS_PATH=$INFRA_DIR/models
+
 # ── Detection ────────────────────────────────────────────────────────────────
 YOLO_MODEL_PATH=$INFRA_DIR/models/yolov8m.pt
 YOLO_INFERENCE_SIZE=1280
