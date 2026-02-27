@@ -40,6 +40,10 @@ def _targets_keeper_reel(reel_targets: list[str]) -> bool:
 # Spatial false-positive filter
 # ---------------------------------------------------------------------------
 
+_MIDFIELD_LO = 0.35
+_MIDFIELD_HI = 0.65
+
+
 def _filter_wrong_side_events(
     selected_events: list[Event],
     all_events: list[Event],
@@ -47,19 +51,26 @@ def _filter_wrong_side_events(
 ) -> list[Event]:
     """Remove keeper events that are on the wrong side of the pitch.
 
-    Uses a majority-vote approach: within each half (1st/2nd by time),
-    count how many keeper events fall on the left vs right side of the
-    frame.  If one side dominates (>= 60% with >= 3 events), that's
-    "our" keeper's side and events on the other side are removed.
+    Two-stage filter:
+      1. **Midfield gate** — reject any event whose bounding-box center_x
+         falls in the middle band (0.35–0.65).  Goalkeepers very rarely
+         operate there, so these are almost always false positives.
+      2. **Majority-vote side filter** — among the remaining outer-third
+         events, count left vs right per game half.  If one side dominates
+         (>= 60 %, >= 2 events) that's "our" keeper's side and events on
+         the opposite side are removed.
 
-    Events without a bounding_box are always kept.
+    Events without a bounding_box are always kept (safe default).
     """
     half_time = video_duration_sec / 2
 
-    # Collect ALL keeper events with a bounding box for voting.
+    # Collect ALL keeper events with a bounding box that are in the
+    # outer thirds — these are the only reliable voters.
     voters: list[Event] = [
         e for e in all_events
-        if e.is_goalkeeper_event and e.bounding_box is not None
+        if e.is_goalkeeper_event
+        and e.bounding_box is not None
+        and not (_MIDFIELD_LO < e.bounding_box.center_x < _MIDFIELD_HI)
     ]
 
     # Split voters into first / second half.
@@ -68,7 +79,7 @@ def _filter_wrong_side_events(
 
     def _majority_side(events: list[Event]) -> str | None:
         """Return 'left' or 'right' if one side dominates, else None."""
-        if len(events) < 3:
+        if len(events) < 2:
             return None
         left = sum(1 for e in events if e.bounding_box.center_x < 0.5)
         right = len(events) - left
@@ -85,6 +96,12 @@ def _filter_wrong_side_events(
         if event.bounding_box is None:
             return True
         cx = event.bounding_box.center_x
+
+        # Stage 1: reject midfield events outright.
+        if _MIDFIELD_LO < cx < _MIDFIELD_HI:
+            return False
+
+        # Stage 2: reject events on the wrong side.
         if event.timestamp_start < half_time:
             if first_side == "left":
                 return cx < 0.5
@@ -114,9 +131,9 @@ class KeeperSavesPlugin(ReelPlugin):
     @property
     def clip_params(self) -> ClipParams:
         return ClipParams(
-            pre_pad_sec=5.0,
-            post_pad_sec=1.5,
-            max_clip_duration_sec=20.0,
+            pre_pad_sec=8.0,
+            post_pad_sec=4.0,
+            max_clip_duration_sec=25.0,
             max_reel_duration_sec=20 * 60,
         )
 
@@ -134,7 +151,7 @@ class KeeperSavesPlugin(ReelPlugin):
 
 
 class KeeperGoalKickPlugin(ReelPlugin):
-    """GK goal kick events (short pre to see setup, long post to see landing)."""
+    """GK goal kick events (short pre, long post to see ball land and be received)."""
 
     @property
     def name(self) -> str:
@@ -147,9 +164,9 @@ class KeeperGoalKickPlugin(ReelPlugin):
     @property
     def clip_params(self) -> ClipParams:
         return ClipParams(
-            pre_pad_sec=0.5,
-            post_pad_sec=6.0,
-            max_clip_duration_sec=15.0,
+            pre_pad_sec=1.0,
+            post_pad_sec=10.0,
+            max_clip_duration_sec=20.0,
             max_reel_duration_sec=20 * 60,
         )
 
@@ -167,7 +184,7 @@ class KeeperGoalKickPlugin(ReelPlugin):
 
 
 class KeeperDistributionPlugin(ReelPlugin):
-    """GK distribution events (short/long distribution)."""
+    """GK distribution events (short/long distribution, hand throws)."""
 
     @property
     def name(self) -> str:
@@ -181,8 +198,8 @@ class KeeperDistributionPlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=1.0,
-            post_pad_sec=5.0,
-            max_clip_duration_sec=15.0,
+            post_pad_sec=8.0,
+            max_clip_duration_sec=20.0,
             max_reel_duration_sec=20 * 60,
         )
 
@@ -214,8 +231,8 @@ class KeeperOneOnOnePlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=3.0,
-            post_pad_sec=4.0,
-            max_clip_duration_sec=25.0,
+            post_pad_sec=6.0,
+            max_clip_duration_sec=30.0,
             max_reel_duration_sec=20 * 60,
         )
 

@@ -84,8 +84,8 @@ class TestKeeperSavesClips:
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
         assert len(clips) == 1
-        assert clips[0].start_sec == pytest.approx(25.0)  # 30.0 - 5.0
-        assert clips[0].end_sec == pytest.approx(32.5)    # 31.0 + 1.5
+        assert clips[0].start_sec == pytest.approx(22.0)  # 30.0 - 8.0
+        assert clips[0].end_sec == pytest.approx(35.0)    # 31.0 + 4.0
 
     def test_two_distant_saves_produce_two_clips(self):
         events = [
@@ -120,8 +120,8 @@ class TestKeeperGoalKickClips:
         ]
         clips = _run_plugin_to_clips(KeeperGoalKickPlugin(), events)
         assert len(clips) == 1
-        assert clips[0].start_sec == pytest.approx(59.5)  # 60.0 - 0.5
-        assert clips[0].end_sec == pytest.approx(67.0)    # 61.0 + 6.0
+        assert clips[0].start_sec == pytest.approx(59.0)  # 60.0 - 1.0
+        assert clips[0].end_sec == pytest.approx(71.0)    # 61.0 + 10.0
 
 
 @pytest.mark.unit
@@ -133,7 +133,7 @@ class TestKeeperDistributionClips:
         clips = _run_plugin_to_clips(KeeperDistributionPlugin(), events)
         assert len(clips) == 1
         assert clips[0].start_sec == pytest.approx(59.0)  # 60.0 - 1.0
-        assert clips[0].end_sec == pytest.approx(66.0)    # 61.0 + 5.0
+        assert clips[0].end_sec == pytest.approx(69.0)    # 61.0 + 8.0
 
 
 @pytest.mark.unit
@@ -169,7 +169,7 @@ class TestMultiPluginMerge:
         all_clips = saves_clips + dist_clips
         all_clips.sort(key=lambda c: c.start_sec)
         merged = postprocess_clips(all_clips, reel_type="keeper")
-        # Both clips survive: they overlap partially but IoU < 0.8
+        # Both clips survive: they overlap partially but IoU < 0.5
         assert len(merged) == 2
         assert merged[0].primary_event_type == "shot_stop_diving"
         assert merged[1].primary_event_type == "distribution_short"

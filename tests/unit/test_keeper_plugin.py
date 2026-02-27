@@ -93,9 +93,9 @@ class TestKeeperSavesPlugin:
 
     def test_clip_params_tight_padding(self):
         p = KeeperSavesPlugin()
-        assert p.clip_params.pre_pad_sec == 5.0
-        assert p.clip_params.post_pad_sec == 1.5
-        assert p.clip_params.max_clip_duration_sec == 20.0
+        assert p.clip_params.pre_pad_sec == 8.0
+        assert p.clip_params.post_pad_sec == 4.0
+        assert p.clip_params.max_clip_duration_sec == 25.0
 
     def test_selects_save_types(self, mixed_events, ctx):
         p = KeeperSavesPlugin()
@@ -170,9 +170,9 @@ class TestKeeperGoalKickPlugin:
 
     def test_clip_params(self):
         p = KeeperGoalKickPlugin()
-        assert p.clip_params.pre_pad_sec == 0.5
-        assert p.clip_params.post_pad_sec == 6.0
-        assert p.clip_params.max_clip_duration_sec == 15.0
+        assert p.clip_params.pre_pad_sec == 1.0
+        assert p.clip_params.post_pad_sec == 10.0
+        assert p.clip_params.max_clip_duration_sec == 20.0
 
     def test_selects_only_goal_kick(self, mixed_events, ctx):
         p = KeeperGoalKickPlugin()
@@ -206,8 +206,8 @@ class TestKeeperDistributionPlugin:
     def test_clip_params_distribution_padding(self):
         p = KeeperDistributionPlugin()
         assert p.clip_params.pre_pad_sec == 1.0
-        assert p.clip_params.post_pad_sec == 5.0
-        assert p.clip_params.max_clip_duration_sec == 15.0
+        assert p.clip_params.post_pad_sec == 8.0
+        assert p.clip_params.max_clip_duration_sec == 20.0
 
     def test_selects_distribution_types(self, mixed_events, ctx):
         p = KeeperDistributionPlugin()
@@ -257,8 +257,8 @@ class TestKeeperOneOnOnePlugin:
     def test_clip_params(self):
         p = KeeperOneOnOnePlugin()
         assert p.clip_params.pre_pad_sec == 3.0
-        assert p.clip_params.post_pad_sec == 4.0
-        assert p.clip_params.max_clip_duration_sec == 25.0
+        assert p.clip_params.post_pad_sec == 6.0
+        assert p.clip_params.max_clip_duration_sec == 30.0
 
     def test_selects_only_one_on_one(self, mixed_events, ctx):
         p = KeeperOneOnOnePlugin()
@@ -403,18 +403,39 @@ class TestSpatialFilter:
         result = _filter_wrong_side_events([no_bbox_event], all_events, 1000.0)
         assert len(result) == 1
 
-    def test_fewer_than_3_events_no_filtering(self):
-        """With < 3 voter events, no filtering occurs (all kept)."""
-        # Only 2 total GK events — too few to establish majority
+    def test_single_event_no_filtering(self):
+        """With only 1 voter event, no side can be established (all kept)."""
         left = self._make_keeper_events_on_side("left", 1, start_offset=10.0)
-        right_outlier = _make_event(
-            EventType.CATCH, start=100.0, end=101.0, bbox_center_x=0.8,
-        )
-        all_events = left + [right_outlier]
-        result = _filter_wrong_side_events(
-            [right_outlier], all_events, 1000.0,
-        )
+        all_events = left
+        result = _filter_wrong_side_events(left, all_events, 1000.0)
         assert len(result) == 1
+
+    def test_midfield_events_always_rejected(self):
+        """Events in the middle band (0.35-0.65) are rejected outright."""
+        # Set up a majority on the left side (to satisfy voter requirements)
+        voters = self._make_keeper_events_on_side("left", 5, start_offset=10.0)
+        midfield_event = _make_event(
+            EventType.CATCH, start=100.0, end=101.0, bbox_center_x=0.50,
+        )
+        all_events = voters + [midfield_event]
+        result = _filter_wrong_side_events([midfield_event], all_events, 1000.0)
+        assert result == []
+
+    def test_midfield_events_not_used_for_voting(self):
+        """Events in the middle band are excluded from the majority vote."""
+        # 3 events at midfield (should be ignored for voting) + 2 on left
+        midfield = [
+            _make_event(EventType.CATCH, start=10.0 + i * 10, end=11.0 + i * 10, bbox_center_x=0.50)
+            for i in range(3)
+        ]
+        left = self._make_keeper_events_on_side("left", 2, start_offset=100.0)
+        right_outlier = _make_event(
+            EventType.CATCH, start=200.0, end=201.0, bbox_center_x=0.8,
+        )
+        all_events = midfield + left + [right_outlier]
+        # 2 voters on left, 1 on right → left majority → right outlier removed
+        result = _filter_wrong_side_events([right_outlier], all_events, 1000.0)
+        assert result == []
 
     def test_filter_integrates_with_plugin(self, ctx):
         """Spatial filter works end-to-end through a plugin's select_events."""
