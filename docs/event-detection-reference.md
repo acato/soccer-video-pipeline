@@ -32,7 +32,7 @@ How each of the 16 event types is currently detected, including thresholds, conf
 - **Conditions:**
   - GK vertical velocity >2.5 body-heights per second (unmistakable dive), OR
   - Ball within ARM_REACH=0.06 of GK bbox edge + trajectory change (direction >45deg or speed drop >60% or ball caught)
-- **Event window:** +/-0.5s (+ keeper reel padding +/-1.5s = +/-2s clips)
+- **Event window:** +/-0.5s (+ keeper reel padding -8.0/+4.0s)
 - **Confidence:** Save method: base 0.50 + vertical_velocity, capped 0.80-0.90 with ball proximity bonus. Ball contact: 0.85.
 
 #### SHOT_STOP_STANDING
@@ -147,13 +147,17 @@ These events have NO heuristic fallback and will only be detected if the VideoMA
 
 | Plugin | Events | Pre-pad | Post-pad | Max clip |
 |--------|--------|---------|----------|----------|
-| KeeperSavesPlugin | SHOT_STOP_*, PUNCH, CATCH, PENALTY | 5.0s | 1.5s | 20s |
-| KeeperGoalKickPlugin | GOAL_KICK | 0.5s | 6.0s | 15s |
-| KeeperDistributionPlugin | DISTRIBUTION_SHORT, DISTRIBUTION_LONG | 1.0s | 5.0s | 15s |
-| KeeperOneOnOnePlugin | ONE_ON_ONE | 3.0s | 4.0s | 25s |
+| KeeperSavesPlugin | SHOT_STOP_*, PUNCH, CATCH, PENALTY | 8.0s | 4.0s | 25s |
+| KeeperGoalKickPlugin | GOAL_KICK | 1.0s | 10.0s | 20s |
+| KeeperDistributionPlugin | DISTRIBUTION_SHORT, DISTRIBUTION_LONG | 1.0s | 8.0s | 20s |
+| KeeperOneOnOnePlugin | ONE_ON_ONE | 3.0s | 6.0s | 30s |
 | HighlightsShotsPlugin | SHOT_ON/OFF_TARGET, GOAL, NEAR_MISS, PENALTY, FREE_KICK_SHOT | 3.0s | 5.0s | 90s |
 
-All keeper plugins apply a majority-vote spatial filter that removes false positives from the opposite side of the pitch (opponent GK misidentified as ours). The filter splits events by half (1st/2nd), counts left vs right bounding box positions, and removes events on the minority side when >=60% of >=3 events agree on one side.
+All keeper plugins apply a two-stage spatial filter:
+1. **Midfield gate** — events with bounding_box center_x in the middle band (0.35–0.65) are rejected outright; GKs don't operate in midfield.
+2. **Majority-vote side filter** — among the remaining outer-third events, count left vs right per game half. If one side dominates (>=60% of >=2 events), events on the opposite side are removed.
+
+Clip deduplication uses temporal IoU threshold of 0.5 (previously 0.8) to catch near-duplicate clips from chunk boundaries and multiple plugins.
 
 ## Known Issues
 
