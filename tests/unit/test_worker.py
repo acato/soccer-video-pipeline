@@ -173,7 +173,7 @@ class TestRunPipelineTypeCasting:
     def test_compute_clips_receives_float_padding(self, tmp_path):
         from src.detection.models import Event, EventType
 
-        # Keeper saves plugin provides tight padding (2.0/1.5)
+        # Keeper saves plugin provides padding (5.0/1.5)
         event = Event(
             job_id="test-job-001", source_file="match.mp4",
             event_type=EventType.CATCH, timestamp_start=10.0,
@@ -184,10 +184,10 @@ class TestRunPipelineTypeCasting:
         mocks = _run_pipeline_with_mocks(tmp_path, events=[event])
         cc_call = mocks["compute_clips"].call_args
         assert isinstance(cc_call.kwargs["pre_pad"], float)
-        assert cc_call.kwargs["pre_pad"] == 2.0
+        assert cc_call.kwargs["pre_pad"] == 5.0
         assert isinstance(cc_call.kwargs["post_pad"], float)
         assert cc_call.kwargs["post_pad"] == 1.5
-        assert cc_call.kwargs["max_clip_duration_sec"] == 15.0
+        assert cc_call.kwargs["max_clip_duration_sec"] == 20.0
 
 
 @pytest.mark.unit

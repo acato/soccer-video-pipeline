@@ -147,9 +147,13 @@ These events have NO heuristic fallback and will only be detected if the VideoMA
 
 | Plugin | Events | Pre-pad | Post-pad | Max clip |
 |--------|--------|---------|----------|----------|
-| KeeperSavesPlugin | SHOT_STOP_*, PUNCH, CATCH, ONE_ON_ONE, PENALTY | 2.0s | 1.5s | 15s |
-| KeeperDistributionPlugin | GOAL_KICK, DISTRIBUTION_* | 1.0s | 3.0s | 10s |
+| KeeperSavesPlugin | SHOT_STOP_*, PUNCH, CATCH, PENALTY | 5.0s | 1.5s | 20s |
+| KeeperGoalKickPlugin | GOAL_KICK | 0.5s | 6.0s | 15s |
+| KeeperDistributionPlugin | DISTRIBUTION_SHORT, DISTRIBUTION_LONG | 1.0s | 5.0s | 15s |
+| KeeperOneOnOnePlugin | ONE_ON_ONE | 3.0s | 4.0s | 25s |
 | HighlightsShotsPlugin | SHOT_ON/OFF_TARGET, GOAL, NEAR_MISS, PENALTY, FREE_KICK_SHOT | 3.0s | 5.0s | 90s |
+
+All keeper plugins apply a majority-vote spatial filter that removes false positives from the opposite side of the pitch (opponent GK misidentified as ours). The filter splits events by half (1st/2nd), counts left vs right bounding box positions, and removes events on the minority side when >=60% of >=3 events agree on one side.
 
 ## Known Issues
 

@@ -828,9 +828,9 @@ class TestDeadBallReclassification:
         assert gk_event.event_type == EventType.GOAL_KICK
         assert gk_event.is_goalkeeper_event
         assert "keeper" in gk_event.reel_targets
-        # Verify it would be picked up by KeeperDistributionPlugin
-        from src.reel_plugins.keeper import KeeperDistributionPlugin, _DISTRIBUTION_TYPES
-        assert gk_event.event_type in _DISTRIBUTION_TYPES
+        # Verify it would be picked up by KeeperGoalKickPlugin
+        from src.reel_plugins.keeper import KeeperGoalKickPlugin
+        assert gk_event.event_type == EventType.GOAL_KICK
 
     def test_empty_events_returns_empty(self):
         """Empty event list → empty result."""

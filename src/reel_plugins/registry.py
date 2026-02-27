@@ -21,12 +21,16 @@ def _load_builtins() -> dict[str, type[ReelPlugin]]:
     from src.reel_plugins.highlights import HighlightsShotsPlugin
     from src.reel_plugins.keeper import (
         KeeperDistributionPlugin,
+        KeeperGoalKickPlugin,
+        KeeperOneOnOnePlugin,
         KeeperSavesPlugin,
     )
 
     return {
         "keeper_saves": KeeperSavesPlugin,
+        "keeper_goal_kick": KeeperGoalKickPlugin,
         "keeper_distribution": KeeperDistributionPlugin,
+        "keeper_one_on_one": KeeperOneOnOnePlugin,
         "highlights_shots": HighlightsShotsPlugin,
     }
 
@@ -41,7 +45,9 @@ def _get_builtins() -> dict[str, type[ReelPlugin]]:
 # Default plugin set — matches pre-refactor behavior.
 DEFAULT_PLUGIN_NAMES: list[str] = [
     "keeper_saves",
+    "keeper_goal_kick",
     "keeper_distribution",
+    "keeper_one_on_one",
     "highlights_shots",
 ]
 

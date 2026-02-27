@@ -9,7 +9,7 @@ import pytest
 
 from src.detection.models import Event, EventType
 from src.reel_plugins.base import PipelineContext
-from src.reel_plugins.keeper import KeeperSavesPlugin, KeeperDistributionPlugin
+from src.reel_plugins.keeper import KeeperSavesPlugin, KeeperGoalKickPlugin, KeeperDistributionPlugin
 from src.reel_plugins.highlights import HighlightsShotsPlugin
 from src.reel_plugins.registry import PluginRegistry
 from src.segmentation.clipper import compute_clips
@@ -84,7 +84,7 @@ class TestKeeperSavesClips:
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
         assert len(clips) == 1
-        assert clips[0].start_sec == pytest.approx(28.0)  # 30.0 - 2.0
+        assert clips[0].start_sec == pytest.approx(25.0)  # 30.0 - 5.0
         assert clips[0].end_sec == pytest.approx(32.5)    # 31.0 + 1.5
 
     def test_two_distant_saves_produce_two_clips(self):
@@ -101,7 +101,7 @@ class TestKeeperSavesClips:
             _make_event(EventType.CATCH, start=32.0, reel_targets=["keeper"], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
-        # gap after padding: (32.0-2.0) - (31.0+1.5) = 30.0 - 32.5 < 0 → overlap → merge
+        # gap after padding: (32.0-5.0) - (31.0+1.5) = 27.0 - 32.5 < 0 → overlap → merge
         assert len(clips) == 1
 
     def test_no_matching_events_returns_empty(self):
@@ -113,15 +113,27 @@ class TestKeeperSavesClips:
 
 
 @pytest.mark.unit
+class TestKeeperGoalKickClips:
+    def test_goal_kick_clip_boundaries(self):
+        events = [
+            _make_event(EventType.GOAL_KICK, start=60.0, reel_targets=["keeper"], is_gk=True),
+        ]
+        clips = _run_plugin_to_clips(KeeperGoalKickPlugin(), events)
+        assert len(clips) == 1
+        assert clips[0].start_sec == pytest.approx(59.5)  # 60.0 - 0.5
+        assert clips[0].end_sec == pytest.approx(67.0)    # 61.0 + 6.0
+
+
+@pytest.mark.unit
 class TestKeeperDistributionClips:
     def test_distribution_clip_boundaries(self):
         events = [
-            _make_event(EventType.GOAL_KICK, start=60.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.DISTRIBUTION_SHORT, start=60.0, reel_targets=["keeper"], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperDistributionPlugin(), events)
         assert len(clips) == 1
         assert clips[0].start_sec == pytest.approx(59.0)  # 60.0 - 1.0
-        assert clips[0].end_sec == pytest.approx(64.0)    # 61.0 + 3.0
+        assert clips[0].end_sec == pytest.approx(66.0)    # 61.0 + 5.0
 
 
 @pytest.mark.unit
