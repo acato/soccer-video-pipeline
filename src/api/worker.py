@@ -141,7 +141,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     from src.detection.event_log import EventLog
     from src.detection.goalkeeper_detector import GoalkeeperDetector
     from src.detection.player_detector import PlayerDetector
-    from src.ingestion.models import JobStatus
+    from src.ingestion.models import Job, JobStatus
     from src.reel_plugins.base import PipelineContext
     from src.reel_plugins.registry import PluginRegistry
     from src.segmentation.clipper import compute_clips
@@ -177,7 +177,13 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         )
     gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
     event_log = EventLog(working / "events.jsonl")
-    event_log.clear()  # Remove stale events from previous failed runs
+    # Only clear event log for fresh runs — preserve events on resume
+    resume_from_chunk = 0
+    if job.last_processed_chunk >= 0:
+        resume_from_chunk = job.last_processed_chunk + 1
+        log.info("worker.resuming", job_id=job_id, from_chunk=resume_from_chunk)
+    else:
+        event_log.clear()  # Remove stale events from previous failed runs
 
     # Optionally use ball-first touch detector instead of GK-first path
     ball_touch_detector = None
@@ -202,6 +208,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
         ball_touch_detector=ball_touch_detector,
         game_start_sec=job.game_start_sec,
+        resume_from_chunk=resume_from_chunk,
     )
 
     # interrupted tracks whether the user paused/cancelled mid-detection.
@@ -209,13 +216,20 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     # then set the final status to PAUSED or CANCELLED instead of COMPLETE.
     interrupted: str | None = None  # "paused" | "cancelled" | None
 
-    def on_detect_progress(pct: float):
+    def on_detect_progress(pct: float, chunk_idx: int = -1):
         job = store.get(job_id)
         if job and job.cancel_requested:
             raise PipelineCancelled(f"Job {job_id} cancelled by user")
         if job and job.pause_requested:
             raise PipelinePaused(f"Job {job_id} paused by user")
         store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.60)
+        # Save chunk checkpoint for resume support
+        if chunk_idx >= 0:
+            j = store.get(job_id)
+            if j is not None:
+                data = j.model_dump()
+                data["last_processed_chunk"] = chunk_idx
+                store.save(Job(**data))
 
     try:
         total_events = runner.run(progress_callback=on_detect_progress)

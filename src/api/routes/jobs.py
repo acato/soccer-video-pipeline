@@ -196,7 +196,7 @@ def cancel_job(job_id: str):
 
 @router.post("/{job_id}/resume")
 def resume_job(job_id: str):
-    """Resume a paused job. Re-queues from the beginning."""
+    """Resume a paused job from where it left off."""
     from src.ingestion.models import JobStatus
     store = _get_store()
     job = store.get(job_id)
@@ -204,9 +204,10 @@ def resume_job(job_id: str):
         raise HTTPException(404, f"Job not found: {job_id}")
     if job.status != JobStatus.PAUSED:
         raise HTTPException(400, f"Only paused jobs can be resumed (current: {job.status})")
-    store.update_status(job_id, JobStatus.PENDING, progress=0.0, error=None)
+    # Keep existing progress — worker will resume from last_processed_chunk
+    store.update_status(job_id, JobStatus.PENDING, progress=job.progress_pct, error=None)
     process_match_task.delay(job_id)
-    log.info("jobs.resumed", job_id=job_id)
+    log.info("jobs.resumed", job_id=job_id, from_chunk=job.last_processed_chunk)
     return store.get(job_id)
 
 

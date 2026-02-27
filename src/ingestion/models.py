@@ -82,6 +82,7 @@ class Job(BaseModel):
     game_start_sec: float = 0.0
     pause_requested: bool = False
     cancel_requested: bool = False
+    last_processed_chunk: int = -1
 
     def with_status(self, status: JobStatus, progress: float = None, error: str = None) -> "Job":
         """Return a new Job with updated status (immutable update pattern)."""

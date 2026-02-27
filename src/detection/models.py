@@ -22,6 +22,7 @@ class EventType(str, Enum):
     DISTRIBUTION_SHORT  = "distribution_short"
     DISTRIBUTION_LONG   = "distribution_long"
     ONE_ON_ONE          = "one_on_one"
+    CORNER_KICK         = "corner_kick"
 
     # ── Highlights reel events ──────────────────────────────────────────────
     SHOT_ON_TARGET      = "shot_on_target"
@@ -46,6 +47,7 @@ EVENT_REEL_MAP: dict[EventType, list[str]] = {
     EventType.DISTRIBUTION_SHORT: [],
     EventType.DISTRIBUTION_LONG:  [],
     EventType.ONE_ON_ONE:         [],  # keeper role + "highlights" assigned at creation
+    EventType.CORNER_KICK:        [],  # reel_targets assigned dynamically
     EventType.SHOT_ON_TARGET:     ["highlights"],
     EventType.SHOT_OFF_TARGET:    ["highlights"],
     EventType.GOAL:               ["highlights"],
@@ -69,6 +71,7 @@ _GK_EVENT_TYPES = frozenset({
     EventType.DISTRIBUTION_SHORT,
     EventType.DISTRIBUTION_LONG,
     EventType.ONE_ON_ONE,
+    EventType.CORNER_KICK,
 })
 
 
@@ -94,6 +97,7 @@ EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
     EventType.TACKLE:             0.65,
     EventType.PENALTY:            0.60,
     EventType.FREE_KICK_SHOT:     0.65,
+    EventType.CORNER_KICK:        0.65,
 }
 
 

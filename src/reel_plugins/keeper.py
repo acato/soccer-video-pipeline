@@ -247,3 +247,36 @@ class KeeperOneOnOnePlugin(ReelPlugin):
             and e.should_include()
         ]
         return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)
+
+
+class KeeperCornerKickPlugin(ReelPlugin):
+    """Corner kick events defended by our GK."""
+
+    @property
+    def name(self) -> str:
+        return "keeper_corner_kick"
+
+    @property
+    def reel_name(self) -> str:
+        return "keeper"
+
+    @property
+    def clip_params(self) -> ClipParams:
+        return ClipParams(
+            pre_pad_sec=3.0,
+            post_pad_sec=6.0,
+            max_clip_duration_sec=25.0,
+            max_reel_duration_sec=20 * 60,
+        )
+
+    def select_events(
+        self, events: list[Event], ctx: PipelineContext
+    ) -> list[Event]:
+        selected = [
+            e for e in events
+            if e.event_type == EventType.CORNER_KICK
+            and e.is_goalkeeper_event
+            and _targets_keeper_reel(e.reel_targets)
+            and e.should_include()
+        ]
+        return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)

@@ -291,6 +291,7 @@ class PipelineRunner:
         min_confidence: float = 0.65,
         ball_touch_detector=None,
         game_start_sec: float = 0.0,
+        resume_from_chunk: int = 0,
     ):
         self.job_id = job_id
         self.video_file = video_file
@@ -302,6 +303,7 @@ class PipelineRunner:
         self.min_confidence = min_confidence
         self.ball_touch_detector = ball_touch_detector
         self.game_start_sec = game_start_sec
+        self.resume_from_chunk = resume_from_chunk
         self._tracker = PlayerTracker()
         self._gk_tracker = MatchDualGoalkeeperTracker(job_id)
 
@@ -320,6 +322,10 @@ class PipelineRunner:
         total_chunks = len(chunk_starts)
 
         for chunk_idx, start_sec in enumerate(chunk_starts):
+            # Skip already-processed chunks on resume
+            if chunk_idx < self.resume_from_chunk:
+                continue
+
             chunk_dur = min(self.chunk_sec + self.overlap_sec, duration - start_sec)
             if chunk_dur <= 0:
                 break
@@ -427,7 +433,7 @@ class PipelineRunner:
             )
 
             if progress_callback:
-                progress_callback((chunk_idx + 1) / total_chunks * 100)
+                progress_callback((chunk_idx + 1) / total_chunks * 100, chunk_idx=chunk_idx)
 
         gk_summary = self._gk_tracker.summary()
         log.info(

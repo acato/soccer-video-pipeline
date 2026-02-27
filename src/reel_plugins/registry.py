@@ -20,6 +20,7 @@ def _load_builtins() -> dict[str, type[ReelPlugin]]:
     """Import built-in plugin classes lazily to avoid circular imports."""
     from src.reel_plugins.highlights import HighlightsShotsPlugin
     from src.reel_plugins.keeper import (
+        KeeperCornerKickPlugin,
         KeeperDistributionPlugin,
         KeeperGoalKickPlugin,
         KeeperOneOnOnePlugin,
@@ -31,6 +32,7 @@ def _load_builtins() -> dict[str, type[ReelPlugin]]:
         "keeper_goal_kick": KeeperGoalKickPlugin,
         "keeper_distribution": KeeperDistributionPlugin,
         "keeper_one_on_one": KeeperOneOnOnePlugin,
+        "keeper_corner_kick": KeeperCornerKickPlugin,
         "highlights_shots": HighlightsShotsPlugin,
     }
 
@@ -48,6 +50,7 @@ DEFAULT_PLUGIN_NAMES: list[str] = [
     "keeper_goal_kick",
     "keeper_distribution",
     "keeper_one_on_one",
+    "keeper_corner_kick",
     "highlights_shots",
 ]
 

@@ -176,6 +176,10 @@ class BallTouchDetector:
         speed_change_ratio: float = 0.50,
         max_player_distance: float = 0.12,
         gk_color_min_similarity: float = 0.55,
+        # WS1: Near-goal relaxed thresholds
+        near_goal_x_threshold: float = 0.15,
+        near_goal_direction_change_deg: float = 25.0,
+        near_goal_speed_change_ratio: float = 0.30,
     ):
         self.job_id = job_id
         self.source_file = source_file
@@ -187,8 +191,13 @@ class BallTouchDetector:
         self._max_player_distance = max_player_distance
         self._gk_color_min_similarity = gk_color_min_similarity
 
-        # Pre-compute direction change threshold as cosine
+        # Near-goal zone thresholds (relaxed for deflections/saves)
+        self._near_goal_x = near_goal_x_threshold
+        self._near_goal_speed_change_ratio = near_goal_speed_change_ratio
+
+        # Pre-compute direction change thresholds as cosine
         self._cos_threshold = math.cos(math.radians(direction_change_deg))
+        self._near_goal_cos_threshold = math.cos(math.radians(near_goal_direction_change_deg))
 
     def detect_touches(self, tracks: list[Track], fps: float) -> list[Event]:
         """
@@ -217,7 +226,18 @@ class BallTouchDetector:
             touch_frames, trajectory, tracks, fps,
         )
 
-        # Step 5: Merge nearby
+        # Step 5: Smart endpoint extension (WS3)
+        events = self._apply_smart_endpoints(events, trajectory, tracks, fps)
+
+        # Step 6: Ball-in-net detection (WS1)
+        goal_events = self._detect_ball_in_net(trajectory, tracks, fps)
+        events.extend(goal_events)
+
+        # Step 7: Corner kick detection (WS2)
+        corner_events = self._detect_corner_kicks(trajectory, tracks, fps)
+        events.extend(corner_events)
+
+        # Step 8: Merge nearby
         events = self._merge_nearby_events(events, min_gap_sec=2.0)
 
         log.info(
@@ -301,8 +321,8 @@ class BallTouchDetector:
         Check if ball trajectory changes at this frame by comparing
         local pre-window velocity to local post-window velocity.
 
-        Uses tight windows immediately adjacent to the frame so the
-        detection localizes precisely at the change point.
+        Uses zone-aware thresholds: near the goal (x < 0.15 or x > 0.85)
+        thresholds are relaxed to catch deflections and saves on slower balls.
         """
         frames = trajectory.frames
 
@@ -324,27 +344,39 @@ class BallTouchDetector:
         pre_speed = (pre_vx ** 2 + pre_vy ** 2) ** 0.5
         post_speed = (post_vx ** 2 + post_vy ** 2) ** 0.5
 
+        # Determine if ball is near goal — use relaxed thresholds
+        ball_pos = trajectory.position_at(frame)
+        near_goal = False
+        if ball_pos is not None:
+            bx = ball_pos[0]
+            near_goal = bx < self._near_goal_x or bx > (1.0 - self._near_goal_x)
+
+        # Select thresholds based on zone
+        speed_ratio = self._near_goal_speed_change_ratio if near_goal else self._speed_change_ratio
+        cos_thresh = self._near_goal_cos_threshold if near_goal else self._cos_threshold
+        min_speed = self._min_touch_speed * 0.5 if near_goal else self._min_touch_speed
+
         # Ignore if ball is too slow before contact
-        if pre_speed < self._min_touch_speed:
+        if pre_speed < min_speed:
             return None, 0.0
 
         # Speed drop: post speed < (1 - ratio) * pre speed
-        if pre_speed > 0 and post_speed < pre_speed * (1.0 - self._speed_change_ratio):
+        if pre_speed > 0 and post_speed < pre_speed * (1.0 - speed_ratio):
             return "speed_drop", pre_speed
 
         # Speed spike: post >> pre (kick)
-        if post_speed > pre_speed * (1.0 + self._speed_change_ratio) and post_speed > self._min_touch_speed:
+        if post_speed > pre_speed * (1.0 + speed_ratio) and post_speed > min_speed:
             if self._detect_distributions:
                 return "speed_spike", post_speed
             return None, 0.0
 
         # Direction change
-        if pre_speed > self._min_touch_speed * 0.5 and post_speed > self._min_touch_speed * 0.5:
+        if pre_speed > min_speed * 0.5 and post_speed > min_speed * 0.5:
             dot = pre_vx * post_vx + pre_vy * post_vy
             denom = pre_speed * post_speed
             if denom > 0:
                 cos_angle = max(-1.0, min(1.0, dot / denom))
-                if cos_angle < self._cos_threshold:
+                if cos_angle < cos_thresh:
                     return "direction_change", pre_speed
 
         return None, 0.0
@@ -731,6 +763,361 @@ class BallTouchDetector:
             "ball_released": EventType.DISTRIBUTION_SHORT,
         }
         return mapping.get(reason, EventType.SHOT_STOP_STANDING)
+
+    # -------------------------------------------------------------------
+    # WS1: Ball-in-net detection
+    # -------------------------------------------------------------------
+    def _detect_ball_in_net(
+        self,
+        trajectory: BallTrajectory,
+        tracks: list[Track],
+        fps: float,
+    ) -> list[Event]:
+        """Detect goals by finding ball entering the net area.
+
+        Heuristic: ball at x < 0.03 or x > 0.97, moving fast (speed > 0.30)
+        toward that side, then disappears (gap >= 3 frames).
+        """
+        events: list[Event] = []
+        frames = trajectory.frames
+        if len(frames) < 4:
+            return events
+
+        for i, frame in enumerate(frames):
+            pos = trajectory.position_at(frame)
+            if pos is None:
+                continue
+            bx, by = pos
+
+            # Ball must be at the extreme edge
+            at_left_net = bx < 0.03
+            at_right_net = bx > 0.97
+            if not at_left_net and not at_right_net:
+                continue
+
+            # Must be moving fast toward that side
+            vel = trajectory.velocity_at(frame, window=5)
+            if vel is None:
+                continue
+            vx, vy = vel
+            speed = (vx ** 2 + vy ** 2) ** 0.5
+            if speed < 0.30:
+                continue
+
+            # Check direction: moving left into left net, or right into right net
+            if at_left_net and vx > -0.05:
+                continue
+            if at_right_net and vx < 0.05:
+                continue
+
+            # Check for disappearance: gap of >= 3 frames after this
+            has_gap = True
+            for j in range(1, 4):
+                check_frame = frame + j
+                if trajectory.position_at(check_frame) is not None:
+                    has_gap = False
+                    break
+            # Also count if this is the last few frames
+            if i >= len(frames) - 3:
+                has_gap = True
+
+            if not has_gap:
+                continue
+
+            ts = trajectory.timestamp_at(frame)
+            if ts is None:
+                continue
+
+            events.append(Event(
+                job_id=self.job_id,
+                source_file=self.source_file,
+                event_type=EventType.GOAL,
+                timestamp_start=max(0, ts - 2.0),
+                timestamp_end=ts + 3.0,
+                confidence=0.85,
+                reel_targets=["highlights"],
+                is_goalkeeper_event=False,
+                frame_start=max(0, int((ts - 2.0) * fps)),
+                frame_end=int((ts + 3.0) * fps),
+                bounding_box=BoundingBox(
+                    x=bx - 0.02, y=by - 0.02,
+                    width=0.04, height=0.04,
+                ),
+                metadata={
+                    "detection_method": "ball_in_net",
+                    "ball_x": round(bx, 4),
+                    "ball_speed": round(speed, 4),
+                    "net_side": "left" if at_left_net else "right",
+                },
+            ))
+
+        log.debug("ball_touch.ball_in_net", goals_found=len(events))
+        return events
+
+    # -------------------------------------------------------------------
+    # WS2: Corner kick detection
+    # -------------------------------------------------------------------
+    def _detect_corner_kicks(
+        self,
+        trajectory: BallTrajectory,
+        tracks: list[Track],
+        fps: float,
+    ) -> list[Event]:
+        """Detect corner kicks from ball trajectory.
+
+        Heuristic: ball near corner area, stationary/slow for >= 0.5s,
+        then kicked (speed increase), with >= 3 players in box area.
+        """
+        events: list[Event] = []
+        frames = trajectory.frames
+        if len(frames) < 10:
+            return events
+
+        # Build frame-indexed player lookup for cluster check
+        player_by_frame: dict[int, list[tuple[float, float]]] = {}
+        for track in tracks:
+            for det in track.detections:
+                if det.class_name in ("player", "goalkeeper"):
+                    player_by_frame.setdefault(det.frame_number, []).append(
+                        (det.bbox.center_x, det.bbox.center_y)
+                    )
+
+        # Scan for stationary → kicked pattern near corners
+        min_stationary_frames = max(3, int(0.5 * fps / 3))  # ~0.5s at detection rate
+
+        i = 0
+        while i < len(frames) - min_stationary_frames:
+            frame = frames[i]
+            pos = trajectory.position_at(frame)
+            if pos is None:
+                i += 1
+                continue
+            bx, by = pos
+
+            # Check if near a corner: (x<0.05 AND (y<0.08 OR y>0.92)) or mirrored
+            in_corner = (
+                (bx < 0.05 and (by < 0.08 or by > 0.92))
+                or (bx > 0.95 and (by < 0.08 or by > 0.92))
+            )
+            if not in_corner:
+                i += 1
+                continue
+
+            # Look for stationary period starting at this frame
+            stationary_count = 0
+            for j in range(i, min(i + int(3 * fps), len(frames))):
+                speed = trajectory.speed_at(frames[j], window=3)
+                if speed is not None and speed < 0.08:
+                    stationary_count += 1
+                else:
+                    break
+
+            if stationary_count < min_stationary_frames:
+                i += 1
+                continue
+
+            # Look for the kick: speed increase after stationary period
+            kick_idx = i + stationary_count
+            if kick_idx >= len(frames):
+                i += stationary_count + 1
+                continue
+
+            kick_frame = frames[kick_idx]
+            kick_speed = trajectory.speed_at(kick_frame, window=3)
+            if kick_speed is None or kick_speed < 0.15:
+                i += stationary_count + 1
+                continue
+
+            # Check for player cluster in box area (>=3 players near the goal)
+            # Box area: for left corner, x < 0.20; for right corner, x > 0.80
+            box_x_range = (0.0, 0.20) if bx < 0.5 else (0.80, 1.0)
+            players_in_box = 0
+            for px, py in player_by_frame.get(kick_frame, []):
+                if box_x_range[0] <= px <= box_x_range[1]:
+                    players_in_box += 1
+
+            if players_in_box < 3:
+                i += stationary_count + 1
+                continue
+
+            kick_ts = trajectory.timestamp_at(kick_frame)
+            if kick_ts is None:
+                i += stationary_count + 1
+                continue
+
+            # Determine if corner is on our GK's side for reel targeting
+            reel_targets = ["keeper"]
+
+            events.append(Event(
+                job_id=self.job_id,
+                source_file=self.source_file,
+                event_type=EventType.CORNER_KICK,
+                timestamp_start=max(0, kick_ts - 1.0),
+                timestamp_end=kick_ts + 4.0,
+                confidence=0.70,
+                reel_targets=reel_targets,
+                is_goalkeeper_event=True,
+                frame_start=max(0, int((kick_ts - 1.0) * fps)),
+                frame_end=int((kick_ts + 4.0) * fps),
+                bounding_box=BoundingBox(
+                    x=bx - 0.02, y=by - 0.02,
+                    width=0.04, height=0.04,
+                ),
+                metadata={
+                    "detection_method": "corner_kick",
+                    "corner_x": round(bx, 4),
+                    "corner_y": round(by, 4),
+                    "kick_speed": round(kick_speed, 4),
+                    "players_in_box": players_in_box,
+                },
+            ))
+
+            # Skip past this event
+            i += stationary_count + int(fps)
+
+        log.debug("ball_touch.corner_kicks", corners_found=len(events))
+        return events
+
+    # -------------------------------------------------------------------
+    # WS3: Smart clip endpoints
+    # -------------------------------------------------------------------
+
+    # Per-type max extension for smart endpoints (seconds)
+    _SMART_ENDPOINT_TYPES: dict[EventType, float] = {
+        EventType.DISTRIBUTION_SHORT: 10.0,
+        EventType.DISTRIBUTION_LONG: 10.0,
+        EventType.GOAL_KICK: 12.0,
+        EventType.SHOT_STOP_STANDING: 5.0,
+        EventType.SHOT_STOP_DIVING: 5.0,
+        EventType.CATCH: 5.0,
+        EventType.PUNCH: 5.0,
+        EventType.CORNER_KICK: 8.0,
+    }
+
+    def _apply_smart_endpoints(
+        self,
+        events: list[Event],
+        trajectory: BallTrajectory,
+        tracks: list[Track],
+        fps: float,
+    ) -> list[Event]:
+        """Extend event endpoints to next touch, out-of-bounds, or disappearance."""
+        result = []
+        for event in events:
+            max_ext = self._SMART_ENDPOINT_TYPES.get(event.event_type)
+            if max_ext is None:
+                result.append(event)
+                continue
+            extended = self._extend_event_endpoint(
+                event, trajectory, tracks, fps, max_ext,
+            )
+            result.append(extended)
+        return result
+
+    def _extend_event_endpoint(
+        self,
+        event: Event,
+        trajectory: BallTrajectory,
+        tracks: list[Track],
+        fps: float,
+        max_extension_sec: float,
+    ) -> Event:
+        """Extend event's timestamp_end to next touch / out-of-bounds / disappearance.
+
+        Scans ball trajectory forward from event's timestamp_end for:
+        - Out of bounds: x<0.01 or x>0.99 or y<0.01 or y>0.99
+        - Next touch: direction change > 30deg or speed drop > 40%
+        - Ball disappears: gap >= 5 frames
+        - Max extension reached
+        """
+        frames = trajectory.frames
+        if not frames:
+            return event
+
+        end_ts = event.timestamp_end
+        max_ts = end_ts + max_extension_sec
+
+        # Find starting frame index
+        start_idx = None
+        for i, f in enumerate(frames):
+            ts = trajectory.timestamp_at(f)
+            if ts is not None and ts >= end_ts:
+                start_idx = i
+                break
+        if start_idx is None:
+            return event
+
+        new_end_ts = end_ts
+        reason = None
+
+        cos_30 = math.cos(math.radians(30.0))
+
+        for i in range(start_idx, len(frames)):
+            frame = frames[i]
+            ts = trajectory.timestamp_at(frame)
+            if ts is None or ts > max_ts:
+                new_end_ts = min(ts or max_ts, max_ts)
+                reason = "max_extension"
+                break
+
+            pos = trajectory.position_at(frame)
+            if pos is None:
+                continue
+
+            bx, by = pos
+
+            # Out of bounds
+            if bx < 0.01 or bx > 0.99 or by < 0.01 or by > 0.99:
+                new_end_ts = ts
+                reason = "out_of_bounds"
+                break
+
+            # Gap detection: check if next frame has a gap >= 5
+            if i + 1 < len(frames) and frames[i + 1] - frame >= 5:
+                new_end_ts = ts + 0.5  # small buffer after last seen
+                reason = "ball_disappeared"
+                break
+
+            # Direction/speed change (next touch by another player)
+            if i >= start_idx + 2:  # need a few frames for velocity
+                pre_vel = self._velocity_between(trajectory, frames[i - 2], frames[i - 1])
+                post_vel = self._velocity_between(trajectory, frames[i - 1], frame)
+                if pre_vel is not None and post_vel is not None:
+                    pre_s = (pre_vel[0] ** 2 + pre_vel[1] ** 2) ** 0.5
+                    post_s = (post_vel[0] ** 2 + post_vel[1] ** 2) ** 0.5
+                    # Speed drop > 40%
+                    if pre_s > 0.1 and post_s < pre_s * 0.6:
+                        new_end_ts = ts
+                        reason = "next_touch_speed"
+                        break
+                    # Direction change > 30deg
+                    if pre_s > 0.05 and post_s > 0.05:
+                        dot = pre_vel[0] * post_vel[0] + pre_vel[1] * post_vel[1]
+                        denom = pre_s * post_s
+                        if denom > 0:
+                            cos_a = max(-1.0, min(1.0, dot / denom))
+                            if cos_a < cos_30:
+                                new_end_ts = ts
+                                reason = "next_touch_direction"
+                                break
+        else:
+            # Reached end of trajectory
+            if frames:
+                last_ts = trajectory.timestamp_at(frames[-1])
+                if last_ts is not None:
+                    new_end_ts = min(last_ts, max_ts)
+                    reason = "trajectory_end"
+
+        if new_end_ts > end_ts:
+            data = event.model_dump()
+            data["timestamp_end"] = new_end_ts
+            data["frame_end"] = int(new_end_ts * fps)
+            data["metadata"]["endpoint_extended"] = True
+            data["metadata"]["endpoint_reason"] = reason
+            data["metadata"]["extension_sec"] = round(new_end_ts - end_ts, 2)
+            return Event(**data)
+
+        return event
 
     @staticmethod
     def _merge_nearby_events(events: list[Event], min_gap_sec: float) -> list[Event]:
