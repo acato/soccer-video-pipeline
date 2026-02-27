@@ -17,6 +17,7 @@ _SAVE_TYPES = frozenset({
     EventType.PUNCH,
     EventType.CATCH,
     EventType.ONE_ON_ONE,
+    EventType.PENALTY,
 })
 
 # Event types that represent GK distribution.
@@ -58,7 +59,7 @@ class KeeperSavesPlugin(ReelPlugin):
         return [
             e for e in events
             if e.event_type in _SAVE_TYPES
-            and e.is_goalkeeper_event
+            and (e.is_goalkeeper_event or e.event_type == EventType.PENALTY)
             and _targets_keeper_reel(e.reel_targets)
             and e.should_include()
         ]

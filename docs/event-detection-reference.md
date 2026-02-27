@@ -18,7 +18,7 @@ How each of the 16 event types is currently detected, including thresholds, conf
 | 10 | SHOT_OFF_TARGET | Event Classifier | Same velocity conditions as ON_TARGET but ball NOT in goal-scoring area. | 0.55-0.90 | highlights | 0.65 |
 | 11 | GOAL | ActionClassifier (ML) | VideoMAE only. No heuristic fallback. | model-dependent | highlights | 0.85 |
 | 12 | NEAR_MISS | ActionClassifier (ML) | VideoMAE only. No heuristic fallback. | model-dependent | highlights | 0.70 |
-| 13 | PENALTY | ActionClassifier (ML) | VideoMAE only. No heuristic fallback. | model-dependent | highlights | 0.60 |
+| 13 | PENALTY | ActionClassifier (ML) | VideoMAE only. No heuristic fallback. | model-dependent | highlights + keeper | 0.60 |
 | 14 | FREE_KICK_SHOT | ActionClassifier (ML) | VideoMAE only. No heuristic fallback. | model-dependent | highlights | 0.65 |
 | 15 | DRIBBLE_SEQUENCE | Event Classifier | Player track >=10 detections + speed >0.08 body-widths/s sustained >=1.5s. | 0.67 | *(excluded)* | 0.65 |
 | 16 | TACKLE | Event Classifier | Two player tracks within distance <0.05 normalized units in same frame. | 0.65 | *(excluded)* | 0.65 |
@@ -147,7 +147,7 @@ These events have NO heuristic fallback and will only be detected if the VideoMA
 
 | Plugin | Events | Pre-pad | Post-pad | Max clip |
 |--------|--------|---------|----------|----------|
-| KeeperSavesPlugin | SHOT_STOP_*, PUNCH, CATCH, ONE_ON_ONE | 2.0s | 1.5s | 15s |
+| KeeperSavesPlugin | SHOT_STOP_*, PUNCH, CATCH, ONE_ON_ONE, PENALTY | 2.0s | 1.5s | 15s |
 | KeeperDistributionPlugin | GOAL_KICK, DISTRIBUTION_* | 1.0s | 3.0s | 10s |
 | HighlightsShotsPlugin | SHOT_ON/OFF_TARGET, GOAL, NEAR_MISS, PENALTY, FREE_KICK_SHOT | 3.0s | 5.0s | 90s |
 

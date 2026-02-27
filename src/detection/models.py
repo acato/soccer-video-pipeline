@@ -52,7 +52,7 @@ EVENT_REEL_MAP: dict[EventType, list[str]] = {
     EventType.NEAR_MISS:          ["highlights"],
     EventType.DRIBBLE_SEQUENCE:   [],
     EventType.TACKLE:             [],
-    EventType.PENALTY:            ["highlights"],
+    EventType.PENALTY:            ["highlights", "keeper"],
     EventType.FREE_KICK_SHOT:     ["highlights"],
 }
 
