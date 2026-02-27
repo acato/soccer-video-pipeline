@@ -23,6 +23,7 @@ Submit a new processing job without leaving the browser.
 | **Video File** | Dropdown listing every video file (`.mp4`, `.mkv`, `.mov`, `.avi`, `.mts`, `.m2ts`, `.ts`) found in your NAS mount directory. Populated automatically from `GET /files`. |
 | **Jersey** | Which kit your team wore in this game. Options come from your saved team config (see `./setup-team.sh`). |
 | **Reels** | Checkboxes for **Goalkeeper** and **Highlights**. Both are checked by default. Uncheck one if you only need a single reel type. |
+| **Game start (min)** | Number of minutes into the video where the actual game begins. Use this to skip pre-game warmup footage that can cause false detections. Default is 0 (start from the beginning). Converted to seconds internally. |
 | **Submit Job** | Sends a `POST /jobs` request and starts processing. Idempotent — submitting the same file twice returns the existing job. |
 
 ### B — Stats Row
@@ -47,7 +48,17 @@ The main status table. Auto-refreshes every 10 seconds.
 | **Progress** | Percentage bar from 0% to 100% |
 | **Reels** | Which reel types were requested. When complete, these turn into download links. |
 | **Created** | Timestamp of when the job was submitted |
-| **Actions** | **Retry** (failed jobs only) or **Delete** (failed/complete jobs) |
+| **Actions** | Context-sensitive buttons depending on job status (see below) |
+
+#### Action Buttons
+
+| Button | Shown when | Effect |
+|--------|-----------|--------|
+| **Pause** | Job is active (pending through assembling) | Requests pause at next chunk boundary. Job finishes with partial reels. |
+| **Resume** | Job is paused | Re-queues the job from the beginning. |
+| **Cancel** | Job is active or paused | Cancels processing. Partial reels are kept. |
+| **Retry** | Job is failed or cancelled | Re-queues the job from scratch. |
+| **Delete** | Job is complete, failed, paused, or cancelled | Removes the job record. |
 
 ---
 
@@ -63,7 +74,11 @@ pending (yellow)
   → assembling (blue, pulsing)
   → complete (green)
 
-At any stage → failed (red)
+At any active stage:
+  → paused (yellow) — via Pause button, resumes with Resume
+  → cancelled (gray) — via Cancel button, can Retry
+
+At any stage → failed (red) — can Retry
 ```
 
 ---
@@ -87,8 +102,11 @@ Toasts auto-dismiss after 3.5 seconds.
 | `/files` | GET | List available video files from NAS |
 | `/jobs?limit=50` | GET | Fetch job list (polled every 10s) |
 | `/jobs` | POST | Submit a new job |
-| `/jobs/{id}/retry` | POST | Re-queue a failed job |
-| `/jobs/{id}` | DELETE | Remove a completed or failed job |
+| `/jobs/{id}/pause` | POST | Request pause of an active job |
+| `/jobs/{id}/resume` | POST | Resume a paused job |
+| `/jobs/{id}/cancel` | POST | Cancel an active or paused job |
+| `/jobs/{id}/retry` | POST | Re-queue a failed or cancelled job |
+| `/jobs/{id}` | DELETE | Remove a completed, failed, paused, or cancelled job |
 | `/reels/{id}/{type}/download` | GET | Download a finished reel |
 
 ---

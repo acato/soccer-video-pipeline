@@ -169,9 +169,10 @@ Bookmark this page! You'll come back here every time you want to process a game.
 1. In the dashboard, pick your **video file** from the dropdown (it lists every video in your NAS folder)
 2. Pick which **jersey** your team was wearing in that game (Home, Away, etc.)
 3. Check which reels you want: **Goalkeeper**, **Highlights**, or both (both are checked by default)
-4. Click **Submit Job**
-5. Watch the progress bar move across the screen
-6. When it hits 100%, click the **download link** to get your reel
+4. Set **Game start (min)** if your video has warmup footage before kickoff. For example, if the game starts 5 minutes into the recording, enter `5`. This skips the warmup so it doesn't create false detections. Leave at `0` if the video starts at kickoff.
+5. Click **Submit Job**
+6. Watch the progress bar move across the screen. You can **Pause** or **Cancel** processing at any time using the buttons in the jobs table.
+7. When it hits 100%, click the **download link** to get your reel
 
 That's it! Your goalkeeper reel is ready to share.
 
