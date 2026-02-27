@@ -24,12 +24,14 @@ services:
       - NAS_MOUNT_PATH=/mnt/nas/source
       - NAS_OUTPUT_PATH=/mnt/nas/output
       - WORKING_DIR=/tmp/soccer-pipeline
+      - TEAM_CONFIG_PATH=/app/.team-config.json
     ports:
       - "0.0.0.0:8080:8080"
     volumes:
       - nas_source:/mnt/nas/source:ro
       - nas_output:/mnt/nas/output
       - working_dir:/tmp/soccer-pipeline
+      - ${TEAM_CONFIG_PATH:-~/.soccer-pipeline-team.json}:/app/.team-config.json:ro
     depends_on:
       redis:
         condition: service_healthy

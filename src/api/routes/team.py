@@ -25,13 +25,18 @@ def _team_config_path() -> Path:
 
 
 def load_team_config() -> dict | None:
-    """Load team config from disk.  Returns None if not found."""
+    """Load team config from disk.  Returns None if not found or stub."""
     path = _team_config_path()
     if not path.exists():
         return None
     try:
         with open(path) as f:
-            return json.load(f)
+            data = json.load(f)
+        # Empty {} is a stub created by setup.sh for Docker bind mount;
+        # treat it the same as "no config".
+        if not data.get("team_name"):
+            return None
+        return data
     except (json.JSONDecodeError, OSError) as exc:
         log.warning("team.config_read_error", path=str(path), error=str(exc))
         return None

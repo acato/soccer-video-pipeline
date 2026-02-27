@@ -200,6 +200,9 @@ MIN_EVENT_CONFIDENCE=0.65
 CHUNK_DURATION_SEC=30
 CHUNK_OVERLAP_SEC=2.0
 
+# ── Team config ──────────────────────────────────────────────────────────────
+TEAM_CONFIG_PATH=$HOME/.soccer-pipeline-team.json
+
 # ── Clip padding ─────────────────────────────────────────────────────────────
 PRE_EVENT_PAD_SEC=3.0
 POST_EVENT_PAD_SEC=5.0
@@ -220,12 +223,21 @@ ENVEOF
     echo "Generated $ENV_FILE (mode: $MODE)"
 fi
 
-# ── 5. Ensure directories exist ─────────────────────────────────────────────
+# ── 5. Ensure directories and files exist ─────────────────────────────────────
 
 mkdir -p "$NAS_MOUNT_PATH" 2>/dev/null || true
 mkdir -p "$NAS_OUTPUT_PATH" 2>/dev/null || true
 mkdir -p "$WORKING_DIR" 2>/dev/null || true
 mkdir -p "$INFRA_DIR/models" 2>/dev/null || true
+
+# Team config must be a file (not a directory) for Docker bind mount.
+# Create an empty stub if the user hasn't run setup-team.sh yet.
+TEAM_CONFIG_HOST="${TEAM_CONFIG_PATH:-$HOME/.soccer-pipeline-team.json}"
+if [ ! -f "$TEAM_CONFIG_HOST" ]; then
+    echo '{}' > "$TEAM_CONFIG_HOST"
+    echo "Created stub team config at $TEAM_CONFIG_HOST"
+    echo "  Run ./setup-team.sh to configure your team and jersey colors."
+fi
 
 # ── 6. Download model weights if missing ─────────────────────────────────────
 
