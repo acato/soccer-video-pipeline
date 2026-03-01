@@ -4,6 +4,7 @@ These types flow through the entire detection → segmentation → assembly pipe
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
@@ -98,6 +99,113 @@ EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
     EventType.PENALTY:            0.60,
     EventType.FREE_KICK_SHOT:     0.65,
     EventType.CORNER_KICK:        0.65,
+}
+
+
+# ---------------------------------------------------------------------------
+# EventTypeConfig — single source of truth per event type
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EventTypeConfig:
+    """Per-event-type configuration for clip cutting and UI display."""
+    label: str            # Human-readable, e.g. "Diving Save"
+    category: str         # "goalkeeper" | "highlights"
+    pre_pad_sec: float    # Clip padding before event
+    post_pad_sec: float   # Clip padding after event
+    max_clip_sec: float   # Max single clip duration
+    min_confidence: float # Detection threshold
+    is_gk_event: bool     # Needs jersey color classification
+
+
+EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
+    # ── Goalkeeper events ─────────────────────────────────────────────────
+    EventType.SHOT_STOP_DIVING: EventTypeConfig(
+        label="Diving Save", category="goalkeeper",
+        pre_pad_sec=8.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        min_confidence=0.75, is_gk_event=True,
+    ),
+    EventType.SHOT_STOP_STANDING: EventTypeConfig(
+        label="Standing Save", category="goalkeeper",
+        pre_pad_sec=8.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        min_confidence=0.70, is_gk_event=True,
+    ),
+    EventType.PUNCH: EventTypeConfig(
+        label="Punch", category="goalkeeper",
+        pre_pad_sec=8.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        min_confidence=0.65, is_gk_event=True,
+    ),
+    EventType.CATCH: EventTypeConfig(
+        label="Catch", category="goalkeeper",
+        pre_pad_sec=8.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        min_confidence=0.70, is_gk_event=True,
+    ),
+    EventType.GOAL_KICK: EventTypeConfig(
+        label="Goal Kick", category="goalkeeper",
+        pre_pad_sec=1.0, post_pad_sec=2.0, max_clip_sec=15.0,
+        min_confidence=0.65, is_gk_event=True,
+    ),
+    EventType.DISTRIBUTION_SHORT: EventTypeConfig(
+        label="Short Distribution", category="goalkeeper",
+        pre_pad_sec=1.0, post_pad_sec=2.0, max_clip_sec=20.0,
+        min_confidence=0.65, is_gk_event=True,
+    ),
+    EventType.DISTRIBUTION_LONG: EventTypeConfig(
+        label="Long Distribution", category="goalkeeper",
+        pre_pad_sec=1.0, post_pad_sec=2.0, max_clip_sec=20.0,
+        min_confidence=0.68, is_gk_event=True,
+    ),
+    EventType.ONE_ON_ONE: EventTypeConfig(
+        label="1-on-1", category="goalkeeper",
+        pre_pad_sec=3.0, post_pad_sec=2.0, max_clip_sec=30.0,
+        min_confidence=0.75, is_gk_event=True,
+    ),
+    EventType.CORNER_KICK: EventTypeConfig(
+        label="Corner Kick", category="goalkeeper",
+        pre_pad_sec=3.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        min_confidence=0.65, is_gk_event=True,
+    ),
+    EventType.PENALTY: EventTypeConfig(
+        label="Penalty", category="goalkeeper",
+        pre_pad_sec=8.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        min_confidence=0.60, is_gk_event=True,
+    ),
+    # ── Highlights events ─────────────────────────────────────────────────
+    EventType.SHOT_ON_TARGET: EventTypeConfig(
+        label="Shot on Target", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
+        min_confidence=0.70, is_gk_event=False,
+    ),
+    EventType.SHOT_OFF_TARGET: EventTypeConfig(
+        label="Shot off Target", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
+        min_confidence=0.65, is_gk_event=False,
+    ),
+    EventType.GOAL: EventTypeConfig(
+        label="Goal", category="highlights",
+        pre_pad_sec=5.0, post_pad_sec=8.0, max_clip_sec=60.0,
+        min_confidence=0.85, is_gk_event=False,
+    ),
+    EventType.NEAR_MISS: EventTypeConfig(
+        label="Near Miss", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
+        min_confidence=0.70, is_gk_event=False,
+    ),
+    EventType.DRIBBLE_SEQUENCE: EventTypeConfig(
+        label="Dribble Sequence", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
+        min_confidence=0.65, is_gk_event=False,
+    ),
+    EventType.TACKLE: EventTypeConfig(
+        label="Tackle", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
+        min_confidence=0.65, is_gk_event=False,
+    ),
+    EventType.FREE_KICK_SHOT: EventTypeConfig(
+        label="Free Kick Shot", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
+        min_confidence=0.65, is_gk_event=False,
+    ),
 }
 
 

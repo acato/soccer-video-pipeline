@@ -140,12 +140,12 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     from src.detection.event_classifier import PipelineRunner
     from src.detection.event_log import EventLog
     from src.detection.goalkeeper_detector import GoalkeeperDetector
+    from src.detection.models import EventType, is_gk_event_type
     from src.detection.player_detector import PlayerDetector
     from src.ingestion.models import Job, JobStatus
-    from src.reel_plugins.base import PipelineContext
-    from src.reel_plugins.registry import PluginRegistry
-    from src.segmentation.clipper import compute_clips
+    from src.segmentation.clipper import compute_clips_v2
     from src.segmentation.deduplicator import postprocess_clips
+    from src.segmentation.spatial_filter import filter_wrong_side_events, passes_sim_gate
 
     job = store.get(job_id)
     vf = job.video_file
@@ -248,74 +248,57 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     all_events = event_log.read_all()
     event_conf_map = {e.event_id: e.confidence for e in all_events}
 
-    # Build plugin registry — use env override or default built-ins
-    plugin_cfg = getattr(cfg, "REEL_PLUGINS", None)
-    if isinstance(plugin_cfg, str) and plugin_cfg.strip():
-        plugin_names = [n.strip() for n in plugin_cfg.split(",") if n.strip()]
-        registry = PluginRegistry.from_config(plugin_names)
-    else:
-        registry = PluginRegistry.default()
+    # Apply spatial filter once to all GK events
+    gk_events = [e for e in all_events if e.is_goalkeeper_event]
+    non_gk_events = [e for e in all_events if not e.is_goalkeeper_event]
+    filtered_gk = filter_wrong_side_events(gk_events, all_events, vf.duration_sec)
+    # Apply sim gate to GK events
+    filtered_gk = [e for e in filtered_gk if passes_sim_gate(e)]
+    all_events = filtered_gk + non_gk_events
 
-    ctx = PipelineContext(
-        video_duration_sec=vf.duration_sec,
-        match_config=job.match_config,
-        keeper_track_ids=getattr(runner, "keeper_ids", {}) or {},
-        job_id=job_id,
-    )
-
-    # Only produce reels the job requested.
-    requested_reels = set(job.reel_types)
+    # Get reel specs from job (handles legacy reel_types → ReelSpec conversion)
+    reel_specs = job.get_reel_specs()
 
     clips_by_reel: dict[str, list] = {}
-    for reel_name in registry.get_all_reel_names():
-        # Skip reels not requested by this job.  Match both exact
-        # ("keeper") and prefix ("keeper" matches job's "keeper_a").
-        if not any(
-            reel_name == rt or reel_name.startswith(rt + "_") or rt.startswith(reel_name + "_")
-            or reel_name == rt
-            for rt in requested_reels
-        ):
+    for spec in reel_specs:
+        wanted = set()
+        for t in spec.event_types:
+            try:
+                wanted.add(EventType(t))
+            except ValueError:
+                log.warning("pipeline.unknown_event_type", event_type=t, reel=spec.name)
+
+        filtered = [
+            e for e in all_events
+            if e.event_type in wanted and e.should_include()
+        ]
+        if not filtered:
+            clips_by_reel[spec.name] = []
+            log.info("pipeline.clips_ready", reel_type=spec.name, clips=0)
             continue
 
-        plugins = registry.get_plugins_for_reel(reel_name)
-        reel_clips: list = []
-        for plugin in plugins:
-            selected = plugin.select_events(all_events, ctx)
-            if not selected:
-                continue
-            p = plugin.clip_params
-            raw_clips = compute_clips(
-                events=selected,
-                video_duration=vf.duration_sec,
-                reel_type=reel_name,
-                pre_pad=p.pre_pad_sec,
-                post_pad=p.post_pad_sec,
-                max_clip_duration_sec=p.max_clip_duration_sec,
-            )
-            raw_clips = plugin.post_filter_clips(raw_clips)
-            reel_clips.extend(raw_clips)
-
-        # Merge clips from multiple plugins, then deduplicate.
-        reel_clips.sort(key=lambda c: c.start_sec)
+        clips = compute_clips_v2(
+            events=filtered,
+            video_duration=vf.duration_sec,
+            reel_name=spec.name,
+        )
         clips = postprocess_clips(
-            reel_clips,
-            reel_type=reel_name,
-            max_reel_duration_sec=max(
-                p.max_reel_duration_sec for p in (pl.clip_params for pl in plugins)
-            ) if plugins else None,
+            clips,
+            reel_type=spec.name,
+            max_reel_duration_sec=spec.max_reel_duration_sec,
             event_confidence_map=event_conf_map,
         )
-        clips_by_reel[reel_name] = clips
-        log.info("pipeline.clips_ready", reel_type=reel_name, clips=len(clips))
+        clips_by_reel[spec.name] = clips
+        log.info("pipeline.clips_ready", reel_type=spec.name, clips=len(clips))
 
     # ── Stage: ASSEMBLING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.ASSEMBLING, progress=70.0)
 
     output_paths: dict[str, str] = {}
-    reel_names = [r for r in clips_by_reel if clips_by_reel[r]]
-    reel_count = max(len(reel_names), 1)
+    nonempty_reels = [r for r in clips_by_reel if clips_by_reel[r]]
+    reel_count = max(len(nonempty_reels), 1)
 
-    for idx, reel_name in enumerate(reel_names):
+    for idx, reel_name in enumerate(nonempty_reels):
         clips = clips_by_reel[reel_name]
 
         composer = ReelComposer(
@@ -362,25 +345,23 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         return {"job_id": job_id, "status": "cancelled", "output_paths": output_paths}
 
     null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
-    if not output_paths and job.reel_types and not null_mode:
+    reel_names = [s.name for s in reel_specs]
+    if not output_paths and reel_specs and not null_mode:
         # Collect diagnostic info for the error message
         total_events = len(all_events)
-        event_types = list({e.event_type for e in all_events})
-        keeper_events = sum(
-            1 for e in all_events
-            if any("keeper" in rt for rt in e.reel_targets)
-        )
+        event_types_found = list({e.event_type for e in all_events})
+        gk_event_count = sum(1 for e in all_events if e.is_goalkeeper_event)
         error_msg = (
-            f"No reels produced for {job.reel_types}. "
-            f"Detection found {total_events} events ({event_types}) "
-            f"but {keeper_events} matched keeper targets. "
-            f"Clips per reel: {', '.join(f'{r}={len(clips_by_reel.get(r, []))}' for r in job.reel_types)}"
+            f"No reels produced for {reel_names}. "
+            f"Detection found {total_events} events ({event_types_found}) "
+            f"but {gk_event_count} were GK events. "
+            f"Clips per reel: {', '.join(f'{r}={len(clips_by_reel.get(r, []))}' for r in reel_names)}"
         )
         store.update_status(
             job_id, JobStatus.FAILED, progress=100.0, error=error_msg,
         )
-        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_types=job.reel_types,
-                     total_events=total_events, keeper_events=keeper_events)
+        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_names=reel_names,
+                     total_events=total_events, gk_events=gk_event_count)
         return {"job_id": job_id, "output_paths": {}}
 
     store.update_status(

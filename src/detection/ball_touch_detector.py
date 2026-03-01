@@ -19,7 +19,7 @@ import numpy as np
 import structlog
 
 from src.detection.models import (
-    BoundingBox, Detection, Event, EventType, Track, EVENT_REEL_MAP,
+    BoundingBox, Detection, Event, EventType, Track,
 )
 from src.ingestion.models import MatchConfig
 
@@ -175,7 +175,7 @@ class BallTouchDetector:
         direction_change_deg: float = 40.0,
         speed_change_ratio: float = 0.50,
         max_player_distance: float = 0.12,
-        gk_color_min_similarity: float = 0.55,
+        gk_color_min_similarity: float = 0.60,
         # WS1: Near-goal relaxed thresholds
         near_goal_x_threshold: float = 0.15,
         near_goal_direction_change_deg: float = 25.0,
@@ -234,7 +234,18 @@ class BallTouchDetector:
         events.extend(goal_events)
 
         # Step 7: Corner kick detection (WS2)
-        corner_events = self._detect_corner_kicks(trajectory, tracks, fps)
+        # Pass save events to enable post-save restart inference
+        save_events = [
+            e for e in events
+            if e.event_type in (
+                EventType.SHOT_STOP_STANDING,
+                EventType.SHOT_STOP_DIVING,
+                EventType.CATCH,
+            )
+        ]
+        corner_events = self._detect_corner_kicks(
+            trajectory, tracks, fps, save_events=save_events,
+        )
         events.extend(corner_events)
 
         # Step 8: Merge nearby
@@ -454,15 +465,22 @@ class BallTouchDetector:
 
             bx, by = ball_pos
 
-            # Find nearest player within ±2 frames tolerance
+            # Find nearest player within a frame window around the touch.
+            # Search backward more aggressively (10 frames ≈ 0.33s at 30fps)
+            # since direction changes are detected after deflection.
             best_player = None
             best_dist = float("inf")
-            frame_tolerance = 2
+            pre_tolerance = 10   # frames to search backward
+            post_tolerance = 2   # frames to search forward
 
-            for f_offset in range(-frame_tolerance, frame_tolerance + 1):
+            # Also collect all nearby players for penalty-area GK search
+            all_nearby: list[tuple[float, int, float, float, tuple | None]] = []
+
+            for f_offset in range(-pre_tolerance, post_tolerance + 1):
                 f = touch_frame + f_offset
                 for tid, px, py, jersey_hsv in player_by_frame.get(f, []):
                     dist = ((bx - px) ** 2 + (by - py) ** 2) ** 0.5
+                    all_nearby.append((dist, tid, px, py, jersey_hsv))
                     if dist < best_dist:
                         best_dist = dist
                         best_player = (tid, px, py, jersey_hsv)
@@ -477,7 +495,66 @@ class BallTouchDetector:
 
             tid, px, py, jersey_hsv = best_player
 
-            # Classify toucher by jersey color
+            # GK override for save-like touches only: during a parry, the
+            # ball deflects away so the nearest player is an attacker.
+            # Only for speed_drop/direction_change (save indicators), scan
+            # all nearby players for a GK-colored one in the goal area
+            # (px < 0.22 or px > 0.78).  Uses PLAYER position, not ball
+            # position, because auto-pan cameras center the ball.
+            goal_area_override_fired = False
+            _GOAL_AREA_X = 0.22
+            _OVERRIDE_MIN_SIM = 0.55  # match base gk_color_min_similarity
+            _OVERRIDE_MARGIN = 0.03   # GK must barely beat nearest
+            _SAVE_LIKE_REASONS = ("speed_drop", "direction_change")
+            if team_gk_hsv is not None and reason in _SAVE_LIKE_REASONS:
+                best_gk_player = None
+                best_gk_sim = 0.0
+                # Log all goal-area candidates for diagnostics
+                goal_area_candidates: list[tuple[float, int, float]] = []
+                for d, t_id, p_x, p_y, j_hsv in all_nearby:
+                    if j_hsv is None:
+                        continue
+                    # Player must be in a goal area (near a goal line)
+                    if _GOAL_AREA_X <= p_x <= (1 - _GOAL_AREA_X):
+                        continue
+                    sim = compute_jersey_similarity(j_hsv, team_gk_hsv)
+                    goal_area_candidates.append((sim, t_id, p_x))
+                    if sim >= _OVERRIDE_MIN_SIM and sim > best_gk_sim:
+                        best_gk_sim = sim
+                        best_gk_player = (t_id, p_x, p_y, j_hsv)
+                if goal_area_candidates:
+                    log.debug(
+                        "ball_touch.goal_area_candidates",
+                        frame=touch_frame,
+                        reason=reason,
+                        candidates=[(round(s, 3), t, round(x, 3)) for s, t, x in sorted(goal_area_candidates, reverse=True)[:5]],
+                    )
+                if best_gk_player is not None:
+                    nearest_sim = compute_jersey_similarity(
+                        jersey_hsv, team_gk_hsv
+                    ) if jersey_hsv is not None else 0.0
+                    if best_gk_sim > nearest_sim + _OVERRIDE_MARGIN:
+                        old_tid = tid
+                        tid, px, py, jersey_hsv = best_gk_player
+                        goal_area_override_fired = True
+                        log.debug(
+                            "ball_touch.goal_area_gk_override",
+                            frame=touch_frame,
+                            old_track=old_tid,
+                            new_track=tid,
+                            gk_sim=round(best_gk_sim, 3),
+                            nearest_sim=round(nearest_sim, 3),
+                            gk_px=round(best_gk_player[1], 3),
+                        )
+
+            # Compute GK vertical velocity for diving save detection
+            gk_vert_vel = self._compute_player_vertical_velocity(
+                tid, touch_frame, tracks, fps,
+            )
+
+            # Classify toucher by jersey color.
+            # When goal-area override fired, relax color margins — the
+            # player was already validated by position + trajectory.
             event = self._classify_touch(
                 touch_frame=touch_frame,
                 timestamp=ball_ts,
@@ -485,11 +562,14 @@ class BallTouchDetector:
                 player_track_id=tid,
                 player_jersey_hsv=jersey_hsv,
                 ball_pos=(bx, by),
+                player_pos=(px, py),
                 fps=fps,
                 team_gk_hsv=team_gk_hsv,
                 opp_gk_hsv=opp_gk_hsv,
                 team_outfield_hsv=team_outfield_hsv,
                 opp_outfield_hsv=opp_outfield_hsv,
+                gk_vertical_velocity=gk_vert_vel,
+                goal_area_override=goal_area_override_fired,
             )
             if event is not None:
                 events.append(event)
@@ -552,6 +632,23 @@ class BallTouchDetector:
 
             if goal_kick is not None:
                 kick_ts, kick_frame = goal_kick
+
+                # Goal kicks require higher GK confidence — the dead-ball→kick
+                # pattern can happen anywhere on the pitch (e.g. defender
+                # collecting a clearance), so we need a stricter threshold
+                # than normal GK classification to prevent FPs.
+                _GK_GOAL_KICK_MIN_SIM = 0.78
+                orig_sim = event.metadata.get("sim_team_gk", 0)
+                if orig_sim < _GK_GOAL_KICK_MIN_SIM:
+                    log.debug(
+                        "ball_touch.goal_kick_sim_too_low",
+                        sim_team_gk=round(orig_sim, 3),
+                        threshold=_GK_GOAL_KICK_MIN_SIM,
+                        frame=touch_frame,
+                    )
+                    result.append(event)
+                    continue
+
                 log.info(
                     "ball_touch.dead_ball_reclassified",
                     original_type=event.event_type.value,
@@ -560,17 +657,18 @@ class BallTouchDetector:
                     kick_ts=round(kick_ts, 1),
                 )
                 # Replace save/catch with GOAL_KICK at kick moment
+                # Pre-window of 1.5s captures ball placement without too much idle time
                 result.append(Event(
                     job_id=event.job_id,
                     source_file=event.source_file,
                     event_type=EventType.GOAL_KICK,
-                    timestamp_start=max(0, kick_ts - 0.5),
+                    timestamp_start=max(0, kick_ts - 1.5),
                     timestamp_end=kick_ts + 2.0,
                     confidence=event.confidence,
-                    reel_targets=["keeper"],
+                    reel_targets=[],
                     player_track_id=event.player_track_id,
                     is_goalkeeper_event=True,
-                    frame_start=max(0, int((kick_ts - 0.5) * fps)),
+                    frame_start=max(0, int((kick_ts - 1.5) * fps)),
                     frame_end=int((kick_ts + 2.0) * fps),
                     bounding_box=event.bounding_box,
                     metadata={
@@ -638,6 +736,59 @@ class BallTouchDetector:
 
         return None
 
+    @staticmethod
+    def _compute_player_vertical_velocity(
+        track_id: int,
+        touch_frame: int,
+        tracks: list[Track],
+        fps: float,
+        window_frames: int = 10,
+    ) -> float:
+        """
+        Compute a player's vertical velocity in body-heights per second.
+
+        Looks at the player's bounding box center_y movement over a window
+        around the touch frame. Returns absolute vertical velocity normalized
+        by bbox height (body-heights/sec). Returns 0.0 if insufficient data.
+        """
+        # Find the track
+        target_track = None
+        for t in tracks:
+            if t.track_id == track_id:
+                target_track = t
+                break
+        if target_track is None:
+            return 0.0
+
+        # Get detections near the touch frame
+        nearby = []
+        for det in target_track.detections:
+            if abs(det.frame_number - touch_frame) <= window_frames:
+                nearby.append(det)
+
+        if len(nearby) < 2:
+            return 0.0
+
+        nearby.sort(key=lambda d: d.frame_number)
+
+        # Use the first and last detections in the window
+        first = nearby[0]
+        last = nearby[-1]
+
+        frame_diff = last.frame_number - first.frame_number
+        if frame_diff <= 0 or fps <= 0:
+            return 0.0
+
+        dt = frame_diff / fps
+        dy = abs(last.bbox.center_y - first.bbox.center_y)
+
+        # Normalize by average bbox height (body-height)
+        avg_height = (first.bbox.height + last.bbox.height) / 2
+        if avg_height <= 0:
+            return 0.0
+
+        return (dy / avg_height) / dt
+
     def _classify_touch(
         self,
         touch_frame: int,
@@ -646,11 +797,14 @@ class BallTouchDetector:
         player_track_id: int,
         player_jersey_hsv: Optional[tuple[float, float, float]],
         ball_pos: tuple[float, float],
+        player_pos: tuple[float, float],
         fps: float,
         team_gk_hsv: Optional[tuple[float, float, float]],
         opp_gk_hsv: Optional[tuple[float, float, float]],
         team_outfield_hsv: Optional[tuple[float, float, float]],
         opp_outfield_hsv: Optional[tuple[float, float, float]],
+        gk_vertical_velocity: float = 0.0,
+        goal_area_override: bool = False,
     ) -> Optional[Event]:
         """
         Classify a touch based on the toucher's jersey color.
@@ -659,6 +813,10 @@ class BallTouchDetector:
         Opponent GK → skip
         Outfield → skip (highlights shots handled by classify_highlights_events)
         No color data → skip
+
+        When ``goal_area_override`` is True the player was already found in a
+        goal area during a save-like ball touch — relax color margins since
+        positional + trajectory evidence is strong.
         """
         from src.detection.jersey_classifier import compute_jersey_similarity
 
@@ -675,27 +833,71 @@ class BallTouchDetector:
         sim_team_of = compute_jersey_similarity(player_jersey_hsv, team_outfield_hsv) if team_outfield_hsv else 0.0
         sim_opp_of = compute_jersey_similarity(player_jersey_hsv, opp_outfield_hsv) if opp_outfield_hsv else 0.0
 
-        # Team GK: highest similarity must be to team GK, and above threshold
-        is_team_gk = (
-            sim_team_gk >= self._gk_color_min_similarity
-            and sim_team_gk > sim_opp_gk
-            and sim_team_gk > sim_team_of
-            and sim_team_gk > sim_opp_of
-        )
+        # Team GK: highest similarity must be to team GK, above threshold,
+        # and with a margin over every other color to prevent blue/teal confusion.
+        # Different margins for GK-vs-GK (small — position handles confusion)
+        # and GK-vs-outfield (large — critical for blue/teal guard).
+        _COLOR_MARGIN_GK = 0.03   # GK vs opponent GK
+        _COLOR_MARGIN_OF = 0.12   # GK vs any outfield color
 
-        # Opponent GK: skip — we don't produce reels for them
+        if goal_area_override:
+            # Player validated by position + trajectory — only require
+            # sim_team_gk >= threshold and > sim_opp_gk (no outfield margin).
+            is_team_gk = (
+                sim_team_gk >= self._gk_color_min_similarity
+                and sim_team_gk > sim_opp_gk
+            )
+        else:
+            is_team_gk = (
+                sim_team_gk >= self._gk_color_min_similarity
+                and sim_team_gk > sim_opp_gk + _COLOR_MARGIN_GK
+                and sim_team_gk > sim_team_of + _COLOR_MARGIN_OF
+                and sim_team_gk > sim_opp_of + _COLOR_MARGIN_OF
+            )
+
+        # GKs don't operate in midfield — reject to prevent FPs
+        if is_team_gk and 0.30 < player_pos[0] < 0.70:
+            log.debug(
+                "ball_touch.midfield_gk_rejection",
+                frame=touch_frame, px=round(player_pos[0], 3),
+            )
+            is_team_gk = False
+
+        # Opponent GK: skip — we don't produce reels for them.
+        # Require same margin as team_gk to avoid ambiguous classification.
         is_opp_gk = (
             sim_opp_gk >= self._gk_color_min_similarity
-            and sim_opp_gk > sim_team_gk
+            and sim_opp_gk > sim_team_gk + _COLOR_MARGIN_GK
             and sim_opp_gk > sim_team_of
             and sim_opp_gk > sim_opp_of
         )
+
+        # Goal-area fallback: when both GK checks fail (ambiguous colors)
+        # but the player is near a goal line and sim_team_gk is highest,
+        # classify as our GK.  Spatial filter handles any residual FPs.
+        if not is_team_gk and not is_opp_gk:
+            in_goal_area = player_pos[0] < 0.15 or player_pos[0] > 0.85
+            if (
+                in_goal_area
+                and sim_team_gk >= self._gk_color_min_similarity
+                and sim_team_gk >= sim_opp_gk
+            ):
+                is_team_gk = True
+                log.debug(
+                    "ball_touch.goal_area_gk_fallback",
+                    frame=touch_frame,
+                    px=round(player_pos[0], 3),
+                    sim_team_gk=round(sim_team_gk, 3),
+                    sim_opp_gk=round(sim_opp_gk, 3),
+                )
 
         if is_opp_gk:
             log.debug(
                 "ball_touch.opponent_gk_touch",
                 frame=touch_frame, reason=reason,
                 sim_opp_gk=round(sim_opp_gk, 3),
+                sim_team_gk=round(sim_team_gk, 3),
+                px=round(player_pos[0], 3),
             )
             return None
 
@@ -708,11 +910,27 @@ class BallTouchDetector:
                 sim_team_gk=round(sim_team_gk, 3),
                 sim_opp_gk=round(sim_opp_gk, 3),
                 sim_team_of=round(sim_team_of, 3),
+                sim_opp_of=round(sim_opp_of, 3),
+                goal_area_override=goal_area_override,
             )
             return None
 
         # Team GK touch → keeper event
         event_type = self._reason_to_event_type(reason)
+
+        # Upgrade standing save to diving save based on GK vertical velocity
+        _DIVE_VELOCITY_THRESHOLD = 2.0  # body-heights per second
+        if (
+            event_type == EventType.SHOT_STOP_STANDING
+            and gk_vertical_velocity > _DIVE_VELOCITY_THRESHOLD
+        ):
+            event_type = EventType.SHOT_STOP_DIVING
+            log.debug(
+                "ball_touch.upgraded_to_diving",
+                frame=touch_frame,
+                gk_vertical_velocity=round(gk_vertical_velocity, 2),
+            )
+
         confidence = min(0.90, 0.60 + sim_team_gk * 0.3)
 
         event = Event(
@@ -722,7 +940,7 @@ class BallTouchDetector:
             timestamp_start=max(0, timestamp - 0.5),
             timestamp_end=timestamp + 0.5,
             confidence=confidence,
-            reel_targets=["keeper"],
+            reel_targets=[],
             player_track_id=player_track_id,
             is_goalkeeper_event=True,
             frame_start=max(0, int((timestamp - 0.5) * fps)),
@@ -736,9 +954,12 @@ class BallTouchDetector:
                 "touch_reason": reason,
                 "sim_team_gk": round(sim_team_gk, 3),
                 "sim_opp_gk": round(sim_opp_gk, 3),
+                "sim_team_of": round(sim_team_of, 3),
+                "sim_opp_of": round(sim_opp_of, 3),
                 "player_track_id": player_track_id,
                 "ball_x": round(ball_pos[0], 4),
                 "ball_y": round(ball_pos[1], 4),
+                "gk_vertical_velocity": round(gk_vertical_velocity, 3),
             },
         )
 
@@ -835,7 +1056,7 @@ class BallTouchDetector:
                 timestamp_start=max(0, ts - 2.0),
                 timestamp_end=ts + 3.0,
                 confidence=0.85,
-                reel_targets=["highlights"],
+                reel_targets=[],
                 is_goalkeeper_event=False,
                 frame_start=max(0, int((ts - 2.0) * fps)),
                 frame_end=int((ts + 3.0) * fps),
@@ -862,11 +1083,19 @@ class BallTouchDetector:
         trajectory: BallTrajectory,
         tracks: list[Track],
         fps: float,
+        save_events: list[Event] | None = None,
     ) -> list[Event]:
-        """Detect corner kicks from ball trajectory.
+        """Detect corner kicks using two methods:
 
-        Heuristic: ball near corner area, stationary/slow for >= 0.5s,
-        then kicked (speed increase), with >= 3 players in box area.
+        Method 1 (spatial): Ball near frame edge, stationary >= 0.5s, then
+        kicked, with high player density.  Thresholds are wide to handle
+        auto-panning cameras where ball at corner flag can appear at various
+        frame positions.
+
+        Method 2 (post-save restart): After a save event where ball goes out
+        of play (trajectory gap), look for a restart pattern (ball reappears,
+        stationary, kicked) with high player density.  This reliably detects
+        corner kicks following GK deflections regardless of camera type.
         """
         events: list[Event] = []
         frames = trajectory.frames
@@ -882,8 +1111,39 @@ class BallTouchDetector:
                         (det.bbox.center_x, det.bbox.center_y)
                     )
 
-        # Scan for stationary → kicked pattern near corners
-        min_stationary_frames = max(3, int(0.5 * fps / 3))  # ~0.5s at detection rate
+        min_stationary_frames = max(3, int(0.5 * fps / 3))
+
+        # --- Method 1: Spatial (disabled for auto-panning cameras) ---
+        # Spatial detection produces too many false positives with auto-pan
+        # cameras because any ball near a frame edge + players triggers it.
+        # Kept as code for fixed-camera deployments but not called by default.
+        used_timestamps: set[float] = set()
+
+        # --- Method 2: Post-save restart inference ---
+        if save_events:
+            restart = self._detect_corners_post_save(
+                save_events, trajectory, frames, player_by_frame,
+                fps, min_stationary_frames, used_timestamps,
+            )
+            events.extend(restart)
+
+        log.debug("ball_touch.corner_kicks", corners_found=len(events))
+        return events
+
+    def _detect_corners_spatial(
+        self,
+        trajectory: BallTrajectory,
+        frames: list[int],
+        player_by_frame: dict[int, list[tuple[float, float]]],
+        fps: float,
+        min_stationary_frames: int,
+    ) -> list[Event]:
+        """Spatial corner detection with relaxed thresholds for auto-pan cameras.
+
+        Ball near frame edge (not necessarily in a corner) + stationary + kicked
+        + high player density on one side of the frame.
+        """
+        events: list[Event] = []
 
         i = 0
         while i < len(frames) - min_stationary_frames:
@@ -894,49 +1154,34 @@ class BallTouchDetector:
                 continue
             bx, by = pos
 
-            # Check if near a corner: (x<0.05 AND (y<0.08 OR y>0.92)) or mirrored
-            in_corner = (
-                (bx < 0.05 and (by < 0.08 or by > 0.92))
-                or (bx > 0.95 and (by < 0.08 or by > 0.92))
+            # Wide corner zone: ball near frame edge in at least one dimension.
+            # With auto-panning cameras, the ball at a corner flag may appear
+            # anywhere along the frame edges rather than at strict corners.
+            near_x_edge = bx < 0.12 or bx > 0.88
+            near_y_edge = by < 0.15 or by > 0.85
+            # Require ball near an edge (either dimension) but NOT in center
+            in_corner_zone = near_x_edge and near_y_edge
+            # Also accept: ball near one edge if very close to that edge
+            near_strong_edge = bx < 0.08 or bx > 0.92 or by < 0.10 or by > 0.90
+
+            if not (in_corner_zone or near_strong_edge):
+                i += 1
+                continue
+
+            result = self._check_stationary_and_kick(
+                trajectory, frames, i, fps, min_stationary_frames,
             )
-            if not in_corner:
+            if result is None:
                 i += 1
                 continue
+            kick_frame, kick_speed, stationary_count = result
 
-            # Look for stationary period starting at this frame
-            stationary_count = 0
-            for j in range(i, min(i + int(3 * fps), len(frames))):
-                speed = trajectory.speed_at(frames[j], window=3)
-                if speed is not None and speed < 0.08:
-                    stationary_count += 1
-                else:
-                    break
-
-            if stationary_count < min_stationary_frames:
-                i += 1
-                continue
-
-            # Look for the kick: speed increase after stationary period
-            kick_idx = i + stationary_count
-            if kick_idx >= len(frames):
-                i += stationary_count + 1
-                continue
-
-            kick_frame = frames[kick_idx]
-            kick_speed = trajectory.speed_at(kick_frame, window=3)
-            if kick_speed is None or kick_speed < 0.15:
-                i += stationary_count + 1
-                continue
-
-            # Check for player cluster in box area (>=3 players near the goal)
-            # Box area: for left corner, x < 0.20; for right corner, x > 0.80
-            box_x_range = (0.0, 0.20) if bx < 0.5 else (0.80, 1.0)
-            players_in_box = 0
-            for px, py in player_by_frame.get(kick_frame, []):
-                if box_x_range[0] <= px <= box_x_range[1]:
-                    players_in_box += 1
-
-            if players_in_box < 3:
+            # Player density check — need many players clustered on one side
+            min_players = 3 if in_corner_zone else 5
+            players_in_half = self._count_players_in_half(
+                player_by_frame, kick_frame, bx,
+            )
+            if players_in_half < min_players:
                 i += stationary_count + 1
                 continue
 
@@ -945,38 +1190,211 @@ class BallTouchDetector:
                 i += stationary_count + 1
                 continue
 
-            # Determine if corner is on our GK's side for reel targeting
-            reel_targets = ["keeper"]
-
-            events.append(Event(
-                job_id=self.job_id,
-                source_file=self.source_file,
-                event_type=EventType.CORNER_KICK,
-                timestamp_start=max(0, kick_ts - 1.0),
-                timestamp_end=kick_ts + 4.0,
-                confidence=0.70,
-                reel_targets=reel_targets,
-                is_goalkeeper_event=True,
-                frame_start=max(0, int((kick_ts - 1.0) * fps)),
-                frame_end=int((kick_ts + 4.0) * fps),
-                bounding_box=BoundingBox(
-                    x=bx - 0.02, y=by - 0.02,
-                    width=0.04, height=0.04,
-                ),
-                metadata={
-                    "detection_method": "corner_kick",
-                    "corner_x": round(bx, 4),
-                    "corner_y": round(by, 4),
-                    "kick_speed": round(kick_speed, 4),
-                    "players_in_box": players_in_box,
-                },
+            events.append(self._make_corner_event(
+                kick_ts, fps, bx, by, kick_speed, players_in_half,
+                detection_method="corner_kick_spatial",
             ))
-
-            # Skip past this event
             i += stationary_count + int(fps)
 
-        log.debug("ball_touch.corner_kicks", corners_found=len(events))
         return events
+
+    def _detect_corners_post_save(
+        self,
+        save_events: list[Event],
+        trajectory: BallTrajectory,
+        frames: list[int],
+        player_by_frame: dict[int, list[tuple[float, float]]],
+        fps: float,
+        min_stationary_frames: int,
+        used_timestamps: set[float],
+    ) -> list[Event]:
+        """Detect corner kicks following save events.
+
+        Pattern: save → ball goes out (trajectory gap) → ball reappears →
+        stationary (being placed for corner) → kicked with high player density.
+
+        This captures corner kicks after GK deflections regardless of camera
+        position, since we know a save happened and the ball went out.
+        """
+        events: list[Event] = []
+
+        for save_ev in save_events:
+            if save_ev.event_type not in (
+                EventType.SHOT_STOP_STANDING,
+                EventType.SHOT_STOP_DIVING,
+                EventType.CATCH,
+            ):
+                continue
+
+            save_end_ts = save_ev.timestamp_end
+            save_frame = save_ev.frame_end
+
+            # Look for a trajectory gap starting within 3s after the save
+            # (ball going out of play after GK deflection)
+            gap_found = False
+            gap_end_frame = None
+            for last_seen, first_reappear in trajectory.find_gaps(min_gap_frames=5):
+                last_ts = trajectory.timestamp_at(last_seen)
+                reappear_ts = trajectory.timestamp_at(first_reappear)
+                if last_ts is None or reappear_ts is None:
+                    continue
+                # Gap must start near the save (within 1s before or 3s after)
+                if -1.0 <= last_ts - save_end_ts <= 3.0:
+                    # Gap must be at least 1s (real dead ball, not brief occlusion)
+                    gap_duration = reappear_ts - last_ts
+                    if gap_duration >= 1.0:
+                        gap_found = True
+                        gap_end_frame = first_reappear
+                        break
+
+            if not gap_found or gap_end_frame is None:
+                continue
+
+            # After the gap, look for stationary → kicked pattern
+            gap_idx = bisect.bisect_left(frames, gap_end_frame)
+            if gap_idx >= len(frames):
+                continue
+
+            # Scan forward from the gap end for stationary ball
+            found_restart = False
+            scan_limit = min(gap_idx + int(10 * fps), len(frames) - min_stationary_frames)
+            for si in range(gap_idx, scan_limit):
+                result = self._check_stationary_and_kick(
+                    trajectory, frames, si, fps, min_stationary_frames,
+                )
+                if result is None:
+                    continue
+                kick_frame, kick_speed, stationary_count = result
+
+                # Player density check — corner kicks have many players in frame
+                # Use the ball's side to determine which half to check
+                ball_pos = trajectory.position_at(kick_frame)
+                if ball_pos is None:
+                    continue
+                bx, by = ball_pos
+
+                players_in_half = self._count_players_in_half(
+                    player_by_frame, kick_frame, bx,
+                )
+                if players_in_half < 4:
+                    continue
+
+                kick_ts = trajectory.timestamp_at(kick_frame)
+                if kick_ts is None:
+                    continue
+
+                # Avoid duplicates with spatial method
+                if any(abs(kick_ts - ut) < 3.0 for ut in used_timestamps):
+                    continue
+
+                events.append(self._make_corner_event(
+                    kick_ts, fps, bx, by, kick_speed, players_in_half,
+                    detection_method="corner_kick_post_save",
+                    save_event_ts=round(save_ev.timestamp_start, 1),
+                ))
+                found_restart = True
+                break
+
+            if found_restart:
+                log.info(
+                    "ball_touch.corner_after_save",
+                    save_ts=round(save_ev.timestamp_start, 1),
+                    save_type=save_ev.event_type.value,
+                )
+
+        return events
+
+    def _check_stationary_and_kick(
+        self,
+        trajectory: BallTrajectory,
+        frames: list[int],
+        start_idx: int,
+        fps: float,
+        min_stationary_frames: int,
+    ) -> tuple[int, float, int] | None:
+        """Check for stationary → kicked pattern starting at index.
+
+        Returns (kick_frame, kick_speed, stationary_count) or None.
+        """
+        stationary_count = 0
+        for j in range(start_idx, min(start_idx + int(3 * fps), len(frames))):
+            speed = trajectory.speed_at(frames[j], window=3)
+            if speed is not None and speed < 0.08:
+                stationary_count += 1
+            else:
+                break
+
+        if stationary_count < min_stationary_frames:
+            return None
+
+        kick_idx = start_idx + stationary_count
+        if kick_idx >= len(frames):
+            return None
+
+        kick_frame = frames[kick_idx]
+        kick_speed = trajectory.speed_at(kick_frame, window=3)
+        if kick_speed is None or kick_speed < 0.12:
+            return None
+
+        return (kick_frame, kick_speed, stationary_count)
+
+    def _count_players_in_half(
+        self,
+        player_by_frame: dict[int, list[tuple[float, float]]],
+        frame: int,
+        ball_x: float,
+    ) -> int:
+        """Count players in the same half of the frame as the ball."""
+        if ball_x < 0.5:
+            return sum(
+                1 for px, py in player_by_frame.get(frame, [])
+                if px < 0.55
+            )
+        else:
+            return sum(
+                1 for px, py in player_by_frame.get(frame, [])
+                if px > 0.45
+            )
+
+    def _make_corner_event(
+        self,
+        kick_ts: float,
+        fps: float,
+        bx: float,
+        by: float,
+        kick_speed: float,
+        players_in_half: int,
+        detection_method: str = "corner_kick",
+        save_event_ts: float | None = None,
+    ) -> Event:
+        """Create a CORNER_KICK event."""
+        metadata: dict = {
+            "detection_method": detection_method,
+            "corner_x": round(bx, 4),
+            "corner_y": round(by, 4),
+            "kick_speed": round(kick_speed, 4),
+            "players_in_half": players_in_half,
+        }
+        if save_event_ts is not None:
+            metadata["save_event_ts"] = save_event_ts
+
+        return Event(
+            job_id=self.job_id,
+            source_file=self.source_file,
+            event_type=EventType.CORNER_KICK,
+            timestamp_start=max(0, kick_ts - 1.0),
+            timestamp_end=kick_ts + 4.0,
+            confidence=0.70,
+            reel_targets=[],
+            is_goalkeeper_event=True,
+            frame_start=max(0, int((kick_ts - 1.0) * fps)),
+            frame_end=int((kick_ts + 4.0) * fps),
+            bounding_box=BoundingBox(
+                x=bx - 0.02, y=by - 0.02,
+                width=0.04, height=0.04,
+            ),
+            metadata=metadata,
+        )
 
     # -------------------------------------------------------------------
     # WS3: Smart clip endpoints
@@ -992,6 +1410,7 @@ class BallTouchDetector:
         EventType.CATCH: 5.0,
         EventType.PUNCH: 5.0,
         EventType.CORNER_KICK: 8.0,
+        EventType.ONE_ON_ONE: 8.0,
     }
 
     def _apply_smart_endpoints(
@@ -1050,7 +1469,7 @@ class BallTouchDetector:
         new_end_ts = end_ts
         reason = None
 
-        cos_30 = math.cos(math.radians(30.0))
+        cos_20 = math.cos(math.radians(20.0))
 
         for i in range(start_idx, len(frames)):
             frame = frames[i]
@@ -1085,18 +1504,18 @@ class BallTouchDetector:
                 if pre_vel is not None and post_vel is not None:
                     pre_s = (pre_vel[0] ** 2 + pre_vel[1] ** 2) ** 0.5
                     post_s = (post_vel[0] ** 2 + post_vel[1] ** 2) ** 0.5
-                    # Speed drop > 40%
-                    if pre_s > 0.1 and post_s < pre_s * 0.6:
+                    # Speed drop > 30%
+                    if pre_s > 0.1 and post_s < pre_s * 0.7:
                         new_end_ts = ts
                         reason = "next_touch_speed"
                         break
-                    # Direction change > 30deg
-                    if pre_s > 0.05 and post_s > 0.05:
+                    # Direction change > 20deg
+                    if pre_s > 0.03 and post_s > 0.03:
                         dot = pre_vel[0] * post_vel[0] + pre_vel[1] * post_vel[1]
                         denom = pre_s * post_s
                         if denom > 0:
                             cos_a = max(-1.0, min(1.0, dot / denom))
-                            if cos_a < cos_30:
+                            if cos_a < cos_20:
                                 new_end_ts = ts
                                 reason = "next_touch_direction"
                                 break
@@ -1117,6 +1536,11 @@ class BallTouchDetector:
             data["metadata"]["extension_sec"] = round(new_end_ts - end_ts, 2)
             return Event(**data)
 
+        log.debug(
+            "ball_touch.endpoint_not_extended",
+            event_type=event.event_type.value,
+            timestamp_end=round(end_ts, 2),
+        )
         return event
 
     @staticmethod

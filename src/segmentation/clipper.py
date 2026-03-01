@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from src.detection.models import Event
+from src.detection.models import Event, EVENT_TYPE_CONFIG
 
 
 class ClipBoundary(BaseModel):
@@ -48,13 +48,13 @@ def compute_clips(
     Returns:
         Sorted list of ClipBoundary objects, no overlaps.
     """
-    # Filter to this reel and to events that should be included.
-    # GK events have reel_targets like ["keeper_a"], ["keeper_b"] — match
-    # any target starting with the requested reel_type (e.g. "keeper").
+    # Filter to events that should be included.
+    # Note: reel_targets filtering is deprecated — callers now pre-filter
+    # by event type via ReelSpec. For backward compat, if any event has
+    # reel_targets set, we still filter by it; otherwise include all.
     reel_events = [
         e for e in events
-        if any(rt == reel_type or rt.startswith(reel_type + "_") for rt in e.reel_targets)
-        and e.should_include()
+        if e.should_include()
     ]
     if not reel_events:
         return []
@@ -97,6 +97,80 @@ def compute_clips(
             end_sec=end,
             events=[e.event_id for e in clip_events],
             reel_type=reel_type,
+            primary_event_type=primary.event_type,
+        ))
+
+    return boundaries
+
+
+def compute_clips_v2(
+    events: list[Event],
+    video_duration: float,
+    reel_name: str = "reel",
+    merge_gap_sec: float = 2.0,
+) -> list[ClipBoundary]:
+    """
+    Compute clips using per-event-type padding from EVENT_TYPE_CONFIG.
+
+    Unlike compute_clips, this function does NOT filter by reel_targets.
+    The caller is responsible for passing only the wanted events.
+
+    Padding is looked up per event from EVENT_TYPE_CONFIG. Events whose type
+    is not in the config fall back to 3.0/5.0 pre/post and 90s max.
+
+    Args:
+        events: Pre-filtered events (only the ones wanted for this reel)
+        video_duration: Total length of source video in seconds
+        reel_name: Name for ClipBoundary.reel_type field
+        merge_gap_sec: Clips with gap < this are merged into one
+
+    Returns:
+        Sorted list of ClipBoundary objects, no overlaps.
+    """
+    includable = [e for e in events if e.should_include()]
+    if not includable:
+        return []
+
+    includable = sorted(includable, key=lambda e: e.timestamp_start)
+
+    # Apply per-event padding and clamp
+    raw_clips: list[tuple[float, float, float, Event]] = []
+    for event in includable:
+        cfg = EVENT_TYPE_CONFIG.get(event.event_type)
+        pre = cfg.pre_pad_sec if cfg else 3.0
+        post = cfg.post_pad_sec if cfg else 5.0
+        max_dur = cfg.max_clip_sec if cfg else 90.0
+
+        start = max(0.0, event.timestamp_start - pre)
+        end = min(video_duration, event.timestamp_end + post)
+        raw_clips.append((start, end, max_dur, event))
+
+    # Merge overlapping or close clips (cap merged clip by smallest max_dur)
+    merged: list[tuple[float, float, float, list[Event]]] = []
+    for start, end, max_dur, event in raw_clips:
+        if merged and start - merged[-1][1] <= merge_gap_sec:
+            prev_start, prev_end, prev_max, prev_events = merged[-1]
+            effective_max = min(prev_max, max_dur)
+            new_end = max(prev_end, end)
+            if new_end - prev_start <= effective_max:
+                merged[-1] = (prev_start, new_end, effective_max, prev_events + [event])
+            else:
+                safe_start = max(start, prev_end)
+                if safe_start < end:
+                    merged.append((safe_start, end, max_dur, [event]))
+        else:
+            merged.append((start, end, max_dur, [event]))
+
+    # Build ClipBoundary objects
+    boundaries = []
+    for start, end, _max_dur, clip_events in merged:
+        primary = max(clip_events, key=lambda e: e.confidence)
+        boundaries.append(ClipBoundary(
+            source_file=clip_events[0].source_file,
+            start_sec=start,
+            end_sec=end,
+            events=[e.event_id for e in clip_events],
+            reel_type=reel_name,
             primary_event_type=primary.event_type,
         ))
 

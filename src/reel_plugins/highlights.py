@@ -47,6 +47,5 @@ class HighlightsShotsPlugin(ReelPlugin):
         return [
             e for e in events
             if e.event_type in _HIGHLIGHTS_TYPES
-            and "highlights" in e.reel_targets
             and e.should_include()
         ]

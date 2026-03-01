@@ -392,8 +392,10 @@ class TestPartialReelOnInterrupt:
             "GoalkeeperDetector": "src.detection.goalkeeper_detector.GoalkeeperDetector",
             "PipelineRunner": "src.detection.event_classifier.PipelineRunner",
             "EventLog": "src.detection.event_log.EventLog",
-            "compute_clips": "src.segmentation.clipper.compute_clips",
+            "compute_clips_v2": "src.segmentation.clipper.compute_clips_v2",
             "postprocess_clips": "src.segmentation.deduplicator.postprocess_clips",
+            "filter_wrong_side": "src.segmentation.spatial_filter.filter_wrong_side_events",
+            "passes_sim_gate": "src.segmentation.spatial_filter.passes_sim_gate",
             "ReelComposer": "src.assembly.composer.ReelComposer",
             "write_reel_to_nas": "src.assembly.output.write_reel_to_nas",
             "get_output_path": "src.assembly.output.get_output_path",
@@ -404,8 +406,10 @@ class TestPartialReelOnInterrupt:
              patch(_P["GoalkeeperDetector"]), \
              patch(_P["PipelineRunner"]) as m_runner, \
              patch(_P["EventLog"]) as m_evlog, \
-             patch(_P["compute_clips"]) as m_clips, \
+             patch(_P["compute_clips_v2"]) as m_clips, \
              patch(_P["postprocess_clips"]) as m_post, \
+             patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur: sel), \
+             patch(_P["passes_sim_gate"], return_value=True), \
              patch(_P["ReelComposer"]) as m_composer, \
              patch(_P["write_reel_to_nas"]) as m_nas, \
              patch(_P["get_output_path"], create=True), \
@@ -431,7 +435,7 @@ class TestPartialReelOnInterrupt:
             job_id="x", source_file="match.mp4",
             event_type=EventType.CATCH, timestamp_start=10.0,
             timestamp_end=12.0, confidence=0.80,
-            reel_targets=["keeper"], frame_start=300, frame_end=360,
+            reel_targets=[], frame_start=300, frame_end=360,
             is_goalkeeper_event=True,
         )
         clip = ClipBoundary(
@@ -459,7 +463,7 @@ class TestPartialReelOnInterrupt:
             job_id="x", source_file="match.mp4",
             event_type=EventType.CATCH, timestamp_start=10.0,
             timestamp_end=12.0, confidence=0.80,
-            reel_targets=["keeper"], frame_start=300, frame_end=360,
+            reel_targets=[], frame_start=300, frame_end=360,
             is_goalkeeper_event=True,
         )
         clip = ClipBoundary(

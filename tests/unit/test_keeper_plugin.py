@@ -32,6 +32,7 @@ def _make_event(
     confidence: float = 0.85,
     is_gk: bool = True,
     bbox_center_x: float | None = None,
+    sim_team_gk: float = 0.90,
 ) -> Event:
     bbox = None
     if bbox_center_x is not None:
@@ -44,11 +45,12 @@ def _make_event(
         timestamp_start=start,
         timestamp_end=end,
         confidence=confidence,
-        reel_targets=reel_targets or ["keeper"],
+        reel_targets=reel_targets or [],
         is_goalkeeper_event=is_gk,
         frame_start=int(start * 30),
         frame_end=int(end * 30),
         bounding_box=bbox,
+        metadata={"sim_team_gk": sim_team_gk} if is_gk else {},
     )
 
 
@@ -75,8 +77,8 @@ def mixed_events():
         _make_event(EventType.DISTRIBUTION_SHORT, start=150.0),
         _make_event(EventType.DISTRIBUTION_LONG, start=180.0),
         _make_event(EventType.PENALTY, start=200.0),
-        _make_event(EventType.SHOT_ON_TARGET, start=220.0, reel_targets=["highlights"], is_gk=False),
-        _make_event(EventType.GOAL, start=240.0, reel_targets=["highlights"], is_gk=False),
+        _make_event(EventType.SHOT_ON_TARGET, start=220.0, reel_targets=[], is_gk=False),
+        _make_event(EventType.GOAL, start=240.0, reel_targets=[], is_gk=False),
     ]
 
 
@@ -94,7 +96,7 @@ class TestKeeperSavesPlugin:
     def test_clip_params_tight_padding(self):
         p = KeeperSavesPlugin()
         assert p.clip_params.pre_pad_sec == 8.0
-        assert p.clip_params.post_pad_sec == 4.0
+        assert p.clip_params.post_pad_sec == 2.0
         assert p.clip_params.max_clip_duration_sec == 25.0
 
     def test_selects_save_types(self, mixed_events, ctx):
@@ -131,16 +133,6 @@ class TestKeeperSavesPlugin:
         selected = KeeperSavesPlugin().select_events([event], ctx)
         assert selected == []
 
-    def test_requires_keeper_reel_target(self, ctx):
-        event = _make_event(EventType.CATCH, reel_targets=["highlights"])
-        selected = KeeperSavesPlugin().select_events([event], ctx)
-        assert selected == []
-
-    def test_accepts_keeper_a_target(self, ctx):
-        event = _make_event(EventType.CATCH, reel_targets=["keeper_a"])
-        selected = KeeperSavesPlugin().select_events([event], ctx)
-        assert len(selected) == 1
-
     def test_filters_low_confidence(self, ctx):
         event = _make_event(EventType.CATCH, confidence=0.10)
         selected = KeeperSavesPlugin().select_events([event], ctx)
@@ -151,8 +143,8 @@ class TestKeeperSavesPlugin:
 
     def test_all_non_gk_events_returns_empty(self, ctx):
         events = [
-            _make_event(EventType.SHOT_ON_TARGET, reel_targets=["highlights"], is_gk=False),
-            _make_event(EventType.GOAL, reel_targets=["highlights"], is_gk=False),
+            _make_event(EventType.SHOT_ON_TARGET, reel_targets=[], is_gk=False),
+            _make_event(EventType.GOAL, reel_targets=[], is_gk=False),
         ]
         assert KeeperSavesPlugin().select_events(events, ctx) == []
 
@@ -171,8 +163,8 @@ class TestKeeperGoalKickPlugin:
     def test_clip_params(self):
         p = KeeperGoalKickPlugin()
         assert p.clip_params.pre_pad_sec == 1.0
-        assert p.clip_params.post_pad_sec == 10.0
-        assert p.clip_params.max_clip_duration_sec == 20.0
+        assert p.clip_params.post_pad_sec == 2.0
+        assert p.clip_params.max_clip_duration_sec == 15.0
 
     def test_selects_only_goal_kick(self, mixed_events, ctx):
         p = KeeperGoalKickPlugin()
@@ -182,10 +174,6 @@ class TestKeeperGoalKickPlugin:
 
     def test_requires_is_goalkeeper_event(self, ctx):
         event = _make_event(EventType.GOAL_KICK, is_gk=False)
-        assert KeeperGoalKickPlugin().select_events([event], ctx) == []
-
-    def test_requires_keeper_reel_target(self, ctx):
-        event = _make_event(EventType.GOAL_KICK, reel_targets=["highlights"])
         assert KeeperGoalKickPlugin().select_events([event], ctx) == []
 
     def test_empty_events(self, ctx):
@@ -206,7 +194,7 @@ class TestKeeperDistributionPlugin:
     def test_clip_params_distribution_padding(self):
         p = KeeperDistributionPlugin()
         assert p.clip_params.pre_pad_sec == 1.0
-        assert p.clip_params.post_pad_sec == 8.0
+        assert p.clip_params.post_pad_sec == 2.0
         assert p.clip_params.max_clip_duration_sec == 20.0
 
     def test_selects_distribution_types(self, mixed_events, ctx):
@@ -234,11 +222,6 @@ class TestKeeperDistributionPlugin:
         selected = KeeperDistributionPlugin().select_events([event], ctx)
         assert selected == []
 
-    def test_requires_keeper_reel_target(self, ctx):
-        event = _make_event(EventType.DISTRIBUTION_SHORT, reel_targets=["highlights"])
-        selected = KeeperDistributionPlugin().select_events([event], ctx)
-        assert selected == []
-
     def test_empty_events(self, ctx):
         assert KeeperDistributionPlugin().select_events([], ctx) == []
 
@@ -257,7 +240,7 @@ class TestKeeperOneOnOnePlugin:
     def test_clip_params(self):
         p = KeeperOneOnOnePlugin()
         assert p.clip_params.pre_pad_sec == 3.0
-        assert p.clip_params.post_pad_sec == 6.0
+        assert p.clip_params.post_pad_sec == 2.0
         assert p.clip_params.max_clip_duration_sec == 30.0
 
     def test_selects_only_one_on_one(self, mixed_events, ctx):
@@ -268,10 +251,6 @@ class TestKeeperOneOnOnePlugin:
 
     def test_requires_is_goalkeeper_event(self, ctx):
         event = _make_event(EventType.ONE_ON_ONE, is_gk=False)
-        assert KeeperOneOnOnePlugin().select_events([event], ctx) == []
-
-    def test_requires_keeper_reel_target(self, ctx):
-        event = _make_event(EventType.ONE_ON_ONE, reel_targets=["highlights"])
         assert KeeperOneOnOnePlugin().select_events([event], ctx) == []
 
     def test_empty_events(self, ctx):
@@ -456,3 +435,52 @@ class TestSpatialFilter:
         selected = KeeperSavesPlugin().select_events(events, ctx)
         assert len(selected) == 5
         assert wrong_save not in selected
+
+
+# ===========================================================================
+# Reel-level sim_team_gk quality gate
+# ===========================================================================
+
+@pytest.mark.unit
+class TestSimGate:
+    """Events with low sim_team_gk are excluded from keeper reel."""
+
+    def test_low_sim_event_excluded(self, ctx):
+        """Event with sim_team_gk below save threshold (0.55) is excluded."""
+        low_sim = _make_event(
+            EventType.CATCH, start=100.0, sim_team_gk=0.50,
+        )
+        selected = KeeperSavesPlugin().select_events([low_sim], ctx)
+        assert len(selected) == 0
+
+    def test_high_sim_event_included(self, ctx):
+        """Event with sim_team_gk >= 0.75 is included."""
+        high_sim = _make_event(
+            EventType.CATCH, start=100.0, sim_team_gk=0.80,
+        )
+        selected = KeeperSavesPlugin().select_events([high_sim], ctx)
+        assert len(selected) == 1
+
+    def test_borderline_sim_included(self, ctx):
+        """Event with sim_team_gk exactly 0.75 is included."""
+        borderline = _make_event(
+            EventType.CATCH, start=100.0, sim_team_gk=0.75,
+        )
+        selected = KeeperSavesPlugin().select_events([borderline], ctx)
+        assert len(selected) == 1
+
+    def test_penalty_exempt_from_sim_gate(self, ctx):
+        """PENALTY events are ML-detected and exempt from sim gate."""
+        penalty = _make_event(
+            EventType.PENALTY, start=100.0, sim_team_gk=0.0,
+        )
+        selected = KeeperSavesPlugin().select_events([penalty], ctx)
+        assert len(selected) == 1
+
+    def test_goal_kick_with_low_sim_excluded(self, ctx):
+        """Goal kick with low sim_team_gk is excluded."""
+        gk = _make_event(
+            EventType.GOAL_KICK, start=100.0, sim_team_gk=0.70,
+        )
+        selected = KeeperGoalKickPlugin().select_events([gk], ctx)
+        assert len(selected) == 0

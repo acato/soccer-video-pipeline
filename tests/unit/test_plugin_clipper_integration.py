@@ -28,6 +28,7 @@ def _make_event(
     reel_targets: list[str] | None = None,
     confidence: float = 0.85,
     is_gk: bool = False,
+    sim_team_gk: float = 0.90,
 ) -> Event:
     end = end or start + 1.0
     return Event(
@@ -42,6 +43,7 @@ def _make_event(
         is_goalkeeper_event=is_gk,
         frame_start=int(start * 30),
         frame_end=int(end * 30),
+        metadata={"sim_team_gk": sim_team_gk} if is_gk else {},
     )
 
 
@@ -80,25 +82,25 @@ def _run_plugin_to_clips(plugin, events, ctx=None):
 class TestKeeperSavesClips:
     def test_single_save_clip_boundaries(self):
         events = [
-            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=[], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
         assert len(clips) == 1
         assert clips[0].start_sec == pytest.approx(22.0)  # 30.0 - 8.0
-        assert clips[0].end_sec == pytest.approx(35.0)    # 31.0 + 4.0
+        assert clips[0].end_sec == pytest.approx(33.0)    # 31.0 + 2.0
 
     def test_two_distant_saves_produce_two_clips(self):
         events = [
-            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=["keeper"], is_gk=True),
-            _make_event(EventType.SHOT_STOP_STANDING, start=300.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=[], is_gk=True),
+            _make_event(EventType.SHOT_STOP_STANDING, start=300.0, reel_targets=[], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
         assert len(clips) == 2
 
     def test_two_close_saves_merge(self):
         events = [
-            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=["keeper"], is_gk=True),
-            _make_event(EventType.CATCH, start=32.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=[], is_gk=True),
+            _make_event(EventType.CATCH, start=32.0, reel_targets=[], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
         # gap after padding: (32.0-5.0) - (31.0+1.5) = 27.0 - 32.5 < 0 → overlap → merge
@@ -106,7 +108,7 @@ class TestKeeperSavesClips:
 
     def test_no_matching_events_returns_empty(self):
         events = [
-            _make_event(EventType.GOAL, start=50.0, reel_targets=["highlights"]),
+            _make_event(EventType.GOAL, start=50.0, reel_targets=[]),
         ]
         clips = _run_plugin_to_clips(KeeperSavesPlugin(), events)
         assert clips == []
@@ -116,31 +118,31 @@ class TestKeeperSavesClips:
 class TestKeeperGoalKickClips:
     def test_goal_kick_clip_boundaries(self):
         events = [
-            _make_event(EventType.GOAL_KICK, start=60.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.GOAL_KICK, start=60.0, reel_targets=[], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperGoalKickPlugin(), events)
         assert len(clips) == 1
         assert clips[0].start_sec == pytest.approx(59.0)  # 60.0 - 1.0
-        assert clips[0].end_sec == pytest.approx(71.0)    # 61.0 + 10.0
+        assert clips[0].end_sec == pytest.approx(63.0)    # 61.0 + 2.0
 
 
 @pytest.mark.unit
 class TestKeeperDistributionClips:
     def test_distribution_clip_boundaries(self):
         events = [
-            _make_event(EventType.DISTRIBUTION_SHORT, start=60.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.DISTRIBUTION_SHORT, start=60.0, reel_targets=[], is_gk=True),
         ]
         clips = _run_plugin_to_clips(KeeperDistributionPlugin(), events)
         assert len(clips) == 1
         assert clips[0].start_sec == pytest.approx(59.0)  # 60.0 - 1.0
-        assert clips[0].end_sec == pytest.approx(69.0)    # 61.0 + 8.0
+        assert clips[0].end_sec == pytest.approx(63.0)    # 61.0 + 2.0
 
 
 @pytest.mark.unit
 class TestHighlightsClips:
     def test_shot_clip_has_wide_padding(self):
         events = [
-            _make_event(EventType.SHOT_ON_TARGET, start=100.0, reel_targets=["highlights"]),
+            _make_event(EventType.SHOT_ON_TARGET, start=100.0, reel_targets=[]),
         ]
         clips = _run_plugin_to_clips(HighlightsShotsPlugin(), events)
         assert len(clips) == 1
@@ -159,8 +161,8 @@ class TestMultiPluginMerge:
         are kept as separate clips (postprocess deduplicates near-identical clips,
         not partially overlapping ones)."""
         events = [
-            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=["keeper"], is_gk=True),
-            _make_event(EventType.DISTRIBUTION_SHORT, start=33.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=[], is_gk=True),
+            _make_event(EventType.DISTRIBUTION_SHORT, start=33.0, reel_targets=[], is_gk=True),
         ]
         ctx = _make_ctx()
         saves_clips = _run_plugin_to_clips(KeeperSavesPlugin(), events, ctx)
@@ -176,8 +178,8 @@ class TestMultiPluginMerge:
 
     def test_saves_and_distribution_separate_when_distant(self):
         events = [
-            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=["keeper"], is_gk=True),
-            _make_event(EventType.DISTRIBUTION_SHORT, start=300.0, reel_targets=["keeper"], is_gk=True),
+            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=[], is_gk=True),
+            _make_event(EventType.DISTRIBUTION_SHORT, start=300.0, reel_targets=[], is_gk=True),
         ]
         ctx = _make_ctx()
         saves_clips = _run_plugin_to_clips(KeeperSavesPlugin(), events, ctx)
@@ -198,8 +200,8 @@ class TestRegistryRoundTrip:
     def test_default_registry_produces_clips_for_both_reels(self):
         """Default registry with keeper + highlights events produces both reels."""
         events = [
-            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=["keeper"], is_gk=True),
-            _make_event(EventType.GOAL, start=200.0, reel_targets=["highlights"], confidence=0.92),
+            _make_event(EventType.SHOT_STOP_DIVING, start=30.0, reel_targets=[], is_gk=True),
+            _make_event(EventType.GOAL, start=200.0, reel_targets=[], confidence=0.92),
         ]
         registry = PluginRegistry.default()
         ctx = _make_ctx()

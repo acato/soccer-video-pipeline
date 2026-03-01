@@ -108,11 +108,6 @@ class TestHighlightsShotsPlugin:
         selected = p.select_events(mixed_events, ctx)
         assert not any(e.event_type == EventType.CATCH for e in selected)
 
-    def test_requires_highlights_reel_target(self, ctx):
-        event = _make_event(EventType.GOAL, reel_targets=["keeper"])
-        selected = HighlightsShotsPlugin().select_events([event], ctx)
-        assert selected == []
-
     def test_filters_low_confidence_goal(self, ctx):
         """GOAL has confidence threshold 0.85 — low confidence should be filtered."""
         event = _make_event(EventType.GOAL, confidence=0.50)

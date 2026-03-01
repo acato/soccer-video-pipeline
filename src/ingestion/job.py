@@ -15,7 +15,7 @@ from typing import Optional
 
 import structlog
 
-from src.ingestion.models import Job, JobStatus, MatchConfig, VideoFile
+from src.ingestion.models import Job, JobStatus, MatchConfig, ReelSpec, VideoFile
 
 log = structlog.get_logger(__name__)
 
@@ -120,18 +120,26 @@ def create_job(
     store: JobStore,
     match_config: Optional[MatchConfig] = None,
     game_start_sec: float = 0.0,
+    reels: Optional[list[ReelSpec]] = None,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
     Returns the newly created Job.
     """
-    job = Job(video_file=video_file, reel_types=reel_types, match_config=match_config, game_start_sec=game_start_sec)
+    job = Job(
+        video_file=video_file,
+        reel_types=reel_types,
+        reels=reels or [],
+        match_config=match_config,
+        game_start_sec=game_start_sec,
+    )
     store.save(job)
     log.info(
         "job.created",
         job_id=job.job_id,
         filename=video_file.filename,
         reel_types=reel_types,
+        reels=[s.name for s in (reels or [])],
         duration_sec=video_file.duration_sec,
     )
     # Celery enqueue is done by the API layer to avoid circular imports

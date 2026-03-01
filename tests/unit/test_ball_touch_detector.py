@@ -203,17 +203,17 @@ class TestTouchDetection:
         events = det.detect_touches([ball_track, gk_track], fps)
         assert len(events) >= 1
         assert events[0].is_goalkeeper_event
-        assert "keeper" in events[0].reel_targets
+        assert events[0].is_goalkeeper_event
 
     def test_speed_drop_detected(self):
         """Ball decelerating >50% is detected as a touch."""
         fps = 30.0
-        # Ball moves fast then slows
+        # Ball moves fast toward goal then slows (GK save near goal area)
         ball_dets = (
-            [_ball_det(i, i / fps, 0.10 + i * 0.03, 0.50) for i in range(10)]  # fast
-            + [_ball_det(10 + i, (10 + i) / fps, 0.40 + i * 0.002, 0.50) for i in range(10)]  # slow
+            [_ball_det(i, i / fps, 0.25 - i * 0.015, 0.50) for i in range(10)]  # fast toward goal
+            + [_ball_det(10 + i, (10 + i) / fps, 0.10 + i * 0.001, 0.50) for i in range(10)]  # slow
         )
-        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.40, cy=0.50) for f in range(7, 14)]
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.10, cy=0.50) for f in range(7, 14)]
         ball_track = _ball_track(1, ball_dets)
         gk_track = _player_track(99, gk_dets, jersey_hsv=TEAM_GK_HSV)
 
@@ -224,9 +224,9 @@ class TestTouchDetection:
     def test_ball_caught_detected(self):
         """Ball disappearing after fast approach = catch."""
         fps = 30.0
-        # Ball moves fast then vanishes (end of trajectory = caught)
-        ball_dets = [_ball_det(i, i / fps, 0.10 + i * 0.03, 0.50) for i in range(10)]
-        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.37, cy=0.50) for f in range(6, 12)]
+        # Ball moves fast toward goal then vanishes (end of trajectory = caught)
+        ball_dets = [_ball_det(i, i / fps, 0.25 - i * 0.02, 0.50) for i in range(10)]
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.08, cy=0.50) for f in range(6, 12)]
         ball_track = _ball_track(1, ball_dets)
         gk_track = _player_track(99, gk_dets, jersey_hsv=TEAM_GK_HSV)
 
@@ -404,7 +404,7 @@ class TestGKClassification:
         tracks, fps = self._make_save_scenario(TEAM_GK_HSV)
         det = self._make_detector()
         events = det.detect_touches(tracks, fps)
-        keeper_events = [e for e in events if "keeper" in e.reel_targets]
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
         assert len(keeper_events) >= 1
         assert keeper_events[0].is_goalkeeper_event
 
@@ -413,7 +413,7 @@ class TestGKClassification:
         tracks, fps = self._make_save_scenario(OPP_GK_HSV)
         det = self._make_detector()
         events = det.detect_touches(tracks, fps)
-        keeper_events = [e for e in events if "keeper" in e.reel_targets]
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
         assert len(keeper_events) == 0
 
     def test_outfield_player_skipped(self):
@@ -421,7 +421,7 @@ class TestGKClassification:
         tracks, fps = self._make_save_scenario(TEAM_OUTFIELD_HSV)
         det = self._make_detector()
         events = det.detect_touches(tracks, fps)
-        keeper_events = [e for e in events if "keeper" in e.reel_targets]
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
         assert len(keeper_events) == 0
 
     def test_no_jersey_color_skipped(self):
@@ -446,7 +446,7 @@ class TestGKClassification:
         tracks, fps = self._make_save_scenario(ambiguous_hsv)
         det = self._make_detector()
         events = det.detect_touches(tracks, fps)
-        keeper_events = [e for e in events if "keeper" in e.reel_targets]
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
         assert len(keeper_events) == 0
 
 
@@ -483,7 +483,7 @@ class TestBallTouchIntegration:
         events = det.detect_touches([ball_track, gk_track], fps)
         assert len(events) >= 1
         assert events[0].is_goalkeeper_event
-        assert "keeper" in events[0].reel_targets
+        assert events[0].is_goalkeeper_event
         assert events[0].metadata["detection_method"] == "ball_touch"
 
     def test_fast_shot_caught(self):
@@ -537,7 +537,7 @@ class TestBallTouchIntegration:
 
         det = self._make_detector()
         events = det.detect_touches([ball_track, opp_track], fps)
-        keeper_events = [e for e in events if "keeper" in e.reel_targets]
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
         assert len(keeper_events) == 0
 
     def test_distribution_suppressed_by_default(self):
@@ -587,7 +587,7 @@ class TestBallTouchIntegration:
         det = self._make_detector()
         events = det.detect_touches([ball_track, gk_track], fps)
         for e in events:
-            assert "keeper" in e.reel_targets
+            assert e.is_goalkeeper_event
             assert e.is_goalkeeper_event
             assert is_gk_event_type(e.event_type)
             assert e.confidence > 0
@@ -609,13 +609,13 @@ class TestBallTouchIntegration:
         e1 = Event(
             job_id="j", source_file="f", event_type=EventType.CATCH,
             timestamp_start=10.0, timestamp_end=10.5, confidence=0.8,
-            reel_targets=["keeper"], is_goalkeeper_event=True,
+            reel_targets=[], is_goalkeeper_event=True,
             frame_start=300, frame_end=315,
         )
         e2 = Event(
             job_id="j", source_file="f", event_type=EventType.CATCH,
             timestamp_start=11.0, timestamp_end=11.5, confidence=0.85,
-            reel_targets=["keeper"], is_goalkeeper_event=True,
+            reel_targets=[], is_goalkeeper_event=True,
             frame_start=330, frame_end=345,
         )
         merged = BallTouchDetector._merge_nearby_events([e1, e2], min_gap_sec=2.0)
@@ -646,7 +646,8 @@ class TestDeadBallReclassification:
         return BallTouchDetector(**defaults)
 
     def _make_save_event(self, ts: float = 10.0, fps: float = 30.0,
-                         event_type=EventType.CATCH) -> Event:
+                         event_type=EventType.CATCH,
+                         sim_team_gk: float = 0.85) -> Event:
         """Create a save/catch event at the given timestamp."""
         return Event(
             job_id="job-001",
@@ -655,14 +656,14 @@ class TestDeadBallReclassification:
             timestamp_start=max(0, ts - 0.5),
             timestamp_end=ts + 0.5,
             confidence=0.80,
-            reel_targets=["keeper"],
+            reel_targets=[],
             is_goalkeeper_event=True,
             frame_start=max(0, int((ts - 0.5) * fps)),
             frame_end=int((ts + 0.5) * fps),
             metadata={
                 "detection_method": "ball_touch",
                 "touch_reason": "ball_caught",
-                "sim_team_gk": 0.75,
+                "sim_team_gk": sim_team_gk,
                 "player_track_id": 99,
             },
         )
@@ -711,7 +712,7 @@ class TestDeadBallReclassification:
         assert len(result) == 1
         assert result[0].event_type == EventType.GOAL_KICK
         assert result[0].is_goalkeeper_event
-        assert "keeper" in result[0].reel_targets
+        assert result[0].is_goalkeeper_event
         assert result[0].metadata["touch_reason"] == "goal_kick"
         assert result[0].metadata["original_reason"] == "ball_caught"
 
@@ -775,7 +776,7 @@ class TestDeadBallReclassification:
             job_id="job-001", source_file="match.mp4",
             event_type=EventType.DISTRIBUTION_LONG,
             timestamp_start=10.0, timestamp_end=11.0, confidence=0.80,
-            reel_targets=["keeper"], is_goalkeeper_event=True,
+            reel_targets=[], is_goalkeeper_event=True,
             frame_start=300, frame_end=330,
             metadata={"detection_method": "ball_touch", "touch_reason": "speed_spike"},
         )
@@ -797,7 +798,7 @@ class TestDeadBallReclassification:
             job_id="job-001", source_file="match.mp4",
             event_type=EventType.SHOT_ON_TARGET,
             timestamp_start=20.0, timestamp_end=21.0, confidence=0.70,
-            reel_targets=["highlights"], is_goalkeeper_event=False,
+            reel_targets=[], is_goalkeeper_event=False,
             frame_start=600, frame_end=630,
             metadata={"detection_method": "ball_touch", "touch_reason": "speed_drop"},
         )
@@ -827,9 +828,7 @@ class TestDeadBallReclassification:
         gk_event = result[0]
         assert gk_event.event_type == EventType.GOAL_KICK
         assert gk_event.is_goalkeeper_event
-        assert "keeper" in gk_event.reel_targets
-        # Verify it would be picked up by KeeperGoalKickPlugin
-        from src.reel_plugins.keeper import KeeperGoalKickPlugin
+        assert gk_event.is_goalkeeper_event
         assert gk_event.event_type == EventType.GOAL_KICK
 
     def test_empty_events_returns_empty(self):

@@ -15,7 +15,7 @@ import structlog
 
 from src.detection.event_log import EventLog
 from src.detection.goalkeeper_detector import GoalkeeperDetector
-from src.detection.models import Event, EventType, Track, EVENT_REEL_MAP
+from src.detection.models import Event, EventType, Track
 from src.detection.player_detector import PlayerDetector
 from src.ingestion.models import VideoFile
 from src.tracking.gk_tracker import MatchDualGoalkeeperTracker
@@ -117,7 +117,7 @@ def _detect_shots_from_all(
                 timestamp_start=max(0, t_prev - 1.0),
                 timestamp_end=t_curr + 3.0,
                 confidence=min(0.90, 0.55 + speed * 0.5),
-                reel_targets=EVENT_REEL_MAP[event_type],
+                reel_targets=[],
                 frame_start=f_prev,
                 frame_end=f_curr + int(3 * fps),
                 bounding_box=bbox_curr,
@@ -172,7 +172,7 @@ def _detect_tackles(
                         timestamp_start=max(0, ts - 1.0),
                         timestamp_end=ts + 3.0,
                         confidence=0.65,
-                        reel_targets=EVENT_REEL_MAP[EventType.TACKLE],
+                        reel_targets=[],
                         frame_start=max(0, frame_num - int(fps)),
                         frame_end=frame_num + int(3 * fps),
                         bounding_box=det1.bbox,
@@ -219,7 +219,7 @@ def _detect_dribbles(
                     timestamp_start=max(0, start_det.timestamp - 0.5),
                     timestamp_end=end_det.timestamp + 2.0,
                     confidence=0.67,
-                    reel_targets=EVENT_REEL_MAP[EventType.DRIBBLE_SEQUENCE],
+                    reel_targets=[],
                     player_track_id=track.track_id,
                     frame_start=start_det.frame_number,
                     frame_end=end_det.frame_number,

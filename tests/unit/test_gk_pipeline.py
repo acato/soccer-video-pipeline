@@ -314,31 +314,34 @@ class TestKeeperClipComputation:
         clips = compute_clips(events, 5400.0, "keeper")
         assert len(clips) == 1
 
-    def test_highlights_events_excluded_from_keeper(self):
-        events = [
-            _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper"]),
+    def test_caller_prefilters_for_keeper(self):
+        """Callers pre-filter events by type before passing to compute_clips."""
+        all_events = [
+            _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, []),
             Event(
                 event_id="e2", job_id="j1", source_file="m.mp4",
                 event_type=EventType.GOAL, timestamp_start=200.0, timestamp_end=201.0,
-                confidence=0.92, reel_targets=["highlights"],
+                confidence=0.92, reel_targets=[],
                 frame_start=6000, frame_end=6030,
             ),
         ]
-        clips = compute_clips(events, 5400.0, "keeper")
+        keeper_events = [e for e in all_events if e.is_goalkeeper_event]
+        clips = compute_clips(keeper_events, 5400.0, "keeper")
         assert len(clips) == 1
         assert clips[0].primary_event_type == "shot_stop_diving"
 
     def test_no_keeper_events_returns_empty(self):
-        """If all events are highlights-only, keeper clips should be empty."""
+        """If all events are non-GK, pre-filtering yields empty → no clips."""
         events = [
             Event(
                 event_id="e1", job_id="j1", source_file="m.mp4",
                 event_type=EventType.SHOT_ON_TARGET, timestamp_start=60.0, timestamp_end=62.0,
-                confidence=0.80, reel_targets=["highlights"],
+                confidence=0.80, reel_targets=[],
                 frame_start=1800, frame_end=1860,
             ),
         ]
-        clips = compute_clips(events, 5400.0, "keeper")
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
+        clips = compute_clips(keeper_events, 5400.0, "keeper")
         assert len(clips) == 0
 
     def test_max_clip_duration_enforced(self):
@@ -622,7 +625,7 @@ class TestPipelinePreflightAndAbort:
 @pytest.mark.unit
 class TestKeeperReelIntegration:
     def test_full_keeper_pipeline_events_to_clips(self):
-        """Simulate: GK events written → read back → clipper → postprocess → clips ready."""
+        """Simulate: GK events written → read back → pre-filter → clipper → postprocess."""
         import tempfile
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "events.jsonl"
@@ -630,18 +633,18 @@ class TestKeeperReelIntegration:
 
             # Write realistic GK events
             gk_events = [
-                _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 120.5, 123.0, ["keeper"], confidence=0.82),
-                _make_gk_event("e2", EventType.DISTRIBUTION_SHORT, 350.0, 355.0, ["keeper"], confidence=0.70),
-                _make_gk_event("e3", EventType.CATCH, 780.0, 781.5, ["keeper"], confidence=0.78),
-                _make_gk_event("e4", EventType.GOAL_KICK, 1500.0, 1506.0, ["keeper"], confidence=0.72),
-                _make_gk_event("e5", EventType.SHOT_STOP_STANDING, 2200.0, 2202.0, ["keeper"], confidence=0.76),
+                _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 120.5, 123.0, [], confidence=0.82),
+                _make_gk_event("e2", EventType.DISTRIBUTION_SHORT, 350.0, 355.0, [], confidence=0.70),
+                _make_gk_event("e3", EventType.CATCH, 780.0, 781.5, [], confidence=0.78),
+                _make_gk_event("e4", EventType.GOAL_KICK, 1500.0, 1506.0, [], confidence=0.72),
+                _make_gk_event("e5", EventType.SHOT_STOP_STANDING, 2200.0, 2202.0, [], confidence=0.76),
             ]
-            # Also add some highlights events that should NOT appear in keeper reel
+            # Also add some highlights events
             hl_events = [
                 Event(
                     event_id="h1", job_id="j1", source_file="m.mp4",
                     event_type=EventType.GOAL, timestamp_start=900.0, timestamp_end=901.0,
-                    confidence=0.92, reel_targets=["highlights"],
+                    confidence=0.92, reel_targets=[],
                     frame_start=27000, frame_end=27030,
                 ),
             ]
@@ -651,8 +654,9 @@ class TestKeeperReelIntegration:
             all_events = event_log.read_all()
             assert len(all_events) == 6
 
-            # Compute clips for keeper reel
-            clips = compute_clips(all_events, 5400.0, "keeper", pre_pad=3.0, post_pad=5.0)
+            # Pre-filter for keeper events, then compute clips
+            keeper_events = [e for e in all_events if e.is_goalkeeper_event]
+            clips = compute_clips(keeper_events, 5400.0, "keeper", pre_pad=3.0, post_pad=5.0)
             assert len(clips) == 5  # 5 GK events, all well-separated
 
             # Postprocess
@@ -668,24 +672,27 @@ class TestKeeperReelIntegration:
             assert "h1" not in all_event_ids
 
     def test_mixed_keeper_and_highlights_reels(self):
-        """Same event set produces different clips for keeper vs highlights."""
+        """Same event set, different pre-filters produce different clips."""
+        from src.detection.models import is_gk_event_type
         events = [
-            _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper"], confidence=0.82),
+            _make_gk_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, [], confidence=0.82),
             Event(
                 event_id="e2", job_id="j1", source_file="m.mp4",
                 event_type=EventType.GOAL, timestamp_start=200.0, timestamp_end=201.0,
-                confidence=0.92, reel_targets=["highlights"],
+                confidence=0.92, reel_targets=[],
                 frame_start=6000, frame_end=6030,
             ),
-            _make_gk_event("e3", EventType.ONE_ON_ONE, 400.0, 404.0, ["keeper", "highlights"], confidence=0.80),
+            _make_gk_event("e3", EventType.ONE_ON_ONE, 400.0, 404.0, [], confidence=0.80),
         ]
-        keeper_clips = compute_clips(events, 5400.0, "keeper")
-        hl_clips = compute_clips(events, 5400.0, "highlights")
+        # Pre-filter for keeper reel (GK events only)
+        keeper_events = [e for e in events if e.is_goalkeeper_event]
+        keeper_clips = compute_clips(keeper_events, 5400.0, "keeper")
+        assert len(keeper_clips) == 2  # e1 + e3
 
-        # keeper reel: e1 + e3
-        assert len(keeper_clips) == 2
-        # highlights reel: e2 + e3
-        assert len(hl_clips) == 2
+        # Pre-filter for highlights reel (non-GK events)
+        hl_events = [e for e in events if not is_gk_event_type(e.event_type)]
+        hl_clips = compute_clips(hl_events, 5400.0, "highlights")
+        assert len(hl_clips) == 1  # e2 only
 
         keeper_event_ids = set()
         for c in keeper_clips:

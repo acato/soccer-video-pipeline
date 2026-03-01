@@ -69,30 +69,25 @@ class TestComputeClips:
         clips = compute_clips(events, 5400.0, "highlights", pre_pad=3.0, post_pad=5.0, merge_gap_sec=2.0)
         assert len(clips) == 2
 
-    def test_reel_type_filter(self):
-        """Events not in reel_targets should be excluded."""
+    def test_all_events_included_no_reel_target_filter(self):
+        """compute_clips no longer filters by reel_targets — callers pre-filter."""
         events = [
-            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper"]),
-            _make_event("e2", EventType.GOAL, 200.0, 201.0, ["highlights"], confidence=0.90),
+            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, []),
+            _make_event("e2", EventType.GOAL, 200.0, 201.0, [], confidence=0.90),
         ]
-        gk_clips = compute_clips(events, 5400.0, "keeper")
-        hl_clips = compute_clips(events, 5400.0, "highlights")
-        assert len(gk_clips) == 1
-        assert len(hl_clips) == 1
-        assert gk_clips[0].primary_event_type == "shot_stop_diving"
-        assert hl_clips[0].primary_event_type == "goal"
+        clips = compute_clips(events, 5400.0, "keeper")
+        assert len(clips) == 2
 
-    def test_keeper_matches_keeper_a_and_keeper_b(self):
-        """reel_type='keeper' should match keeper_a and keeper_b sub-roles."""
-        events = [
-            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, ["keeper_a"]),
-            _make_event("e2", EventType.CATCH, 300.0, 302.0, ["keeper_b"]),
-            _make_event("e3", EventType.GOAL, 500.0, 501.0, ["highlights"], confidence=0.90),
+    def test_caller_prefilters_events(self):
+        """Callers should pre-filter events before passing to compute_clips."""
+        all_events = [
+            _make_event("e1", EventType.SHOT_STOP_DIVING, 60.0, 62.0, []),
+            _make_event("e2", EventType.CATCH, 300.0, 302.0, []),
+            _make_event("e3", EventType.GOAL, 500.0, 501.0, [], confidence=0.90),
         ]
-        gk_clips = compute_clips(events, 5400.0, "keeper")
+        keeper_events = [e for e in all_events if e.event_type != EventType.GOAL]
+        gk_clips = compute_clips(keeper_events, 5400.0, "keeper")
         assert len(gk_clips) == 2
-        hl_clips = compute_clips(events, 5400.0, "highlights")
-        assert len(hl_clips) == 1
 
     def test_low_confidence_events_excluded(self):
         """GOAL events below 0.85 threshold are excluded."""

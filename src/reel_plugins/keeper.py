@@ -31,10 +31,38 @@ _DISTRIBUTION_TYPES = frozenset({
 })
 
 
-def _targets_keeper_reel(reel_targets: list[str]) -> bool:
-    """Return True if any reel target starts with 'keeper'."""
-    return any(rt == "keeper" or rt.startswith("keeper_") for rt in reel_targets)
+def _passes_sim_gate(event: Event) -> bool:
+    """Return True if event has sufficient jersey-color similarity.
 
+    Penalties and corner kicks are exempt — penalties are ML-detected and
+    corner kicks are detected from ball trajectory patterns, neither has
+    sim_team_gk from jersey color classification.
+
+    Save events (dives, standing stops, punches, catches) use a lower
+    threshold because they're already curated by ball trajectory analysis
+    (direction_change/speed_drop) + goal-area position gate.
+    """
+    if event.event_type in (EventType.PENALTY, EventType.CORNER_KICK):
+        return True
+    if event.event_type in _SAVE_TYPES:
+        return event.metadata.get("sim_team_gk", 0) >= _MIN_REEL_SIM_SAVE
+    return event.metadata.get("sim_team_gk", 0) >= _MIN_REEL_SIM_TEAM_GK
+
+
+# ---------------------------------------------------------------------------
+# Reel-level quality gate
+# ---------------------------------------------------------------------------
+
+# Minimum sim_team_gk to include an event in the keeper reel.
+# Events below this threshold are excluded regardless of spatial position.
+# This catches FPs from pre-game footage and weak jersey matches where the
+# color margin check passed but the absolute similarity is too low.
+_MIN_REEL_SIM_TEAM_GK = 0.75
+
+# Lower threshold for save events — already curated by trajectory analysis
+# (direction_change/speed_drop) + goal-area GK override.  Spatial filter
+# still removes wrong-side events.
+_MIN_REEL_SIM_SAVE = 0.55
 
 # ---------------------------------------------------------------------------
 # Spatial false-positive filter
@@ -64,13 +92,25 @@ def _filter_wrong_side_events(
     """
     half_time = video_duration_sec / 2
 
-    # Collect ALL keeper events with a bounding box that are in the
-    # outer thirds — these are the only reliable voters.
+    # Only high-confidence, high-similarity keeper events vote.
+    # Goal kicks and corner kicks are excluded from both voting AND filtering:
+    # goal kicks inherit bounding_box from the original save/catch event,
+    # and corner kicks have bounding_box at ball position (unreliable with
+    # auto-panning cameras). Neither should influence side determination.
+    # sim_team_gk >= 0.77 ensures only strong jersey-color matches vote,
+    # preventing blue-vs-teal FPs from flipping the side determination.
+    _VOTER_MIN_CONFIDENCE = 0.75
+    _VOTER_MIN_SIM_TEAM_GK = 0.77
+    _EXEMPT_FROM_SIDE_FILTER = frozenset({EventType.GOAL_KICK, EventType.CORNER_KICK})
+
     voters: list[Event] = [
         e for e in all_events
         if e.is_goalkeeper_event
         and e.bounding_box is not None
         and not (_MIDFIELD_LO < e.bounding_box.center_x < _MIDFIELD_HI)
+        and e.confidence >= _VOTER_MIN_CONFIDENCE
+        and e.metadata.get("sim_team_gk", 0) >= _VOTER_MIN_SIM_TEAM_GK
+        and e.event_type not in _EXEMPT_FROM_SIDE_FILTER
     ]
 
     # Split voters into first / second half.
@@ -83,9 +123,9 @@ def _filter_wrong_side_events(
             return None
         left = sum(1 for e in events if e.bounding_box.center_x < 0.5)
         right = len(events) - left
-        if left / len(events) >= 0.6:
+        if left / len(events) >= 0.55:
             return "left"
-        if right / len(events) >= 0.6:
+        if right / len(events) >= 0.55:
             return "right"
         return None
 
@@ -94,6 +134,9 @@ def _filter_wrong_side_events(
 
     def _keep(event: Event) -> bool:
         if event.bounding_box is None:
+            return True
+        # Goal kicks and corner kicks are exempt from side filtering
+        if event.event_type in _EXEMPT_FROM_SIDE_FILTER:
             return True
         cx = event.bounding_box.center_x
 
@@ -132,7 +175,7 @@ class KeeperSavesPlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=8.0,
-            post_pad_sec=4.0,
+            post_pad_sec=2.0,
             max_clip_duration_sec=25.0,
             max_reel_duration_sec=20 * 60,
         )
@@ -144,14 +187,15 @@ class KeeperSavesPlugin(ReelPlugin):
             e for e in events
             if e.event_type in _SAVE_TYPES
             and (e.is_goalkeeper_event or e.event_type == EventType.PENALTY)
-            and _targets_keeper_reel(e.reel_targets)
+
             and e.should_include()
+            and _passes_sim_gate(e)
         ]
         return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)
 
 
 class KeeperGoalKickPlugin(ReelPlugin):
-    """GK goal kick events (short pre, long post to see ball land and be received)."""
+    """GK goal kick events (short pre, moderate post to see ball land)."""
 
     @property
     def name(self) -> str:
@@ -165,8 +209,8 @@ class KeeperGoalKickPlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=1.0,
-            post_pad_sec=10.0,
-            max_clip_duration_sec=20.0,
+            post_pad_sec=2.0,
+            max_clip_duration_sec=15.0,
             max_reel_duration_sec=20 * 60,
         )
 
@@ -177,8 +221,9 @@ class KeeperGoalKickPlugin(ReelPlugin):
             e for e in events
             if e.event_type == EventType.GOAL_KICK
             and e.is_goalkeeper_event
-            and _targets_keeper_reel(e.reel_targets)
+
             and e.should_include()
+            and _passes_sim_gate(e)
         ]
         return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)
 
@@ -198,7 +243,7 @@ class KeeperDistributionPlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=1.0,
-            post_pad_sec=8.0,
+            post_pad_sec=2.0,
             max_clip_duration_sec=20.0,
             max_reel_duration_sec=20 * 60,
         )
@@ -210,8 +255,9 @@ class KeeperDistributionPlugin(ReelPlugin):
             e for e in events
             if e.event_type in _DISTRIBUTION_TYPES
             and e.is_goalkeeper_event
-            and _targets_keeper_reel(e.reel_targets)
+
             and e.should_include()
+            and _passes_sim_gate(e)
         ]
         return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)
 
@@ -231,7 +277,7 @@ class KeeperOneOnOnePlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=3.0,
-            post_pad_sec=6.0,
+            post_pad_sec=2.0,
             max_clip_duration_sec=30.0,
             max_reel_duration_sec=20 * 60,
         )
@@ -243,8 +289,9 @@ class KeeperOneOnOnePlugin(ReelPlugin):
             e for e in events
             if e.event_type == EventType.ONE_ON_ONE
             and e.is_goalkeeper_event
-            and _targets_keeper_reel(e.reel_targets)
+
             and e.should_include()
+            and _passes_sim_gate(e)
         ]
         return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)
 
@@ -264,7 +311,7 @@ class KeeperCornerKickPlugin(ReelPlugin):
     def clip_params(self) -> ClipParams:
         return ClipParams(
             pre_pad_sec=3.0,
-            post_pad_sec=6.0,
+            post_pad_sec=2.0,
             max_clip_duration_sec=25.0,
             max_reel_duration_sec=20 * 60,
         )
@@ -276,7 +323,8 @@ class KeeperCornerKickPlugin(ReelPlugin):
             e for e in events
             if e.event_type == EventType.CORNER_KICK
             and e.is_goalkeeper_event
-            and _targets_keeper_reel(e.reel_targets)
+
             and e.should_include()
+            and _passes_sim_gate(e)
         ]
         return _filter_wrong_side_events(selected, events, ctx.video_duration_sec)

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from src.api.worker import process_match_task
 from src.detection.jersey_classifier import JERSEY_COLOR_PALETTE
 from src.ingestion.intake import extract_metadata
-from src.ingestion.models import MatchConfig
+from src.ingestion.models import MatchConfig, ReelSpec, reel_types_to_specs
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -30,6 +30,7 @@ class SubmitJobRequest(BaseModel):
     nas_path: str
     match_config: Optional[MatchConfig] = None
     kit_name: Optional[str] = None
+    reels: Optional[list[ReelSpec]] = None
     reel_types: list[str] = ["keeper", "highlights"]
     game_start_sec: float = 0.0
 
@@ -75,10 +76,10 @@ def submit_job(request: SubmitJobRequest):
     from src.config import config as dyn_cfg
     from src.ingestion.job import JobStore, create_job
 
-    valid_reels = {"keeper", "highlights", "player"}
-    invalid = [r for r in request.reel_types if r not in valid_reels]
-    if invalid:
-        raise HTTPException(400, f"Invalid reel types: {invalid}. Valid: {sorted(valid_reels)}")
+    # Resolve reel specs: explicit reels take priority, then convert reel_types
+    reel_specs = request.reels if request.reels else reel_types_to_specs(request.reel_types)
+    if not reel_specs:
+        raise HTTPException(400, "At least one reel spec is required")
 
     # Build match_config from team config if not provided directly
     match_config = request.match_config
@@ -122,7 +123,8 @@ def submit_job(request: SubmitJobRequest):
         log.info("jobs.idempotent", job_id=existing.job_id)
         return existing
 
-    job = create_job(video_file, request.reel_types, store, match_config, game_start_sec=request.game_start_sec)
+    job = create_job(video_file, request.reel_types, store, match_config,
+                     game_start_sec=request.game_start_sec, reels=reel_specs)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job

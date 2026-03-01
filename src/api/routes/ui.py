@@ -25,7 +25,7 @@ _UI_HTML = r"""<!DOCTYPE html>
   header h1 { font-size: 20px; font-weight: 600; }
   header .badge { background: #238636; color: white; font-size: 11px;
                   padding: 2px 8px; border-radius: 12px; font-weight: 600; }
-  .container { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
   .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
   .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
                padding: 16px; text-align: center; }
@@ -64,7 +64,7 @@ _UI_HTML = r"""<!DOCTYPE html>
   .btn-warn:hover { background: #d2992222; }
   .btn-danger { border-color: #f85149; color: #f85149; }
   .btn-danger:hover { background: #f8514922; }
-  .reel-links { display: flex; gap: 6px; }
+  .reel-links { display: flex; gap: 6px; flex-wrap: wrap; }
   .reel-link { color: #388bfd; text-decoration: none; font-size: 12px;
                padding: 2px 6px; border: 1px solid #388bfd33; border-radius: 4px; }
   .reel-link:hover { background: #388bfd22; }
@@ -73,7 +73,7 @@ _UI_HTML = r"""<!DOCTYPE html>
                  padding: 20px; margin-bottom: 24px; }
   .submit-form h2 { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
   .form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-  .form-group { flex: 1; }
+  .form-group { flex: 1; min-width: 0; }
   label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 6px; }
   input[type=text], input[type=number] { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
                      border-radius: 6px; color: #e1e4e8; font-size: 14px; }
@@ -81,24 +81,36 @@ _UI_HTML = r"""<!DOCTYPE html>
   select { width: 100%; padding: 8px 12px; background: #0d1117; border: 1px solid #30363d;
            border-radius: 6px; color: #e1e4e8; font-size: 14px; }
   select:focus { outline: none; border-color: #388bfd; }
-  .checkbox-group { display: flex; gap: 12px; align-items: center; height: 36px; }
-  .checkbox-group label { display: flex; align-items: center; gap: 6px; margin-bottom: 0;
-                          font-size: 14px; color: #e1e4e8; cursor: pointer; }
-  .checkbox-group input[type=checkbox] { accent-color: #388bfd; width: 16px; height: 16px; cursor: pointer; }
+  .checkbox-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .checkbox-group label { display: flex; align-items: center; gap: 4px; margin-bottom: 0;
+                          font-size: 12px; color: #e1e4e8; cursor: pointer; }
+  .checkbox-group input[type=checkbox] { accent-color: #388bfd; width: 14px; height: 14px; cursor: pointer; }
   .btn-primary { background: #238636; border-color: #238636; color: white; padding: 8px 16px; }
   .btn-primary:hover { background: #2ea043; }
-  .team-banner { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-                 padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
-  .team-banner .team-name { font-size: 16px; font-weight: 600; }
-  .team-banner .team-hint { font-size: 12px; color: #8b949e; }
-  .no-team-msg { background: #161b22; border: 1px solid #d29922; border-radius: 8px;
-                 padding: 16px 20px; margin-bottom: 24px; color: #d29922; font-size: 14px; }
+  .btn-outline { background: transparent; border: 1px solid #388bfd; color: #388bfd; padding: 4px 10px; font-size: 12px; }
+  .btn-outline:hover { background: #388bfd22; }
+  .btn-outline.active { background: #388bfd33; }
   .toast { position: fixed; bottom: 24px; right: 24px; background: #238636; color: white;
            padding: 12px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity 0.3s;
-           max-width: 320px; }
+           max-width: 320px; z-index: 100; }
   .toast.show { opacity: 1; }
   .toast.error { background: #da3633; }
   #refresh-indicator { font-size: 12px; color: #8b949e; }
+  .section-label { font-size: 13px; font-weight: 600; margin-top: 16px; margin-bottom: 8px; }
+  .jersey-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .jersey-col { display: flex; flex-direction: column; gap: 8px; }
+  .jersey-col h3 { font-size: 13px; font-weight: 600; color: #8b949e; }
+  .reel-cards { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .reel-card { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px;
+               display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .reel-card .reel-name { font-weight: 600; }
+  .reel-card .reel-types { font-size: 11px; color: #8b949e; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reel-card .remove-reel { cursor: pointer; color: #f85149; font-size: 14px; margin-left: 4px; }
+  .preset-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .event-badge { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 3px;
+                 background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+  .event-badge.gk { background: #238636; color: white; border-color: #238636; }
+  .event-badge.hl { background: #388bfd33; color: #388bfd; border-color: #388bfd55; }
 </style>
 </head>
 <body>
@@ -114,49 +126,94 @@ _UI_HTML = r"""<!DOCTYPE html>
 </header>
 
 <div class="container">
-  <div id="team-banner-area"></div>
-
   <div class="submit-form" id="submit-form-area">
     <h2>Submit Match</h2>
+
+    <!-- Row 1: video + game start -->
     <div class="form-row">
-      <div class="form-group">
+      <div class="form-group" style="flex:3">
         <label>Video File</label>
         <select id="nas-path">
           <option value="">Loading files...</option>
         </select>
       </div>
-      <div class="form-group" style="flex:0 0 160px">
-        <label>Jersey</label>
-        <select id="kit-select">
-          <option value="">Loading...</option>
-        </select>
-      </div>
-      <div class="form-group" style="flex:0 0 200px">
-        <label>Reels</label>
-        <div class="checkbox-group">
-          <label><input type="checkbox" id="reel-gk" checked /> Goalkeeper</label>
-          <label><input type="checkbox" id="reel-hl" checked /> Highlights</label>
-        </div>
-      </div>
       <div class="form-group" style="flex:0 0 120px">
         <label>Game start (min)</label>
         <input type="number" id="game-start-min" value="0" min="0" step="0.5" />
       </div>
+    </div>
+
+    <!-- Row 2: Jersey config -->
+    <div class="section-label">Jersey Colors</div>
+    <div class="jersey-grid">
+      <div class="jersey-col">
+        <h3>Your Team</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Team Name</label>
+            <input type="text" id="team-name" value="My Team" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Outfield</label>
+            <select id="team-outfield"></select>
+          </div>
+          <div class="form-group">
+            <label>GK</label>
+            <select id="team-gk"></select>
+          </div>
+        </div>
+      </div>
+      <div class="jersey-col">
+        <h3>Opponent</h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Team Name</label>
+            <input type="text" id="opp-name" value="Opponent" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Outfield</label>
+            <select id="opp-outfield"></select>
+          </div>
+          <div class="form-group">
+            <label>GK</label>
+            <select id="opp-gk"></select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Row 3: Reel builder -->
+    <div class="section-label">Reels</div>
+    <div class="preset-row">
+      <button class="btn btn-outline" onclick="addPresetReel('keeper')">+ All GK</button>
+      <button class="btn btn-outline" onclick="addPresetReel('highlights')">+ Highlights</button>
+      <button class="btn btn-outline" onclick="addPresetReel('saves')">+ Saves Only</button>
+      <button class="btn btn-outline" onclick="addPresetReel('distribution')">+ Distribution</button>
+      <button class="btn btn-outline" onclick="addCustomReel()">+ Custom Reel...</button>
+    </div>
+    <div class="reel-cards" id="reel-cards"></div>
+
+    <!-- Submit -->
+    <div style="margin-top:16px; display:flex; justify-content:flex-end">
       <button class="btn btn-primary" onclick="submitJob()">Submit Job</button>
     </div>
   </div>
 
   <div class="stats-row">
-    <div class="stat-card pending"><div class="value" id="stat-pending">—</div><div class="label">Pending</div></div>
-    <div class="stat-card processing"><div class="value" id="stat-processing">—</div><div class="label">Processing</div></div>
-    <div class="stat-card complete"><div class="value" id="stat-complete">—</div><div class="label">Complete</div></div>
-    <div class="stat-card failed"><div class="value" id="stat-failed">—</div><div class="label">Failed</div></div>
+    <div class="stat-card pending"><div class="value" id="stat-pending">-</div><div class="label">Pending</div></div>
+    <div class="stat-card processing"><div class="value" id="stat-processing">-</div><div class="label">Processing</div></div>
+    <div class="stat-card complete"><div class="value" id="stat-complete">-</div><div class="label">Complete</div></div>
+    <div class="stat-card failed"><div class="value" id="stat-failed">-</div><div class="label">Failed</div></div>
   </div>
 
   <div class="panel">
     <div class="panel-header">
       <h2>Jobs</h2>
-      <button class="btn btn-sm" onclick="loadJobs()">↻ Refresh</button>
+      <button class="btn btn-sm" onclick="loadJobs()">Refresh</button>
     </div>
     <table>
       <thead>
@@ -178,34 +235,103 @@ _UI_HTML = r"""<!DOCTYPE html>
 
 <div class="toast" id="toast"></div>
 
-<script>
-const API = '';  // Same origin
-let teamConfig = null;
+<!-- Custom reel dialog -->
+<div id="custom-reel-dialog" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:50; display:none; align-items:center; justify-content:center;">
+  <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; padding:20px; width:400px; max-height:80vh; overflow-y:auto;">
+    <h3 style="font-size:15px; margin-bottom:12px;">Custom Reel</h3>
+    <div class="form-group" style="margin-bottom:12px;">
+      <label>Reel Name</label>
+      <input type="text" id="custom-reel-name" placeholder="e.g. deflections" />
+    </div>
+    <div class="section-label">Goalkeeper Events</div>
+    <div class="checkbox-group" id="custom-gk-events" style="margin-bottom:12px;"></div>
+    <div class="section-label">Highlights Events</div>
+    <div class="checkbox-group" id="custom-hl-events" style="margin-bottom:16px;"></div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button class="btn" onclick="closeCustomDialog()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmCustomReel()">Add Reel</button>
+    </div>
+  </div>
+</div>
 
-async function loadTeamConfig() {
-  const banner = document.getElementById('team-banner-area');
-  const kitSelect = document.getElementById('kit-select');
+<script>
+const API = '';
+let eventTypes = [];
+let jerseyColors = [];
+let reelSpecs = [];
+
+// ── Presets ──────────────────────────────────────────────────────────
+const PRESETS = {
+  keeper: {
+    name: 'keeper',
+    event_types: ['shot_stop_diving','shot_stop_standing','punch','catch','goal_kick',
+                  'distribution_short','distribution_long','one_on_one','corner_kick','penalty']
+  },
+  highlights: {
+    name: 'highlights',
+    event_types: ['shot_on_target','shot_off_target','goal','near_miss','penalty','free_kick_shot']
+  },
+  saves: {
+    name: 'saves',
+    event_types: ['shot_stop_diving','shot_stop_standing','punch','catch','penalty']
+  },
+  distribution: {
+    name: 'distribution',
+    event_types: ['distribution_short','distribution_long','goal_kick']
+  },
+};
+
+// ── Init ─────────────────────────────────────────────────────────────
+async function init() {
+  await Promise.all([loadEventTypes(), loadJerseyColors(), loadFiles()]);
+  loadTeamDefaults();
+  // Start with All GK preset
+  addPresetReel('keeper');
+  loadJobs();
+  setInterval(loadJobs, 10000);
+}
+
+async function loadEventTypes() {
   try {
-    const r = await fetch(API + '/team');
-    if (r.status === 404) {
-      teamConfig = null;
-      banner.innerHTML = '<div class="no-team-msg">Set up your team first! In your terminal, run: <code>./setup-team.sh "Your Team" --kit Home blue teal</code></div>';
-      kitSelect.innerHTML = '<option value="">(no team set up)</option>';
-      return;
+    const r = await fetch(API + '/meta/event-types');
+    if (r.ok) eventTypes = await r.json();
+  } catch (e) { /* fallback: empty */ }
+}
+
+async function loadJerseyColors() {
+  try {
+    const r = await fetch(API + '/meta/jersey-colors');
+    if (!r.ok) return;
+    jerseyColors = await r.json();
+    for (const selId of ['team-outfield','team-gk','opp-outfield','opp-gk']) {
+      const sel = document.getElementById(selId);
+      sel.innerHTML = jerseyColors.map(c =>
+        '<option value="' + c + '">' + c.replace(/_/g,' ') + '</option>'
+      ).join('');
     }
-    if (!r.ok) throw new Error(r.statusText);
-    teamConfig = await r.json();
-    const kits = Object.keys(teamConfig.kits || {});
-    banner.innerHTML = '<div class="team-banner"><span class="team-name">' + (teamConfig.team_name || 'My Team') +
-      '</span><span class="team-hint">' + kits.length + ' jersey' + (kits.length !== 1 ? 's' : '') + ' saved</span></div>';
-    kitSelect.innerHTML = kits.map(k => '<option value="' + k + '">' + k + '</option>').join('');
-    if (!kits.length) {
-      kitSelect.innerHTML = '<option value="">(no jerseys)</option>';
+    // Set reasonable defaults
+    document.getElementById('team-outfield').value = 'white';
+    document.getElementById('team-gk').value = 'neon_yellow';
+    document.getElementById('opp-outfield').value = 'blue';
+    document.getElementById('opp-gk').value = 'teal';
+  } catch (e) { /* fallback */ }
+}
+
+function loadTeamDefaults() {
+  // Try to load from saved team config
+  fetch(API + '/team').then(r => {
+    if (!r.ok) return;
+    return r.json();
+  }).then(cfg => {
+    if (!cfg) return;
+    document.getElementById('team-name').value = cfg.team_name || 'My Team';
+    const kits = cfg.kits || {};
+    const homeKit = kits['Home'] || kits[Object.keys(kits)[0]];
+    if (homeKit) {
+      document.getElementById('team-outfield').value = homeKit.outfield_color || 'white';
+      document.getElementById('team-gk').value = homeKit.gk_color || 'neon_yellow';
     }
-  } catch (e) {
-    banner.innerHTML = '';
-    kitSelect.innerHTML = '<option value="">Home</option>';
-  }
+  }).catch(() => {});
 }
 
 async function loadFiles() {
@@ -221,6 +347,90 @@ async function loadFiles() {
   }
 }
 
+// ── Reel builder ─────────────────────────────────────────────────────
+function addPresetReel(presetKey) {
+  const preset = PRESETS[presetKey];
+  if (!preset) return;
+  // Don't add duplicate
+  if (reelSpecs.some(s => s.name === preset.name)) {
+    showToast('Reel "' + preset.name + '" already added', true);
+    return;
+  }
+  reelSpecs.push({...preset, event_types: [...preset.event_types]});
+  renderReelCards();
+}
+
+function addCustomReel() {
+  const dialog = document.getElementById('custom-reel-dialog');
+  dialog.style.display = 'flex';
+  document.getElementById('custom-reel-name').value = '';
+
+  // Populate checkboxes
+  const gkDiv = document.getElementById('custom-gk-events');
+  const hlDiv = document.getElementById('custom-hl-events');
+  gkDiv.innerHTML = '';
+  hlDiv.innerHTML = '';
+  for (const et of eventTypes) {
+    const container = et.category === 'goalkeeper' ? gkDiv : hlDiv;
+    const lbl = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = et.value;
+    lbl.appendChild(cb);
+    lbl.appendChild(document.createTextNode(' ' + et.label));
+    container.appendChild(lbl);
+  }
+}
+
+function closeCustomDialog() {
+  document.getElementById('custom-reel-dialog').style.display = 'none';
+}
+
+function confirmCustomReel() {
+  const name = document.getElementById('custom-reel-name').value.trim();
+  if (!name) { showToast('Enter a reel name', true); return; }
+  if (reelSpecs.some(s => s.name === name)) { showToast('Reel "' + name + '" already exists', true); return; }
+  const checked = [];
+  for (const cb of document.querySelectorAll('#custom-gk-events input:checked, #custom-hl-events input:checked')) {
+    checked.push(cb.value);
+  }
+  if (!checked.length) { showToast('Select at least one event type', true); return; }
+  reelSpecs.push({ name, event_types: checked });
+  renderReelCards();
+  closeCustomDialog();
+}
+
+function removeReel(idx) {
+  reelSpecs.splice(idx, 1);
+  renderReelCards();
+}
+
+function renderReelCards() {
+  const container = document.getElementById('reel-cards');
+  if (!reelSpecs.length) {
+    container.innerHTML = '<span style="color:#8b949e;font-size:12px">No reels selected. Click a preset or add a custom reel.</span>';
+    return;
+  }
+  const etMap = {};
+  for (const et of eventTypes) etMap[et.value] = et;
+
+  container.innerHTML = reelSpecs.map((spec, idx) => {
+    const badges = spec.event_types.slice(0, 5).map(t => {
+      const et = etMap[t];
+      const cls = et && et.category === 'goalkeeper' ? 'gk' : 'hl';
+      const label = et ? et.label : t;
+      return '<span class="event-badge ' + cls + '">' + label + '</span>';
+    }).join(' ');
+    const more = spec.event_types.length > 5 ? ' <span class="event-badge">+' + (spec.event_types.length - 5) + '</span>' : '';
+    return '<div class="reel-card">' +
+      '<span class="reel-name">' + spec.name + '</span>' +
+      '<span class="reel-types">' + badges + more + '</span>' +
+      '<span class="remove-reel" onclick="removeReel(' + idx + ')" title="Remove">x</span>' +
+      '</div>';
+  }).join('');
+}
+
+// ── Jobs ─────────────────────────────────────────────────────────────
 async function loadJobs() {
   try {
     const r = await fetch(API + '/jobs?limit=50');
@@ -240,52 +450,53 @@ function renderJobs(jobs) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No jobs yet. Submit a match above.</td></tr>';
     return;
   }
+  const etMap = {};
+  for (const et of eventTypes) etMap[et.value] = et;
+
   tbody.innerHTML = jobs.map(job => {
     const progress = job.progress_pct || 0;
-    const statusClass = job.status.replace('_', '-');
     const dotClass = 'dot-' + job.status;
     const created = new Date(job.created_at).toLocaleString();
-    const filename = job.video_file?.filename || '—';
+    const filename = job.video_file?.filename || '-';
 
     const produced = Object.keys(job.output_paths || {});
-    const requested = job.reel_types || [];
-    const missing = requested.filter(rt => !produced.includes(rt));
-    const reelLinks = produced.map(rt =>
-      `<a class="reel-link" href="/reels/${job.job_id}/${rt}/download" target="_blank">⬇ ${rt}</a>`
-    ).join('') + (missing.length && job.status === 'complete'
-      ? missing.map(rt => `<span style="color:#f85149;font-size:11px" title="No ${rt} events detected">✕ ${rt}</span>`).join('')
-      : missing.map(rt => `<span style="color:#8b949e;font-size:11px">${rt}</span>`).join(''));
+    // Show reel specs if available, otherwise fall back to reel_types
+    const jobReels = (job.reels && job.reels.length) ? job.reels : (job.reel_types || []).map(rt => ({name: rt}));
+    const reelHtml = produced.map(rt =>
+      '<a class="reel-link" href="/reels/' + job.job_id + '/' + rt + '/download" target="_blank">' + rt + '</a>'
+    ).join('');
+    const pendingHtml = jobReels.filter(r => !produced.includes(r.name)).map(r => {
+      if (job.status === 'complete') {
+        return '<span style="color:#f85149;font-size:11px" title="No events detected">x ' + r.name + '</span>';
+      }
+      return '<span style="color:#8b949e;font-size:11px">' + r.name + '</span>';
+    }).join(' ');
 
     const activeStatuses = new Set(['pending', 'ingesting', 'detecting', 'segmenting', 'assembling']);
     const pauseBtn = activeStatuses.has(job.status)
-      ? `<button class="btn btn-sm btn-warn" onclick="pauseJob('${job.job_id}')">⏸ Pause</button>`
+      ? '<button class="btn btn-sm btn-warn" onclick="pauseJob(\'' + job.job_id + '\')">Pause</button>'
       : '';
     const cancelBtn = (activeStatuses.has(job.status) || job.status === 'paused')
-      ? `<button class="btn btn-sm btn-danger" onclick="cancelJob('${job.job_id}')">✕ Cancel</button>`
+      ? '<button class="btn btn-sm btn-danger" onclick="cancelJob(\'' + job.job_id + '\')">Cancel</button>'
       : '';
     const resumeBtn = job.status === 'paused'
-      ? `<button class="btn btn-sm" style="color:#3fb950;border-color:#3fb95033" onclick="resumeJob('${job.job_id}')">▶ Resume</button>`
+      ? '<button class="btn btn-sm" style="color:#3fb950;border-color:#3fb95033" onclick="resumeJob(\'' + job.job_id + '\')">Resume</button>'
       : '';
     const retryBtn = (job.status === 'failed' || job.status === 'cancelled')
-      ? `<button class="btn btn-sm" onclick="retryJob('${job.job_id}')">↩ Retry</button>`
+      ? '<button class="btn btn-sm" onclick="retryJob(\'' + job.job_id + '\')">Retry</button>'
       : '';
     const deleteBtn = (job.status === 'failed' || job.status === 'complete' || job.status === 'paused' || job.status === 'cancelled')
-      ? `<button class="btn btn-sm" style="color:#f85149;border-color:#f8514933" onclick="deleteJob('${job.job_id}')">✕ Delete</button>`
+      ? '<button class="btn btn-sm" style="color:#f85149;border-color:#f8514933" onclick="deleteJob(\'' + job.job_id + '\')">Delete</button>'
       : '';
 
-    return `<tr>
-      <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${filename}">${filename}</td>
-      <td><span class="status"><span class="status-dot ${dotClass}"></span>${job.status}</span></td>
-      <td>
-        <div style="display:flex;align-items:center;gap:8px">
-          <div class="progress-bar"><div class="progress-fill" style="width:${progress}%"></div></div>
-          <span style="font-size:12px;color:#8b949e">${Math.round(progress)}%</span>
-        </div>
-      </td>
-      <td><div class="reel-links">${reelLinks}</div></td>
-      <td style="font-size:12px;color:#8b949e">${created}</td>
-      <td style="display:flex;gap:4px">${pauseBtn}${resumeBtn}${cancelBtn}${retryBtn}${deleteBtn}</td>
-    </tr>`;
+    return '<tr>' +
+      '<td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + filename + '">' + filename + '</td>' +
+      '<td><span class="status"><span class="status-dot ' + dotClass + '"></span>' + job.status + '</span></td>' +
+      '<td><div style="display:flex;align-items:center;gap:8px"><div class="progress-bar"><div class="progress-fill" style="width:' + progress + '%"></div></div><span style="font-size:12px;color:#8b949e">' + Math.round(progress) + '%</span></div></td>' +
+      '<td><div class="reel-links">' + reelHtml + ' ' + pendingHtml + '</div></td>' +
+      '<td style="font-size:12px;color:#8b949e">' + created + '</td>' +
+      '<td style="display:flex;gap:4px">' + pauseBtn + resumeBtn + cancelBtn + retryBtn + deleteBtn + '</td>' +
+      '</tr>';
   }).join('');
 }
 
@@ -307,15 +518,27 @@ function updateStats(jobs) {
 async function submitJob() {
   const nasPath = document.getElementById('nas-path').value;
   if (!nasPath) { showToast('Please select a video file', true); return; }
-  const kitSelect = document.getElementById('kit-select');
-  const kitName = kitSelect.value;
-  const reelTypes = [];
-  if (document.getElementById('reel-gk').checked) reelTypes.push('keeper');
-  if (document.getElementById('reel-hl').checked) reelTypes.push('highlights');
-  if (!reelTypes.length) { showToast('Select at least one reel type', true); return; }
+  if (!reelSpecs.length) { showToast('Add at least one reel', true); return; }
+
   const gameStartMin = parseFloat(document.getElementById('game-start-min').value) || 0;
-  const body = { nas_path: nasPath, reel_types: reelTypes, game_start_sec: gameStartMin * 60 };
-  if (kitName) body.kit_name = kitName;
+  const body = {
+    nas_path: nasPath,
+    match_config: {
+      team: {
+        team_name: document.getElementById('team-name').value || 'My Team',
+        outfield_color: document.getElementById('team-outfield').value,
+        gk_color: document.getElementById('team-gk').value,
+      },
+      opponent: {
+        team_name: document.getElementById('opp-name').value || 'Opponent',
+        outfield_color: document.getElementById('opp-outfield').value,
+        gk_color: document.getElementById('opp-gk').value,
+      },
+    },
+    reels: reelSpecs,
+    game_start_sec: gameStartMin * 60,
+  };
+
   try {
     const r = await fetch(API + '/jobs', {
       method: 'POST',
@@ -324,7 +547,7 @@ async function submitJob() {
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data.detail || r.statusText);
-    showToast('Job submitted: ' + data.job_id.slice(0, 8) + '…');
+    showToast('Job submitted: ' + data.job_id.slice(0, 8) + '...');
     document.getElementById('nas-path').selectedIndex = 0;
     loadJobs();
   } catch (e) {
@@ -338,9 +561,7 @@ async function retryJob(jobId) {
     if (!r.ok) throw new Error((await r.json()).detail);
     showToast('Job retried');
     loadJobs();
-  } catch (e) {
-    showToast('Retry failed: ' + e.message, true);
-  }
+  } catch (e) { showToast('Retry failed: ' + e.message, true); }
 }
 
 async function deleteJob(jobId) {
@@ -350,9 +571,7 @@ async function deleteJob(jobId) {
     if (!r.ok) throw new Error((await r.json()).detail);
     showToast('Job deleted');
     loadJobs();
-  } catch (e) {
-    showToast('Delete failed: ' + e.message, true);
-  }
+  } catch (e) { showToast('Delete failed: ' + e.message, true); }
 }
 
 async function pauseJob(jobId) {
@@ -361,21 +580,17 @@ async function pauseJob(jobId) {
     if (!r.ok) throw new Error((await r.json()).detail);
     showToast('Pause requested');
     loadJobs();
-  } catch (e) {
-    showToast('Pause failed: ' + e.message, true);
-  }
+  } catch (e) { showToast('Pause failed: ' + e.message, true); }
 }
 
 async function cancelJob(jobId) {
-  if (!confirm('Cancel this job? This cannot be undone.')) return;
+  if (!confirm('Cancel this job?')) return;
   try {
     const r = await fetch(API + '/jobs/' + jobId + '/cancel', { method: 'POST' });
     if (!r.ok) throw new Error((await r.json()).detail);
     showToast('Job cancelled');
     loadJobs();
-  } catch (e) {
-    showToast('Cancel failed: ' + e.message, true);
-  }
+  } catch (e) { showToast('Cancel failed: ' + e.message, true); }
 }
 
 async function resumeJob(jobId) {
@@ -384,9 +599,7 @@ async function resumeJob(jobId) {
     if (!r.ok) throw new Error((await r.json()).detail);
     showToast('Job resumed');
     loadJobs();
-  } catch (e) {
-    showToast('Resume failed: ' + e.message, true);
-  }
+  } catch (e) { showToast('Resume failed: ' + e.message, true); }
 }
 
 function showToast(msg, isError = false) {
@@ -396,11 +609,7 @@ function showToast(msg, isError = false) {
   setTimeout(() => { t.className = 'toast'; }, 3500);
 }
 
-// Load configs once, then auto-refresh jobs every 10s
-loadTeamConfig();
-loadFiles();
-loadJobs();
-setInterval(loadJobs, 10000);
+init();
 </script>
 </body>
 </html>"""

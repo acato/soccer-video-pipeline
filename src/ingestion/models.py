@@ -52,6 +52,45 @@ class MatchConfig(BaseModel):
     opponent: KitConfig
 
 
+class ReelSpec(BaseModel):
+    """User-composed reel: a name + list of event types to include."""
+    name: str                    # user-chosen, e.g. "deflections"
+    event_types: list[str]       # EventType values, e.g. ["shot_stop_diving"]
+    max_reel_duration_sec: float = 1200.0
+
+
+# ---------------------------------------------------------------------------
+# Preset reel specs for backward compatibility
+# ---------------------------------------------------------------------------
+
+_ALL_GK_EVENT_TYPES = [
+    "shot_stop_diving", "shot_stop_standing", "punch", "catch",
+    "goal_kick", "distribution_short", "distribution_long",
+    "one_on_one", "corner_kick", "penalty",
+]
+
+_ALL_HIGHLIGHTS_EVENT_TYPES = [
+    "shot_on_target", "shot_off_target", "goal", "near_miss",
+    "penalty", "free_kick_shot",
+]
+
+REEL_PRESETS: dict[str, ReelSpec] = {
+    "keeper": ReelSpec(name="keeper", event_types=_ALL_GK_EVENT_TYPES),
+    "highlights": ReelSpec(name="highlights", event_types=_ALL_HIGHLIGHTS_EVENT_TYPES),
+}
+
+
+def reel_types_to_specs(reel_types: list[str]) -> list[ReelSpec]:
+    """Convert legacy reel_types list to ReelSpec list using presets."""
+    specs = []
+    for rt in reel_types:
+        if rt in REEL_PRESETS:
+            specs.append(REEL_PRESETS[rt])
+        else:
+            specs.append(ReelSpec(name=rt, event_types=[]))
+    return specs
+
+
 class VideoFile(BaseModel):
     path: str                       # Absolute path on NAS mount (source, read-only)
     filename: str
@@ -75,6 +114,7 @@ class Job(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     reel_types: list[str] = Field(default_factory=lambda: ["keeper", "highlights"])
+    reels: list[ReelSpec] = Field(default_factory=list)
     match_config: Optional[MatchConfig] = None
     output_paths: dict[str, str] = Field(default_factory=dict)
     error: Optional[str] = None
@@ -83,6 +123,12 @@ class Job(BaseModel):
     pause_requested: bool = False
     cancel_requested: bool = False
     last_processed_chunk: int = -1
+
+    def get_reel_specs(self) -> list[ReelSpec]:
+        """Return reel specs, auto-converting legacy reel_types if needed."""
+        if self.reels:
+            return self.reels
+        return reel_types_to_specs(self.reel_types)
 
     def with_status(self, status: JobStatus, progress: float = None, error: str = None) -> "Job":
         """Return a new Job with updated status (immutable update pattern)."""

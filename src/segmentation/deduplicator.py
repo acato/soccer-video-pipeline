@@ -27,7 +27,7 @@ MAX_REEL_DURATIONS: dict[str, float] = {
 
 def deduplicate_clips(
     clips: list[ClipBoundary],
-    overlap_threshold: float = 0.5,
+    overlap_threshold: float = 0.3,
 ) -> list[ClipBoundary]:
     """
     Remove near-duplicate clips based on temporal overlap (IoU).
@@ -145,7 +145,7 @@ def postprocess_clips(
     min_duration: float = 2.0,
     max_reel_duration_sec: float = None,
     event_confidence_map: dict[str, float] = None,
-    dedup_threshold: float = 0.5,
+    dedup_threshold: float = 0.3,
 ) -> list[ClipBoundary]:
     """
     Full post-processing pipeline: dedup → min duration → max reel cap.

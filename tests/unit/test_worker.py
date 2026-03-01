@@ -66,8 +66,10 @@ _P = {
     "GoalkeeperDetector":   "src.detection.goalkeeper_detector.GoalkeeperDetector",
     "PipelineRunner":       "src.detection.event_classifier.PipelineRunner",
     "EventLog":             "src.detection.event_log.EventLog",
-    "compute_clips":        "src.segmentation.clipper.compute_clips",
+    "compute_clips_v2":     "src.segmentation.clipper.compute_clips_v2",
     "postprocess_clips":    "src.segmentation.deduplicator.postprocess_clips",
+    "filter_wrong_side":    "src.segmentation.spatial_filter.filter_wrong_side_events",
+    "passes_sim_gate":      "src.segmentation.spatial_filter.passes_sim_gate",
     "ReelComposer":         "src.assembly.composer.ReelComposer",
     "write_reel_to_nas":    "src.assembly.output.write_reel_to_nas",
     "get_output_path":      "src.assembly.output.get_output_path",
@@ -98,8 +100,10 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
          patch(_P["GoalkeeperDetector"]) as m_gk, \
          patch(_P["PipelineRunner"]) as m_runner, \
          patch(_P["EventLog"]) as m_evlog, \
-         patch(_P["compute_clips"]) as m_clips, \
+         patch(_P["compute_clips_v2"]) as m_clips, \
          patch(_P["postprocess_clips"]) as m_post, \
+         patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur: sel) as m_fws, \
+         patch(_P["passes_sim_gate"], return_value=True) as m_sim, \
          patch(_P["ReelComposer"]) as m_composer, \
          patch(_P["write_reel_to_nas"]) as m_nas, \
          patch(_P["get_output_path"], create=True) as m_out, \
@@ -117,7 +121,7 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
             "GoalkeeperDetector": m_gk,
             "PipelineRunner": m_runner,
             "EventLog": m_evlog,
-            "compute_clips": m_clips,
+            "compute_clips_v2": m_clips,
             "postprocess_clips": m_post,
             "ReelComposer": m_composer,
             "write_reel_to_nas": m_nas,
@@ -170,24 +174,23 @@ class TestRunPipelineTypeCasting:
         assert isinstance(pr_call.kwargs["min_confidence"], float)
         assert pr_call.kwargs["min_confidence"] == 0.65
 
-    def test_compute_clips_receives_float_padding(self, tmp_path):
+    def test_compute_clips_v2_called_with_events(self, tmp_path):
         from src.detection.models import Event, EventType
 
-        # Keeper saves plugin provides padding (8.0/4.0)
         event = Event(
             job_id="test-job-001", source_file="match.mp4",
             event_type=EventType.CATCH, timestamp_start=10.0,
             timestamp_end=12.0, confidence=0.80,
-            reel_targets=["keeper"], frame_start=300, frame_end=360,
+            reel_targets=[], frame_start=300, frame_end=360,
             is_goalkeeper_event=True,
+            metadata={"sim_team_gk": 0.90},
         )
         mocks = _run_pipeline_with_mocks(tmp_path, events=[event])
-        cc_call = mocks["compute_clips"].call_args
-        assert isinstance(cc_call.kwargs["pre_pad"], float)
-        assert cc_call.kwargs["pre_pad"] == 8.0
-        assert isinstance(cc_call.kwargs["post_pad"], float)
-        assert cc_call.kwargs["post_pad"] == 4.0
-        assert cc_call.kwargs["max_clip_duration_sec"] == 25.0
+        cc_call = mocks["compute_clips_v2"].call_args
+        # compute_clips_v2 is called with events and video_duration
+        assert cc_call is not None
+        assert cc_call.kwargs["video_duration"] == 5400.0
+        assert cc_call.kwargs["reel_name"] == "keeper"
 
 
 @pytest.mark.unit
@@ -203,16 +206,28 @@ class TestRunPipelineReelComposer:
             primary_event_type="catch",
         )
 
+    def _make_event(self):
+        from src.detection.models import Event, EventType
+        return Event(
+            job_id="test-job-001", source_file="match.mp4",
+            event_type=EventType.CATCH, timestamp_start=10.0,
+            timestamp_end=12.0, confidence=0.80,
+            reel_targets=[], frame_start=300, frame_end=360,
+            is_goalkeeper_event=True, metadata={"sim_team_gk": 0.90},
+        )
+
     def test_composer_receives_job_id_and_reel_type(self, tmp_path):
         clip = self._make_clip()
-        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
+        event = self._make_event()
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[event], clips=[clip])
         composer_call = mocks["ReelComposer"].call_args
         assert composer_call.kwargs["job_id"] == "test-job-001"
         assert composer_call.kwargs["reel_type"] == "keeper"
 
     def test_composer_receives_codec_and_int_crf(self, tmp_path):
         clip = self._make_clip()
-        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
+        event = self._make_event()
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[event], clips=[clip])
         composer_call = mocks["ReelComposer"].call_args
         assert composer_call.kwargs["codec"] == "copy"
         assert isinstance(composer_call.kwargs["crf"], int)
@@ -221,7 +236,8 @@ class TestRunPipelineReelComposer:
     def test_compose_method_called(self, tmp_path):
         """Ensure worker calls composer.compose(), not the old compose_reel()."""
         clip = self._make_clip()
-        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
+        event = self._make_event()
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[event], clips=[clip])
         mocks["ReelComposer"].return_value.compose.assert_called_once()
 
     def test_no_clips_skips_composer(self, tmp_path):
@@ -303,10 +319,21 @@ class TestRunPipelineJobCompletion:
             primary_event_type="catch",
         )
 
+    def _make_event(self):
+        from src.detection.models import Event, EventType
+        return Event(
+            job_id="test-job-001", source_file="match.mp4",
+            event_type=EventType.CATCH, timestamp_start=10.0,
+            timestamp_end=12.0, confidence=0.80,
+            reel_targets=[], frame_start=300, frame_end=360,
+            is_goalkeeper_event=True, metadata={"sim_team_gk": 0.90},
+        )
+
     def test_pipeline_reaches_complete_status(self, tmp_path):
         from src.ingestion.models import JobStatus
         clip = self._make_clip()
-        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
+        event = self._make_event()
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[event], clips=[clip])
         result = mocks["result"]
         assert result["job_id"] == "test-job-001"
 
@@ -320,7 +347,8 @@ class TestRunPipelineJobCompletion:
     def test_pipeline_transitions_through_all_stages(self, tmp_path):
         from src.ingestion.models import JobStatus
         clip = self._make_clip()
-        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
+        event = self._make_event()
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[event], clips=[clip])
         statuses = [c.args[1] for c in mocks["store"].update_status.call_args_list]
         assert JobStatus.DETECTING in statuses
         assert JobStatus.SEGMENTING in statuses
@@ -335,7 +363,8 @@ class TestRunPipelineJobCompletion:
             events=["ev-001"], reel_type="keeper",
             primary_event_type="catch",
         )
-        mocks = _run_pipeline_with_mocks(tmp_path, clips=[clip])
+        event = self._make_event()
+        mocks = _run_pipeline_with_mocks(tmp_path, events=[event], clips=[clip])
         result = mocks["result"]
         assert "keeper" in result["output_paths"]
 
