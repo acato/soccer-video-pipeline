@@ -22,8 +22,9 @@ from src.detection.models import Event, EventType
 # Minimum sim_team_gk to include an event in the keeper reel.
 _MIN_REEL_SIM_TEAM_GK = 0.75
 
-# Lower threshold for save events — already curated by trajectory analysis.
-_MIN_REEL_SIM_SAVE = 0.55
+# Threshold for save events — lowered to 0.60 since speed gates now
+# filter routine play.  Real saves range sim_team_gk 0.655–0.837.
+_MIN_REEL_SIM_SAVE = 0.60
 
 _SAVE_TYPES = frozenset({
     EventType.SHOT_STOP_DIVING,
@@ -62,51 +63,71 @@ def filter_wrong_side_events(
     selected_events: list[Event],
     all_events: list[Event],
     video_duration_sec: float,
+    gk_first_half_side: str | None = None,
 ) -> list[Event]:
     """Remove keeper events that are on the wrong side of the pitch.
 
     Two-stage filter:
       1. **Midfield gate** — reject any event whose bounding-box center_x
          falls in the middle band (0.35–0.65).
-      2. **Majority-vote side filter** — among the remaining outer-third
-         events, count left vs right per game half.  If one side dominates
-         (>= 55%, >= 2 events) that's "our" keeper's side and events on
-         the opposite side are removed.
+      2. **Side filter** — if ``gk_first_half_side`` is given (``"left"``
+         or ``"right"``), use it directly and infer the opposite for the
+         second half.  Otherwise fall back to majority-vote heuristic.
 
     Events without a bounding_box are always kept (safe default).
     """
     half_time = video_duration_sec / 2
 
-    _VOTER_MIN_CONFIDENCE = 0.75
-    _VOTER_MIN_SIM_TEAM_GK = 0.77
     _EXEMPT_FROM_SIDE_FILTER = frozenset({EventType.GOAL_KICK, EventType.CORNER_KICK})
+    _OPPOSITE = {"left": "right", "right": "left"}
 
-    voters: list[Event] = [
-        e for e in all_events
-        if e.is_goalkeeper_event
-        and e.bounding_box is not None
-        and not (_MIDFIELD_LO < e.bounding_box.center_x < _MIDFIELD_HI)
-        and e.confidence >= _VOTER_MIN_CONFIDENCE
-        and e.metadata.get("sim_team_gk", 0) >= _VOTER_MIN_SIM_TEAM_GK
-        and e.event_type not in _EXEMPT_FROM_SIDE_FILTER
-    ]
+    # ── Determine GK side per half ──────────────────────────────────────
+    if gk_first_half_side in ("left", "right"):
+        first_side: str | None = gk_first_half_side
+        second_side: str | None = _OPPOSITE[gk_first_half_side]
+    else:
+        # Auto-detect via majority vote (can be fooled when GK color ≈
+        # opponent outfield color — prefer explicit gk_first_half_side).
+        _VOTER_MIN_CONFIDENCE = 0.75
+        _VOTER_MIN_SIM_TEAM_GK = 0.77
 
-    first_half_voters = [e for e in voters if e.timestamp_start < half_time]
-    second_half_voters = [e for e in voters if e.timestamp_start >= half_time]
+        voters: list[Event] = [
+            e for e in all_events
+            if e.is_goalkeeper_event
+            and e.bounding_box is not None
+            and not (_MIDFIELD_LO < e.bounding_box.center_x < _MIDFIELD_HI)
+            and e.confidence >= _VOTER_MIN_CONFIDENCE
+            and e.metadata.get("sim_team_gk", 0) >= _VOTER_MIN_SIM_TEAM_GK
+            and e.event_type not in _EXEMPT_FROM_SIDE_FILTER
+        ]
 
-    def _majority_side(events: list[Event]) -> str | None:
-        if len(events) < 2:
+        first_half_voters = [e for e in voters if e.timestamp_start < half_time]
+        second_half_voters = [e for e in voters if e.timestamp_start >= half_time]
+
+        def _majority_side(events: list[Event]) -> str | None:
+            if len(events) < 2:
+                return None
+            left = sum(1 for e in events if e.bounding_box.center_x < 0.5)
+            right = len(events) - left
+            if left / len(events) >= 0.55:
+                return "left"
+            if right / len(events) >= 0.55:
+                return "right"
             return None
-        left = sum(1 for e in events if e.bounding_box.center_x < 0.5)
-        right = len(events) - left
-        if left / len(events) >= 0.55:
-            return "left"
-        if right / len(events) >= 0.55:
-            return "right"
-        return None
 
-    first_side = _majority_side(first_half_voters)
-    second_side = _majority_side(second_half_voters)
+        first_side = _majority_side(first_half_voters)
+        second_side = _majority_side(second_half_voters)
+
+        # Teams switch sides at halftime.  Enforce opposite sides.
+        if first_side and not second_side:
+            second_side = _OPPOSITE[first_side]
+        elif second_side and not first_side:
+            first_side = _OPPOSITE[second_side]
+        elif first_side and second_side and first_side == second_side:
+            if len(first_half_voters) >= len(second_half_voters):
+                second_side = _OPPOSITE[first_side]
+            else:
+                first_side = _OPPOSITE[second_side]
 
     def _keep(event: Event) -> bool:
         if event.bounding_box is None:

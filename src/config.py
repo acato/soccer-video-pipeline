@@ -87,6 +87,24 @@ DETECTION_FRAME_STEP: int = _int("DETECTION_FRAME_STEP", 3)
 """Process every Nth frame during detection pass (3 = 10fps effective at 30fps source)."""
 
 # ---------------------------------------------------------------------------
+# VLM (Vision Language Model) Classification
+# ---------------------------------------------------------------------------
+VLM_ENABLED: bool = _bool("VLM_ENABLED", False)
+"""Use Claude VLM to verify GK save events post-detection."""
+
+ANTHROPIC_API_KEY: str = _opt("ANTHROPIC_API_KEY", "")
+"""API key for Anthropic Claude. Required when VLM_ENABLED=true."""
+
+VLM_MODEL: str = _opt("VLM_MODEL", "claude-sonnet-4-20250514")
+"""Claude model to use for VLM classification."""
+
+VLM_FRAME_WIDTH: int = _int("VLM_FRAME_WIDTH", 640)
+"""Resize width for extracted VLM frames (smaller = cheaper API calls)."""
+
+VLM_MIN_CONFIDENCE: float = _float("VLM_MIN_CONFIDENCE", 0.6)
+"""Minimum VLM confidence to keep an event."""
+
+# ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 OUTPUT_CODEC: str = _opt("OUTPUT_CODEC", "copy")
@@ -183,6 +201,11 @@ class _Config:
             "WATCH_STABLE_TIME_SEC": ("WATCH_STABLE_TIME_SEC", "30.0"),
             "PREVENT_SLEEP": ("PREVENT_SLEEP", "true"),
             "USE_BALL_TOUCH_DETECTOR": ("USE_BALL_TOUCH_DETECTOR", "false"),
+            "VLM_ENABLED": ("VLM_ENABLED", "false"),
+            "ANTHROPIC_API_KEY": ("ANTHROPIC_API_KEY", ""),
+            "VLM_MODEL": ("VLM_MODEL", "claude-sonnet-4-20250514"),
+            "VLM_FRAME_WIDTH": ("VLM_FRAME_WIDTH", "640"),
+            "VLM_MIN_CONFIDENCE": ("VLM_MIN_CONFIDENCE", "0.6"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

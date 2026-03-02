@@ -153,6 +153,12 @@ class BallTrajectory:
         return len(self._sorted_frames)
 
 
+# Save-specific speed constants (shared by _attribute_and_classify and
+# _classify_touch save-context fallback).
+_SAVE_PRE_SPEED_MIN = 0.40   # ball must be moving fast (shot)
+_SAVE_SPEED_DROP_MAX = 0.40   # post/pre ratio — dramatic decel
+
+
 class BallTouchDetector:
     """
     Ball-first GK event detector.
@@ -194,6 +200,19 @@ class BallTouchDetector:
         # Near-goal zone thresholds (relaxed for deflections/saves)
         self._near_goal_x = near_goal_x_threshold
         self._near_goal_speed_change_ratio = near_goal_speed_change_ratio
+
+        # When VLM is the quality gate, relax detection to maximize recall.
+        # The VLM rejects FPs, so the detector can afford lower thresholds.
+        import os
+        vlm_relax = os.getenv("VLM_RELAX_COLOR_MARGINS", "").lower() in ("1", "true", "yes")
+        if vlm_relax:
+            self._save_pre_speed_min = 0.25   # lowered from 0.40
+            self._color_margin_of = 0.05      # lowered from 0.12
+            log.info("ball_touch.vlm_relaxed_thresholds",
+                     save_pre_speed_min=0.25, color_margin_of=0.05)
+        else:
+            self._save_pre_speed_min = _SAVE_PRE_SPEED_MIN
+            self._color_margin_of = 0.12
 
         # Pre-compute direction change thresholds as cosine
         self._cos_threshold = math.cos(math.radians(direction_change_deg))
@@ -495,6 +514,53 @@ class BallTouchDetector:
 
             tid, px, py, jersey_hsv = best_player
 
+            # ---------------------------------------------------------------
+            # Save-specific speed gates: saves stop SHOTS (fast balls).
+            # Reject slow-ball touches that are routine play, not saves.
+            # Compute INCOMING ball speed (before touch), not AT the touch
+            # frame which sits on the transition and averages fast+slow.
+            # ---------------------------------------------------------------
+            _SAVE_REASONS = ("speed_drop", "direction_change", "ball_caught")
+
+            fidx = bisect.bisect_left(trajectory.frames, touch_frame)
+            # Pre-speed: measure from 5 frames before the touch
+            ball_pre_speed = None
+            pre_offset = min(5, fidx)
+            if pre_offset > 0:
+                pre_f = trajectory.frames[fidx - pre_offset]
+                ball_pre_speed = trajectory.speed_at(pre_f, window=5)
+            # Post-speed: measure from 5 frames after the touch
+            ball_post_speed = None
+            post_offset = 5
+            if fidx + post_offset < len(trajectory.frames):
+                post_f = trajectory.frames[fidx + post_offset]
+                ball_post_speed = trajectory.speed_at(post_f, window=5)
+
+            speed_ratio = None
+            if ball_pre_speed and ball_post_speed and ball_pre_speed > 0:
+                speed_ratio = ball_post_speed / ball_pre_speed
+
+            if reason in _SAVE_REASONS:
+                # Gate 1: ball must be moving fast enough to be a shot
+                if ball_pre_speed is not None and ball_pre_speed < self._save_pre_speed_min:
+                    log.debug(
+                        "ball_touch.save_speed_gate_reject",
+                        frame=touch_frame, reason=reason,
+                        ball_pre_speed=round(ball_pre_speed, 3),
+                        threshold=self._save_pre_speed_min,
+                    )
+                    continue
+                # Gate 2: for speed_drop, require dramatic deceleration
+                if reason == "speed_drop" and speed_ratio is not None:
+                    if speed_ratio >= _SAVE_SPEED_DROP_MAX:
+                        log.debug(
+                            "ball_touch.save_speed_ratio_reject",
+                            frame=touch_frame,
+                            speed_ratio=round(speed_ratio, 3),
+                            threshold=_SAVE_SPEED_DROP_MAX,
+                        )
+                        continue
+
             # GK override for save-like touches only: during a parry, the
             # ball deflects away so the nearest player is an attacker.
             # Only for speed_drop/direction_change (save indicators), scan
@@ -503,7 +569,7 @@ class BallTouchDetector:
             # position, because auto-pan cameras center the ball.
             goal_area_override_fired = False
             _GOAL_AREA_X = 0.22
-            _OVERRIDE_MIN_SIM = 0.55  # match base gk_color_min_similarity
+            _OVERRIDE_MIN_SIM = 0.70  # raised from 0.55 to reduce FPs
             _OVERRIDE_MARGIN = 0.03   # GK must barely beat nearest
             _SAVE_LIKE_REASONS = ("speed_drop", "direction_change")
             if team_gk_hsv is not None and reason in _SAVE_LIKE_REASONS:
@@ -516,6 +582,14 @@ class BallTouchDetector:
                         continue
                     # Player must be in a goal area (near a goal line)
                     if _GOAL_AREA_X <= p_x <= (1 - _GOAL_AREA_X):
+                        continue
+                    # GK candidate must be on same side as ball to prevent
+                    # overrides from teal-ish players on the opposite side
+                    ball_left = bx < 0.25
+                    ball_right = bx > 0.75
+                    gk_left = p_x < 0.25
+                    gk_right = p_x > 0.75
+                    if not ((ball_left and gk_left) or (ball_right and gk_right)):
                         continue
                     sim = compute_jersey_similarity(j_hsv, team_gk_hsv)
                     goal_area_candidates.append((sim, t_id, p_x))
@@ -570,6 +644,9 @@ class BallTouchDetector:
                 opp_outfield_hsv=opp_outfield_hsv,
                 gk_vertical_velocity=gk_vert_vel,
                 goal_area_override=goal_area_override_fired,
+                ball_pre_speed=ball_pre_speed,
+                ball_post_speed=ball_post_speed,
+                speed_ratio=speed_ratio,
             )
             if event is not None:
                 events.append(event)
@@ -805,6 +882,9 @@ class BallTouchDetector:
         opp_outfield_hsv: Optional[tuple[float, float, float]],
         gk_vertical_velocity: float = 0.0,
         goal_area_override: bool = False,
+        ball_pre_speed: Optional[float] = None,
+        ball_post_speed: Optional[float] = None,
+        speed_ratio: Optional[float] = None,
     ) -> Optional[Event]:
         """
         Classify a touch based on the toucher's jersey color.
@@ -838,7 +918,6 @@ class BallTouchDetector:
         # Different margins for GK-vs-GK (small — position handles confusion)
         # and GK-vs-outfield (large — critical for blue/teal guard).
         _COLOR_MARGIN_GK = 0.03   # GK vs opponent GK
-        _COLOR_MARGIN_OF = 0.12   # GK vs any outfield color
 
         if goal_area_override:
             # Player validated by position + trajectory — only require
@@ -851,8 +930,8 @@ class BallTouchDetector:
             is_team_gk = (
                 sim_team_gk >= self._gk_color_min_similarity
                 and sim_team_gk > sim_opp_gk + _COLOR_MARGIN_GK
-                and sim_team_gk > sim_team_of + _COLOR_MARGIN_OF
-                and sim_team_gk > sim_opp_of + _COLOR_MARGIN_OF
+                and sim_team_gk > sim_team_of + self._color_margin_of
+                and sim_team_gk > sim_opp_of + self._color_margin_of
             )
 
         # GKs don't operate in midfield — reject to prevent FPs
@@ -872,25 +951,6 @@ class BallTouchDetector:
             and sim_opp_gk > sim_opp_of
         )
 
-        # Goal-area fallback: when both GK checks fail (ambiguous colors)
-        # but the player is near a goal line and sim_team_gk is highest,
-        # classify as our GK.  Spatial filter handles any residual FPs.
-        if not is_team_gk and not is_opp_gk:
-            in_goal_area = player_pos[0] < 0.15 or player_pos[0] > 0.85
-            if (
-                in_goal_area
-                and sim_team_gk >= self._gk_color_min_similarity
-                and sim_team_gk >= sim_opp_gk
-            ):
-                is_team_gk = True
-                log.debug(
-                    "ball_touch.goal_area_gk_fallback",
-                    frame=touch_frame,
-                    px=round(player_pos[0], 3),
-                    sim_team_gk=round(sim_team_gk, 3),
-                    sim_opp_gk=round(sim_opp_gk, 3),
-                )
-
         if is_opp_gk:
             log.debug(
                 "ball_touch.opponent_gk_touch",
@@ -900,6 +960,34 @@ class BallTouchDetector:
                 px=round(player_pos[0], 3),
             )
             return None
+
+        # Save-context fallback: when the normal color margin check fails
+        # but ball speed confirms a shot AND the player is in the goal area,
+        # relax outfield color margins.  The speed gate already filters
+        # routine play so we only need positional confirmation.
+        _SAVE_CONTEXT_REASONS = ("speed_drop", "direction_change", "ball_caught")
+        if not is_team_gk and not is_opp_gk:
+            in_goal_area = player_pos[0] < 0.22 or player_pos[0] > 0.78
+            has_save_context = (
+                reason in _SAVE_CONTEXT_REASONS
+                and ball_pre_speed is not None
+                and ball_pre_speed >= self._save_pre_speed_min
+            )
+            if (
+                has_save_context
+                and in_goal_area
+                and sim_team_gk >= self._gk_color_min_similarity
+                and sim_team_gk > sim_opp_gk
+            ):
+                is_team_gk = True
+                log.debug(
+                    "ball_touch.save_context_fallback",
+                    frame=touch_frame, reason=reason,
+                    sim_team_gk=round(sim_team_gk, 3),
+                    sim_opp_of=round(sim_opp_of, 3),
+                    ball_pre_speed=round(ball_pre_speed, 3),
+                    px=round(player_pos[0], 3),
+                )
 
         if not is_team_gk:
             # Outfield player touch — not a keeper event
@@ -960,6 +1048,9 @@ class BallTouchDetector:
                 "ball_x": round(ball_pos[0], 4),
                 "ball_y": round(ball_pos[1], 4),
                 "gk_vertical_velocity": round(gk_vertical_velocity, 3),
+                "ball_pre_speed": round(ball_pre_speed, 3) if ball_pre_speed is not None else None,
+                "ball_post_speed": round(ball_post_speed, 3) if ball_post_speed is not None else None,
+                "speed_ratio": round(speed_ratio, 3) if speed_ratio is not None else None,
             },
         )
 

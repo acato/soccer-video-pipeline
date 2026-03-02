@@ -248,12 +248,29 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     all_events = event_log.read_all()
     event_conf_map = {e.event_id: e.confidence for e in all_events}
 
-    # Apply spatial filter once to all GK events
+    # Filter GK events: VLM classification (if enabled) or spatial filter + sim gate
     gk_events = [e for e in all_events if e.is_goalkeeper_event]
     non_gk_events = [e for e in all_events if not e.is_goalkeeper_event]
-    filtered_gk = filter_wrong_side_events(gk_events, all_events, vf.duration_sec)
-    # Apply sim gate to GK events
-    filtered_gk = [e for e in filtered_gk if passes_sim_gate(e)]
+    gk_side = job.match_config.gk_first_half_side if job.match_config else None
+
+    vlm_enabled = str(cfg.VLM_ENABLED).lower() in ("1", "true", "yes")
+    if vlm_enabled and gk_events:
+        from src.detection.vlm_classifier import VLMClassifier
+        vlm = VLMClassifier(
+            api_key=cfg.ANTHROPIC_API_KEY,
+            model=cfg.VLM_MODEL,
+            source_file=vf.path,
+            match_config=job.match_config,
+            frame_width=int(cfg.VLM_FRAME_WIDTH),
+            min_confidence=float(cfg.VLM_MIN_CONFIDENCE),
+        )
+        filtered_gk = vlm.filter_events(gk_events)
+        log.info("pipeline.vlm_filter", before=len(gk_events), after=len(filtered_gk))
+    else:
+        # Existing path: spatial filter + sim gate
+        filtered_gk = filter_wrong_side_events(gk_events, all_events, vf.duration_sec, gk_first_half_side=gk_side)
+        filtered_gk = [e for e in filtered_gk if passes_sim_gate(e)]
+
     all_events = filtered_gk + non_gk_events
 
     # Get reel specs from job (handles legacy reel_types → ReelSpec conversion)

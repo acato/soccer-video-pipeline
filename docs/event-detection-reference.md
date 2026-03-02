@@ -238,9 +238,9 @@ The ball touch detector applies four guards to prevent false GK identification:
 4. **Goal kick reclassification guard (0.78)** — dead-ball→goal_kick reclassification requires `sim_team_gk >= 0.78`. The dead-ball pattern (stationary ball then kicked) can happen anywhere on the pitch, so a stricter threshold prevents FPs from defenders collecting clearances.
 
 All keeper plugins apply a three-stage quality filter:
-1. **Reel-level sim gate (0.75)** — events with sim_team_gk < 0.75 are excluded before spatial filtering. This catches pre-game FPs and weak jersey matches where the color margin check passed but absolute similarity is too low. Penalty events (ML-detected, no jersey color) are exempt.
+1. **Reel-level sim gate** — non-save events require sim_team_gk >= 0.75; save events (SHOT_STOP_DIVING/STANDING, PUNCH, CATCH, PENALTY) require sim_team_gk >= 0.60 (lowered from 0.70 since speed gates now filter routine play). Penalty and corner kick events are exempt. This catches pre-game FPs and weak jersey matches.
 2. **Midfield gate** — events with bounding_box center_x in the middle band (0.35–0.65) are rejected outright; GKs don't operate in midfield.
-3. **Majority-vote side filter** — among the remaining outer-third events, only events with confidence >= 0.75 AND sim_team_gk >= 0.77 (strong jersey color match) participate as voters. Goal kicks are excluded from voting (they inherit bounding_box from the original save/catch). This prevents low-confidence or weak-color-match false positives from outnumbering real events and flipping the side determination. If one side dominates (>=55% of >=2 qualified voters), events on the opposite side are removed.
+3. **Majority-vote side filter** — among the remaining outer-third events, only events with confidence >= 0.75 AND sim_team_gk >= 0.77 (strong jersey color match) participate as voters. Goal kicks are excluded from voting (they inherit bounding_box from the original save/catch). This prevents low-confidence or weak-color-match false positives from outnumbering real events and flipping the side determination. If one side dominates (>=55% of >=2 qualified voters), events on the opposite side are removed. **Halftime switch enforcement**: teams switch sides at halftime, so if both halves vote the same side, the half with fewer voters is flipped to the opposite. If only one half has a clear majority, the other half is inferred as the opposite side.
 
 Clip deduplication uses temporal IoU threshold of 0.3 (previously 0.5) to catch near-duplicate clips from chunk boundaries and multiple plugins with different padding.
 
@@ -255,6 +255,39 @@ The ball touch detector uses relaxed thresholds near the goal (x < 0.15 or x > 0
 | Min touch speed | 0.20 | 0.10 (0.5x) |
 
 This is critical for detecting glancing deflections, fingertip saves, and slow-ball saves near the goal line.
+
+## Save Speed Gates
+
+Save-like ball touches (speed_drop, direction_change, ball_caught) are subject to additional speed gates to reduce false positives from routine play:
+
+| Gate | Threshold | Purpose |
+|------|-----------|---------|
+| Pre-speed minimum | ball_pre_speed >= 0.40/s | Saves stop SHOTS, which are fast. Rejects slow-ball FPs (collections, traps, back-passes) |
+| Speed-drop ratio | post/pre < 0.40 | For `speed_drop` reason only. Requires dramatic deceleration (60%+ loss), not gentle slowdowns |
+
+Speed metadata (`ball_pre_speed`, `ball_post_speed`, `speed_ratio`) is stored in event metadata for post-hoc analysis.
+
+## Goal-Area GK Override
+
+When the nearest player is an attacker (e.g. during a parry), the detector overrides attribution to a GK-colored player in the goal area. Constraints:
+- Player must be in outer goal area (px < 0.22 or px > 0.78)
+- GK candidate must be on same side as ball (both left quarter or both right quarter)
+- Minimum sim_team_gk >= 0.70
+- GK sim must exceed nearest player's sim by >= 0.03
+
+The previous goal-area **fallback** in `_classify_touch` (which bypassed all color margins at frame edges x<0.15/x>0.85) has been removed — it was a major source of false positives with panning cameras.
+
+## Save-Context Fallback
+
+When the normal color margin check fails (e.g., teal GK jersey looks blue under certain lighting), a save-context fallback can still classify the touch as a GK event if ALL of these conditions are met:
+
+1. **Save reason** — touch reason is `speed_drop`, `direction_change`, or `ball_caught`
+2. **Fast ball** — `ball_pre_speed >= 0.40` (passed save speed gate, confirming a shot)
+3. **Goal area** — player position x < 0.22 or x > 0.78
+4. **Minimum similarity** — sim_team_gk >= `gk_color_min_similarity` (0.60)
+5. **Better than opponent GK** — sim_team_gk > sim_opp_gk
+
+This recovers saves where the GK's jersey color is ambiguous (e.g., teal vs blue under stadium lighting) but positional and ball-speed evidence strongly confirm a save. The speed gate provides sufficient FP protection — only actual shots trigger this path.
 
 ## Smart Clip Endpoints
 
@@ -274,6 +307,76 @@ Clips are extended beyond the raw event window to capture the full play outcome.
 | ONE_ON_ONE | 8s |
 
 Events not in this list (e.g. SHOT_ON_TARGET) are not extended. Extended events have `metadata.endpoint_extended=true` and `metadata.endpoint_reason`.
+
+## VLM (Vision Language Model) Classifier
+
+Optional post-detection verification using Claude Sonnet to replace heuristic jersey-color classification for GK save events. Enabled via `VLM_ENABLED=true`.
+
+### Why
+
+The heuristic jersey-color approach (HSV comparison) is unreliable when team colors are spectrally close (e.g., teal GK vs blue opponents). After multiple rounds of threshold tuning, it still produces ~50% false positives and misses ~30% of real saves. The VLM can visually identify the goalkeeper and the save action directly from video frames.
+
+### Architecture
+
+```
+BallTouchDetector → candidate events (relaxed thresholds when VLM_RELAX_COLOR_MARGINS=true)
+     ↓
+VLMClassifier.filter_events(candidates)
+     ↓  FFmpeg extracts 3 frames per event (-0.5s, center, +0.5s)
+     ↓  Claude Sonnet analyzes each frame set
+     ↓  Returns keep/reject + confidence + reasoning
+     ↓
+Segmentation → Assembly
+```
+
+Runs **post-detection, pre-segmentation** in the worker pipeline. When enabled, it **replaces** both the spatial filter and the sim gate for GK events.
+
+### Configuration
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `VLM_ENABLED` | `false` | Toggle VLM classification on/off |
+| `ANTHROPIC_API_KEY` | (empty) | Required when VLM_ENABLED=true |
+| `VLM_MODEL` | `claude-sonnet-4-20250514` | Claude model for classification |
+| `VLM_FRAME_WIDTH` | `640` | Resize width for extracted frames |
+| `VLM_MIN_CONFIDENCE` | `0.6` | Minimum VLM confidence to keep event |
+| `VLM_RELAX_COLOR_MARGINS` | `false` | Relax BallTouchDetector thresholds |
+
+### Relaxed Detection Thresholds
+
+When `VLM_RELAX_COLOR_MARGINS=true`, the BallTouchDetector lowers thresholds to produce more candidates (higher recall, lower precision) since the VLM is the quality gate:
+
+| Parameter | Normal | VLM-relaxed |
+|-----------|--------|-------------|
+| `_SAVE_PRE_SPEED_MIN` | 0.40 | 0.25 |
+| `_COLOR_MARGIN_OF` | 0.12 | 0.05 |
+
+### Prompt Design
+
+The VLM receives:
+- 3 frames as JPEG images (640px wide, ~50-100KB each)
+- Match context: team names, jersey colors for all 4 roles (team GK, opponent GK, team outfield, opponent outfield)
+- Event metadata: ball position, ball speed (pre/post), event type
+- Structured criteria: is the GK visible, in goal area, performing a save action
+
+The VLM returns structured JSON: `{is_gk_save: bool, confidence: 0-1, reasoning: str}`.
+
+### Error Handling
+
+- **Fail-open**: if frame extraction or API call fails, the event is kept (not dropped)
+- **Parse errors**: if the JSON response can't be parsed, event is kept with confidence=0.0
+- VLM verdict + reasoning stored in `event.metadata` (vlm_is_save, vlm_confidence, vlm_reasoning, vlm_model)
+
+### Cost Estimate
+
+For a typical match (~17 candidate save events):
+- ~17 API calls × 3 frames × ~80KB/frame = ~4MB total image data
+- ~17 × 800 input tokens + 50 output tokens per call
+- Processing time: ~51s sequential
+
+### Source
+
+`src/detection/vlm_classifier.py` — `VLMClassifier` class.
 
 ## Known Issues
 

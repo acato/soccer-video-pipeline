@@ -57,6 +57,7 @@ def _make_string_config(tmp_path):
     cfg.NAS_OUTPUT_PATH = str(tmp_path / "output")
     cfg.MAX_NAS_RETRY = "3"
     cfg.REEL_PLUGINS = ""
+    cfg.VLM_ENABLED = "false"
     return cfg
 
 
@@ -102,7 +103,7 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
          patch(_P["EventLog"]) as m_evlog, \
          patch(_P["compute_clips_v2"]) as m_clips, \
          patch(_P["postprocess_clips"]) as m_post, \
-         patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur: sel) as m_fws, \
+         patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur, **kw: sel) as m_fws, \
          patch(_P["passes_sim_gate"], return_value=True) as m_sim, \
          patch(_P["ReelComposer"]) as m_composer, \
          patch(_P["write_reel_to_nas"]) as m_nas, \

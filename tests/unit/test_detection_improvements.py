@@ -85,23 +85,24 @@ class TestZoneAwareThresholds:
         relaxed threshold (25deg) but not with normal (40deg)."""
         fps = 30.0
         dets = []
-        # Pre: ball moving rightward fast near left goal at x ~ 0.05..0.12
-        # Speed = 0.01/frame * 30fps = 0.30/sec (well above min_touch_speed*0.5)
-        for i in range(30):
+        # Pre: ball coming from midfield toward left goal
+        # Speed = 0.017/frame * 30fps = 0.51/sec (above save pre-speed gate)
+        for i in range(15):
             t = i / fps
-            dets.append(_ball_det(i, t, 0.03 + i * 0.01, 0.50))
-        # Change point: ball deflects ~150 degrees (clear reversal)
-        # Post: ball goes back leftward and slightly up
-        for i in range(30, 50):
+            dets.append(_ball_det(i, t, 0.30 - i * 0.017, 0.50))
+        # at i=14: x = 0.30 - 14*0.017 = 0.062 (near left goal)
+        # Change point: ball deflects (clear reversal)
+        # Post: ball bounces back rightward at HIGHER speed (no speed_drop)
+        for i in range(15, 35):
             t = i / fps
-            j = i - 30
-            dets.append(_ball_det(i, t, 0.03 + 30 * 0.01 - j * 0.008, 0.50 - j * 0.005))
+            j = i - 15
+            dets.append(_ball_det(i, t, 0.045 + j * 0.020, 0.50 - j * 0.005))
 
         track = _ball_track(1, dets)
         # Add a GK player near the deflection point
         gk_dets = [make_detection(i, i / fps, cls="player", track_id=10,
-                                   cx=0.12, cy=0.48)
-                    for i in range(50)]
+                                   cx=0.05, cy=0.48)
+                    for i in range(35)]
         gk_track = _player_track(10, gk_dets, jersey_hsv=TEAM_GK_HSV)
 
         det = _make_detector()
@@ -142,14 +143,15 @@ class TestZoneAwareThresholds:
         fps = 30.0
         dets = []
         # Fast ball approaching goal (x < 0.10)
+        # Speed = 0.017/frame * 30fps = 0.51/sec (above save pre-speed gate)
         for i in range(20):
             t = i / fps
-            dets.append(_ball_det(i, t, 0.15 - i * 0.005, 0.50))
+            dets.append(_ball_det(i, t, 0.40 - i * 0.017, 0.50))
         # Speed drops to ~60% (40% drop > 30% threshold)
         for i in range(20, 35):
             t = i / fps
             j = i - 20
-            dets.append(_ball_det(i, t, 0.05 - j * 0.003, 0.50))
+            dets.append(_ball_det(i, t, 0.06 - j * 0.003, 0.50))
 
         track = _ball_track(1, dets)
         gk_dets = [make_detection(i, i / fps, cls="player", track_id=10,
@@ -801,15 +803,15 @@ class TestGKColorMargin:
         # Ball trajectory with clear speed drop near goal:
         # Fast approach then abrupt slowdown = save
         dets = []
-        # Fast ball: 0.01/frame = 0.30/sec, well above min_touch_speed*0.5
+        # Fast ball: 0.017/frame = 0.51/sec (above save pre-speed gate)
         for i in range(15):
             t = i / fps
-            dets.append(_ball_det(i, t, 0.15 - i * 0.008, 0.50))
+            dets.append(_ball_det(i, t, 0.30 - i * 0.017, 0.50))
         # Abrupt slowdown (>50% speed drop)
         for i in range(15, 30):
             t = i / fps
             j = i - 15
-            dets.append(_ball_det(i, t, 0.03 + j * 0.001, 0.50))
+            dets.append(_ball_det(i, t, 0.045 + j * 0.001, 0.50))
 
         ball_track = _ball_track(1, dets)
 
@@ -863,13 +865,14 @@ class TestGKPositionGate:
         fps = 30.0
         dets = []
         # Fast ball approaching goal then abrupt slowdown near GK at x=0.15
+        # Speed = 0.017/frame = 0.51/sec (above save pre-speed gate)
         for i in range(15):
             t = i / fps
-            dets.append(_ball_det(i, t, 0.25 - i * 0.008, 0.50))
+            dets.append(_ball_det(i, t, 0.40 - i * 0.017, 0.50))
         for i in range(15, 30):
             t = i / fps
             j = i - 15
-            dets.append(_ball_det(i, t, 0.13 + j * 0.001, 0.50))
+            dets.append(_ball_det(i, t, 0.145 + j * 0.001, 0.50))
 
         ball_track = _ball_track(1, dets)
 

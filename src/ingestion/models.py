@@ -47,9 +47,16 @@ class MatchConfig(BaseModel):
 
     Colors are per-match, not per-team, because teams switch between
     home/away/third kits depending on the fixture.
+
+    `gk_first_half_side` — which side of the frame (``"left"`` or ``"right"``)
+    the team's GK defends in the first half.  The second half is inferred as
+    the opposite.  When set, the spatial wrong-side filter uses this directly
+    instead of the majority-vote heuristic, which can be fooled when the GK
+    jersey color is close to the opponent outfield color.
     """
     team: KitConfig
     opponent: KitConfig
+    gk_first_half_side: Optional[str] = None  # "left" or "right"
 
 
 class ReelSpec(BaseModel):

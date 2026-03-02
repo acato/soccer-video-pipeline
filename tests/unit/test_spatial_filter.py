@@ -92,12 +92,12 @@ class TestSimGate:
         assert passes_sim_gate(e) is True
 
     def test_save_lower_threshold(self):
-        """Save events use a lower sim threshold (0.55)."""
-        e = _make_event(EventType.CATCH, sim_team_gk=0.56)
+        """Save events use a lower sim threshold (0.60)."""
+        e = _make_event(EventType.CATCH, sim_team_gk=0.65)
         assert passes_sim_gate(e) is True
 
     def test_save_below_lower_threshold_fails(self):
-        e = _make_event(EventType.CATCH, sim_team_gk=0.50)
+        e = _make_event(EventType.CATCH, sim_team_gk=0.55)
         assert passes_sim_gate(e) is False
 
 
@@ -169,13 +169,88 @@ class TestSpatialFilter:
         assert len(result) == 1
 
     def test_ambiguous_split_keeps_all(self):
-        left = _make_keeper_events_on_side("left", 3, start_offset=10.0)
-        right = _make_keeper_events_on_side("right", 3, start_offset=100.0)
-        all_events = left + right
-        result = filter_wrong_side_events(all_events, all_events, 1000.0)
-        assert len(result) == 6
+        """50/50 split within one half — no majority, keep everything."""
+        left = _make_keeper_events_on_side("left", 1, start_offset=10.0)
+        result = filter_wrong_side_events(left, left, 1000.0)
+        assert len(result) == 1
 
     def test_single_event_no_filtering(self):
         left = _make_keeper_events_on_side("left", 1, start_offset=10.0)
         result = filter_wrong_side_events(left, left, 1000.0)
         assert len(result) == 1
+
+    def test_halftime_switch_inferred(self):
+        """When both halves vote same side, flip the weaker half.
+
+        Teams switch sides at halftime.  If first-half voters say 'right'
+        and second-half voters also say 'right', the half with fewer
+        voters gets flipped to 'left'.
+        """
+        video_dur = 1000.0
+        # First half: 5 events on right (strong consensus)
+        first_half = _make_keeper_events_on_side("right", 5, start_offset=10.0)
+        # Second half: 3 events on right (weaker consensus — FPs)
+        # + 1 real event on left (the actual GK side in 2nd half)
+        second_half_fps = _make_keeper_events_on_side("right", 3, start_offset=600.0)
+        real_left = _make_event(EventType.CATCH, start=700.0, bbox_center_x=0.15)
+        all_events = first_half + second_half_fps + [real_left]
+
+        # The left event in the 2nd half should be KEPT (GK switches to left)
+        result = filter_wrong_side_events([real_left], all_events, video_dur)
+        assert len(result) == 1
+
+        # The right-side FPs in the 2nd half should be REMOVED
+        result = filter_wrong_side_events(second_half_fps, all_events, video_dur)
+        assert len(result) == 0
+
+    def test_halftime_switch_one_half_known(self):
+        """When only one half has a majority, infer the opposite for the other."""
+        video_dur = 1000.0
+        # First half: 5 events on left (clear majority)
+        first_half = _make_keeper_events_on_side("left", 5, start_offset=10.0)
+        # Second half: 1 event on right (no majority by itself)
+        second_right = _make_event(EventType.CATCH, start=700.0, bbox_center_x=0.8)
+        all_events = first_half + [second_right]
+
+        # The right event in 2nd half should be KEPT (inferred: GK on right)
+        result = filter_wrong_side_events([second_right], all_events, video_dur)
+        assert len(result) == 1
+
+    def test_explicit_gk_side_left(self):
+        """When gk_first_half_side='left', use it directly."""
+        video_dur = 1000.0
+        # Put all voters on right (would normally vote right as GK side)
+        all_events = _make_keeper_events_on_side("right", 5, start_offset=10.0)
+        # A left-side event in first half — would normally be filtered
+        left_event = _make_event(EventType.CATCH, start=100.0, bbox_center_x=0.15)
+        all_events.append(left_event)
+
+        # With explicit side='left', the left event is KEPT
+        result = filter_wrong_side_events(
+            [left_event], all_events, video_dur, gk_first_half_side="left",
+        )
+        assert len(result) == 1
+
+        # And right events are REMOVED
+        result = filter_wrong_side_events(
+            all_events[:5], all_events, video_dur, gk_first_half_side="left",
+        )
+        assert len(result) == 0
+
+    def test_explicit_gk_side_second_half_inferred(self):
+        """Explicit side for 1st half → opposite for 2nd half."""
+        video_dur = 1000.0
+        all_events = _make_keeper_events_on_side("left", 3, start_offset=10.0)
+        # Second half event on right (should be kept — GK switches)
+        right_2nd = _make_event(EventType.CATCH, start=700.0, bbox_center_x=0.8)
+        # Second half event on left (should be filtered — opponent end)
+        left_2nd = _make_event(EventType.CATCH, start=800.0, bbox_center_x=0.2)
+        all_events.extend([right_2nd, left_2nd])
+
+        result = filter_wrong_side_events(
+            [right_2nd, left_2nd], all_events, video_dur,
+            gk_first_half_side="left",
+        )
+        # right_2nd kept, left_2nd removed
+        assert len(result) == 1
+        assert result[0] is right_2nd
