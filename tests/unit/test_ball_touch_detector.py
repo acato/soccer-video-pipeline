@@ -10,6 +10,8 @@ Covers:
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from src.detection.ball_touch_detector import BallTouchDetector, BallTrajectory
@@ -1192,3 +1194,251 @@ class TestDeadBallReclassification:
         det = self._make_detector()
         result = det._reclassify_dead_ball_collections([], trajectory, fps)
         assert result == []
+
+
+# ===========================================================================
+# VLM candidate bypass tests
+# ===========================================================================
+
+# Rush-like colors: teal GK vs blue outfield — spectrally close.
+# AMBIGUOUS_HSV simulates what YOLO detects: a jersey color between blue
+# (H≈112) and purple (H≈135).  This gives sim_team_gk < sim_opp_gk,
+# causing the save_context_fallback to also fail — only VLM bypass catches it.
+AMBIGUOUS_HSV = (120.0, 0.82, 0.65)
+
+
+def _rush_match_config():
+    """Create a Rush-like match config with confusable teal GK vs blue outfield."""
+    from src.ingestion.models import KitConfig, MatchConfig
+    return MatchConfig(
+        team=KitConfig(team_name="Rush", outfield_color="white", gk_color="teal"),
+        opponent=KitConfig(team_name="GA 2008", outfield_color="blue", gk_color="purple"),
+    )
+
+
+@pytest.mark.unit
+class TestVLMCandidateBypass:
+    """When VLM_RELAX_COLOR_MARGINS=true, save-like touches in the goal area
+    are emitted as GK candidates even if jersey color is ambiguous."""
+
+    def _make_detector(self, vlm_bypass=False, **kwargs):
+        mc = _rush_match_config()
+        defaults = dict(
+            job_id="job-001",
+            source_file="match.mp4",
+            match_config=mc,
+        )
+        defaults.update(kwargs)
+        with patch.dict("os.environ", {"VLM_RELAX_COLOR_MARGINS": "true" if vlm_bypass else "false"}):
+            return BallTouchDetector(**defaults)
+
+    def test_bypass_emits_goal_area_save_with_ambiguous_color(self):
+        """Teal GK near goal + speed_drop → emitted when VLM bypass enabled,
+        even though teal sim < blue sim (normally rejected)."""
+        fps = 30.0
+        # Ball moving fast toward left goal, then drops speed
+        ball_dets = (
+            [_ball_det(i, i / fps, 0.30 - i * 0.02, 0.50) for i in range(10)]
+            + [_ball_det(10 + i, (10 + i) / fps, 0.10 + i * 0.001, 0.50) for i in range(10)]
+        )
+        # Player near goal with teal HSV (will fail normal color margin check)
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.10, cy=0.50)
+                   for f in range(7, 14)]
+        ball_track = _ball_track(1, ball_dets)
+        gk_track = _player_track(99, gk_dets, jersey_hsv=list(AMBIGUOUS_HSV))
+
+        det = self._make_detector(vlm_bypass=True)
+        events = det.detect_touches([ball_track, gk_track], fps)
+        gk_events = [e for e in events if e.is_goalkeeper_event]
+        assert len(gk_events) >= 1
+        # Check vlm_candidate flag is set
+        assert any(e.metadata.get("vlm_candidate") for e in gk_events)
+
+    def test_no_bypass_rejects_ambiguous_color(self):
+        """Same scenario as above but without VLM bypass → rejected by color check."""
+        fps = 30.0
+        ball_dets = (
+            [_ball_det(i, i / fps, 0.30 - i * 0.02, 0.50) for i in range(10)]
+            + [_ball_det(10 + i, (10 + i) / fps, 0.10 + i * 0.001, 0.50) for i in range(10)]
+        )
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.10, cy=0.50)
+                   for f in range(7, 14)]
+        ball_track = _ball_track(1, ball_dets)
+        gk_track = _player_track(99, gk_dets, jersey_hsv=list(AMBIGUOUS_HSV))
+
+        det = self._make_detector(vlm_bypass=False)
+        events = det.detect_touches([ball_track, gk_track], fps)
+        gk_events = [e for e in events if e.is_goalkeeper_event]
+        # With strict color margins, teal vs blue should fail
+        vlm_candidates = [e for e in gk_events if e.metadata.get("vlm_candidate")]
+        assert len(vlm_candidates) == 0
+
+    def test_bypass_rejected_in_midfield(self):
+        """VLM bypass only works in goal area — midfield touches still rejected."""
+        fps = 30.0
+        # Ball at midfield
+        ball_dets = (
+            [_ball_det(i, i / fps, 0.60 - i * 0.02, 0.50) for i in range(10)]
+            + [_ball_det(10 + i, (10 + i) / fps, 0.40 + i * 0.001, 0.50) for i in range(10)]
+        )
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.40, cy=0.50)
+                   for f in range(7, 14)]
+        ball_track = _ball_track(1, ball_dets)
+        gk_track = _player_track(99, gk_dets, jersey_hsv=list(AMBIGUOUS_HSV))
+
+        det = self._make_detector(vlm_bypass=True)
+        events = det.detect_touches([ball_track, gk_track], fps)
+        vlm_candidates = [e for e in events if e.metadata.get("vlm_candidate")]
+        assert len(vlm_candidates) == 0
+
+    def test_bypass_metadata_flag(self):
+        """VLM candidate events have vlm_candidate=True in metadata."""
+        fps = 30.0
+        ball_dets = (
+            [_ball_det(i, i / fps, 0.30 - i * 0.02, 0.50) for i in range(10)]
+            + [_ball_det(10 + i, (10 + i) / fps, 0.10 + i * 0.001, 0.50) for i in range(10)]
+        )
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.10, cy=0.50)
+                   for f in range(7, 14)]
+        ball_track = _ball_track(1, ball_dets)
+        gk_track = _player_track(99, gk_dets, jersey_hsv=list(AMBIGUOUS_HSV))
+
+        det = self._make_detector(vlm_bypass=True)
+        events = det.detect_touches([ball_track, gk_track], fps)
+        gk_events = [e for e in events if e.is_goalkeeper_event]
+        for e in gk_events:
+            if e.metadata.get("vlm_candidate"):
+                assert e.metadata["vlm_candidate"] is True
+                assert e.metadata["detection_method"] == "ball_touch"
+
+    def test_bypass_right_goal_area(self):
+        """VLM bypass also works for saves at the right goal (px > 0.78)."""
+        fps = 30.0
+        # Ball moving fast toward right goal
+        ball_dets = (
+            [_ball_det(i, i / fps, 0.70 + i * 0.02, 0.50) for i in range(10)]
+            + [_ball_det(10 + i, (10 + i) / fps, 0.90 - i * 0.001, 0.50) for i in range(10)]
+        )
+        gk_dets = [_player_det(f, f / fps, track_id=99, cx=0.90, cy=0.50)
+                   for f in range(7, 14)]
+        ball_track = _ball_track(1, ball_dets)
+        gk_track = _player_track(99, gk_dets, jersey_hsv=list(AMBIGUOUS_HSV))
+
+        det = self._make_detector(vlm_bypass=True)
+        events = det.detect_touches([ball_track, gk_track], fps)
+        gk_events = [e for e in events if e.is_goalkeeper_event]
+        assert len(gk_events) >= 1
+
+
+# ===========================================================================
+# Trajectory gap detection tests
+# ===========================================================================
+
+@pytest.mark.unit
+class TestTrajectoryGaps:
+    """Tests for _find_trajectory_gaps used by Gemini classifier."""
+
+    def _make_detector(self):
+        mc = make_match_config()
+        return BallTouchDetector(
+            job_id="job-001", source_file="match.mp4", match_config=mc,
+        )
+
+    def test_finds_gap_above_threshold(self):
+        """Gaps >= 1.5s are detected."""
+        fps = 30.0
+        # Ball present frames 0-29, then gap, then frames 75-90
+        # Gap: frame 29 to 75 = 46 frames = 1.53s at 30fps
+        dets_before = [_ball_det(i, i / fps, 0.5, 0.5) for i in range(30)]
+        dets_after = [_ball_det(i, i / fps, 0.6, 0.5) for i in range(75, 91)]
+        track = _ball_track(1, dets_before + dets_after)
+
+        det = self._make_detector()
+        events = det.detect_touches([track], fps)
+        gaps = det.gap_candidates
+
+        assert len(gaps) >= 1
+        gap = gaps[0]
+        assert gap.gap_start_frame == 29
+        assert gap.gap_end_frame == 75
+        assert gap.gap_duration_sec > 1.5
+
+    def test_short_gaps_ignored(self):
+        """Gaps < 1.5s are NOT included."""
+        fps = 30.0
+        # Ball present frames 0-29, gap of 30 frames (1.0s), then frames 60-80
+        dets_before = [_ball_det(i, i / fps, 0.5, 0.5) for i in range(30)]
+        dets_after = [_ball_det(i, i / fps, 0.6, 0.5) for i in range(60, 81)]
+        track = _ball_track(1, dets_before + dets_after)
+
+        det = self._make_detector()
+        events = det.detect_touches([track], fps)
+        gaps = det.gap_candidates
+
+        # 30 frames at 30fps = 1.0s < 1.5s threshold
+        assert len(gaps) == 0
+
+    def test_long_gaps_skipped(self):
+        """Gaps > 30s are skipped (halftime, extended stoppages)."""
+        fps = 30.0
+        # Ball present frames 0-29, then gap of 1000 frames (~33s), then 1030-1060
+        dets_before = [_ball_det(i, i / fps, 0.5, 0.5) for i in range(30)]
+        dets_after = [_ball_det(i, i / fps, 0.6, 0.5) for i in range(1030, 1061)]
+        track = _ball_track(1, dets_before + dets_after)
+
+        det = self._make_detector()
+        events = det.detect_touches([track], fps)
+        gaps = det.gap_candidates
+
+        # 1000 frames / 30 fps = 33.3s > 30s max → skipped
+        assert len(gaps) == 0
+
+    def test_ball_positions_captured(self):
+        """Gap candidates include ball position before and after."""
+        fps = 30.0
+        dets_before = [_ball_det(i, i / fps, 0.10, 0.50) for i in range(30)]
+        dets_after = [_ball_det(i, i / fps, 0.80, 0.40) for i in range(80, 100)]
+        track = _ball_track(1, dets_before + dets_after)
+
+        det = self._make_detector()
+        events = det.detect_touches([track], fps)
+        gaps = det.gap_candidates
+
+        assert len(gaps) >= 1
+        gap = gaps[0]
+        assert gap.ball_pos_before is not None
+        assert abs(gap.ball_pos_before[0] - 0.10) < 0.05
+        assert gap.ball_pos_after is not None
+        assert abs(gap.ball_pos_after[0] - 0.80) < 0.05
+
+    def test_multiple_gaps(self):
+        """Multiple gaps in sequence are all captured."""
+        fps = 30.0
+        # Three segments with two gaps (each ~2s)
+        seg1 = [_ball_det(i, i / fps, 0.5, 0.5) for i in range(30)]
+        seg2 = [_ball_det(i, i / fps, 0.6, 0.5) for i in range(90, 120)]
+        seg3 = [_ball_det(i, i / fps, 0.7, 0.5) for i in range(180, 210)]
+        track = _ball_track(1, seg1 + seg2 + seg3)
+
+        det = self._make_detector()
+        events = det.detect_touches([track], fps)
+        gaps = det.gap_candidates
+
+        assert len(gaps) == 2
+
+    def test_gap_candidates_empty_on_insufficient_data(self):
+        """With < 4 ball frames, no gaps are detected."""
+        fps = 30.0
+        dets = [_ball_det(i, i / fps, 0.5, 0.5) for i in range(3)]
+        track = _ball_track(1, dets)
+
+        det = self._make_detector()
+        events = det.detect_touches([track], fps)
+        gaps = det.gap_candidates
+
+        assert len(gaps) == 0
+
+    def test_gap_candidates_property_accessible(self):
+        """gap_candidates property returns empty list before detect_touches."""
+        det = self._make_detector()
+        assert det.gap_candidates == []

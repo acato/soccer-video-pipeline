@@ -84,6 +84,8 @@ _ALL_HIGHLIGHTS_EVENT_TYPES = [
 REEL_PRESETS: dict[str, ReelSpec] = {
     "keeper": ReelSpec(name="keeper", event_types=_ALL_GK_EVENT_TYPES),
     "highlights": ReelSpec(name="highlights", event_types=_ALL_HIGHLIGHTS_EVENT_TYPES),
+    "goal_kicks": ReelSpec(name="goal_kicks", event_types=["goal_kick"]),
+    "corner_kicks": ReelSpec(name="corner_kicks", event_types=["corner_kick"]),
 }
 
 

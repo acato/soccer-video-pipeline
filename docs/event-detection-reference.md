@@ -13,7 +13,7 @@ class ReelSpec(BaseModel):
     max_reel_duration_sec: float = 1200.0
 ```
 
-Two presets are available: `"keeper"` (all GK event types) and `"highlights"` (shot/goal types). Users can also build custom reels by selecting individual event types.
+Four presets are available: `"keeper"` (all GK event types), `"highlights"` (shot/goal types), `"goal_kicks"` (goal kicks only), and `"corner_kicks"` (corner kicks only). Users can also build custom reels by selecting individual event types.
 
 Each event type has a per-type configuration in `EVENT_TYPE_CONFIG` (`src/detection/models.py`):
 
@@ -23,7 +23,7 @@ Each event type has a per-type configuration in `EVENT_TYPE_CONFIG` (`src/detect
 | SHOT_STOP_STANDING | goalkeeper | 8.0s | 2.0s | 25s | 0.70 | Yes |
 | PUNCH | goalkeeper | 8.0s | 2.0s | 25s | 0.65 | Yes |
 | CATCH | goalkeeper | 8.0s | 2.0s | 25s | 0.70 | Yes |
-| GOAL_KICK | goalkeeper | 1.0s | 2.0s | 15s | 0.65 | Yes |
+| GOAL_KICK | goalkeeper | 10.0s | 3.0s | 35s | 0.65 | Yes |
 | DISTRIBUTION_SHORT | goalkeeper | 1.0s | 2.0s | 20s | 0.65 | Yes |
 | DISTRIBUTION_LONG | goalkeeper | 1.0s | 2.0s | 20s | 0.68 | Yes |
 | ONE_ON_ONE | goalkeeper | 3.0s | 2.0s | 30s | 0.75 | Yes |
@@ -301,7 +301,7 @@ Clips are extended beyond the raw event window to capture the full play outcome.
 | Event Type | Max Extension |
 |-----------|--------------|
 | DISTRIBUTION_SHORT/LONG | 10s |
-| GOAL_KICK | 12s |
+| GOAL_KICK | 15s |
 | SHOT_STOP_*, CATCH, PUNCH | 5s |
 | CORNER_KICK | 8s |
 | ONE_ON_ONE | 8s |
@@ -377,6 +377,78 @@ For a typical match (~17 candidate save events):
 ### Source
 
 `src/detection/vlm_classifier.py` — `VLMClassifier` class.
+
+## Gemini 2.5 Flash Classifier (Dead-Ball Restarts)
+
+Optional post-detection classification using Gemini 2.5 Flash for dead-ball restart events (goal kicks, corner kicks). Enabled via `GEMINI_ENABLED=true`.
+
+### Why
+
+Ball-direction heuristics are too brittle for classifying restart types — they break across camera angles, zoom levels, and field positions. Gemini 2.5 Flash provides native video understanding at ~$0.001 per clip (~$0.05-0.20 per game), 13x cheaper than Claude's frame-based approach and with significantly better temporal understanding.
+
+### Architecture
+
+```
+BallTouchDetector._find_trajectory_gaps()
+     ↓  Ball disappears ≥1.5s → GapCandidate list
+     ↓
+GeminiClassifier.classify_gaps(candidates, fps)
+     ↓  FFmpeg extracts 12-15s clip per gap (scaled to 640px)
+     ↓  Gemini 2.5 Flash classifies: goal_kick / corner_kick / throw_in / free_kick / goal / other
+     ↓  Returns structured Event list
+     ↓
+Worker extends event list → Segmentation → Assembly
+```
+
+Runs **post-detection, pre-segmentation** in the worker pipeline. Gemini events are appended to the event log alongside events from the existing BallTouchDetector.
+
+### Two-Stage Pipeline
+
+**Stage 1 — Candidate Generation:** Scan ball trajectory for gaps where the ball disappears for ≥1.5s and reappears within 30s. These gaps reliably indicate dead-ball situations. No classification at this stage.
+
+**Stage 2 — Gemini Classification:** Extract a video clip around each gap (5s before + gap + 8s after). Upload to Gemini with match context (jersey colors, ball positions). Parse structured JSON response.
+
+### Configuration
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `GEMINI_ENABLED` | `false` | Toggle Gemini classification on/off |
+| `GEMINI_API_KEY` | (empty) | Required when GEMINI_ENABLED=true |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model for classification |
+| `GEMINI_CLIP_PRE_SEC` | `5.0` | Seconds before gap in clip |
+| `GEMINI_CLIP_POST_SEC` | `8.0` | Seconds after gap in clip |
+| `GEMINI_MIN_CONFIDENCE` | `0.5` | Minimum confidence to keep event |
+
+### Sim Gate Exemption
+
+GOAL_KICK events (from Gemini or heuristic) are exempt from the jersey color sim gate in `spatial_filter.py`, alongside PENALTY and CORNER_KICK. Gemini classification is the quality gate — no jersey color check needed.
+
+### Goal Kick Clip Padding
+
+GOAL_KICK events use extended padding to capture the full sequence: cause (shot going wide / deflection) → dead ball → GK placement → kick → first touch.
+
+- Pre-pad: **10.0s** (captures the shot/cause before ball went out)
+- Post-pad: **3.0s** (captures kick trajectory + first touch)
+- Max clip: **35.0s** (full sequence)
+- Smart endpoint extension: **15.0s** (extends to first touch after kick)
+
+### Error Handling
+
+- **Fail-open**: if clip extraction or API call fails, the gap is skipped (not crashed)
+- **Parse errors**: malformed JSON responses are logged and skipped
+- Classification metadata stored in `event.metadata` (gemini_event_type, gemini_confidence, gemini_reasoning, gemini_model)
+
+### Cost Estimate
+
+- ~50 dead-ball gaps per game × ~$0.001/clip = **~$0.05 per game**
+- At default resolution: ~$0.001 per clip, ~$0.05-0.20 per game
+
+### Source
+
+`src/detection/gemini_classifier.py` — `GeminiClassifier` class.
+`src/detection/ball_touch_detector.py` — `_find_trajectory_gaps()` method.
+
+See also: `docs/video-classification-research.md` for comprehensive research findings.
 
 ## Known Issues
 

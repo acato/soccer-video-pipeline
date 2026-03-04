@@ -98,11 +98,32 @@ ANTHROPIC_API_KEY: str = _opt("ANTHROPIC_API_KEY", "")
 VLM_MODEL: str = _opt("VLM_MODEL", "claude-sonnet-4-20250514")
 """Claude model to use for VLM classification."""
 
-VLM_FRAME_WIDTH: int = _int("VLM_FRAME_WIDTH", 640)
+VLM_FRAME_WIDTH: int = _int("VLM_FRAME_WIDTH", 1280)
 """Resize width for extracted VLM frames (smaller = cheaper API calls)."""
 
 VLM_MIN_CONFIDENCE: float = _float("VLM_MIN_CONFIDENCE", 0.6)
 """Minimum VLM confidence to keep an event."""
+
+# ---------------------------------------------------------------------------
+# Gemini Classification (dead-ball restart events)
+# ---------------------------------------------------------------------------
+GEMINI_ENABLED: bool = _bool("GEMINI_ENABLED", False)
+"""Use Gemini 2.5 Flash to classify dead-ball restarts (goal kicks, corner kicks)."""
+
+GEMINI_API_KEY: str = _opt("GEMINI_API_KEY", "")
+"""Google AI API key. Required when GEMINI_ENABLED=true."""
+
+GEMINI_MODEL: str = _opt("GEMINI_MODEL", "gemini-2.5-flash")
+"""Gemini model to use for classification."""
+
+GEMINI_CLIP_PRE_SEC: float = _float("GEMINI_CLIP_PRE_SEC", 5.0)
+"""Seconds before gap to include in clip."""
+
+GEMINI_CLIP_POST_SEC: float = _float("GEMINI_CLIP_POST_SEC", 8.0)
+"""Seconds after gap to include in clip."""
+
+GEMINI_MIN_CONFIDENCE: float = _float("GEMINI_MIN_CONFIDENCE", 0.5)
+"""Minimum Gemini confidence to keep a classified event."""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -204,8 +225,14 @@ class _Config:
             "VLM_ENABLED": ("VLM_ENABLED", "false"),
             "ANTHROPIC_API_KEY": ("ANTHROPIC_API_KEY", ""),
             "VLM_MODEL": ("VLM_MODEL", "claude-sonnet-4-20250514"),
-            "VLM_FRAME_WIDTH": ("VLM_FRAME_WIDTH", "640"),
+            "VLM_FRAME_WIDTH": ("VLM_FRAME_WIDTH", "1280"),
             "VLM_MIN_CONFIDENCE": ("VLM_MIN_CONFIDENCE", "0.6"),
+            "GEMINI_ENABLED": ("GEMINI_ENABLED", "false"),
+            "GEMINI_API_KEY": ("GEMINI_API_KEY", ""),
+            "GEMINI_MODEL": ("GEMINI_MODEL", "gemini-2.5-flash"),
+            "GEMINI_CLIP_PRE_SEC": ("GEMINI_CLIP_PRE_SEC", "5.0"),
+            "GEMINI_CLIP_POST_SEC": ("GEMINI_CLIP_POST_SEC", "8.0"),
+            "GEMINI_MIN_CONFIDENCE": ("GEMINI_MIN_CONFIDENCE", "0.5"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

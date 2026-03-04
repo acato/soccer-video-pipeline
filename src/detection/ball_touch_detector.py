@@ -204,8 +204,8 @@ class BallTouchDetector:
         # When VLM is the quality gate, relax detection to maximize recall.
         # The VLM rejects FPs, so the detector can afford lower thresholds.
         import os
-        vlm_relax = os.getenv("VLM_RELAX_COLOR_MARGINS", "").lower() in ("1", "true", "yes")
-        if vlm_relax:
+        self._vlm_bypass = os.getenv("VLM_RELAX_COLOR_MARGINS", "").lower() in ("1", "true", "yes")
+        if self._vlm_bypass:
             self._save_pre_speed_min = 0.25   # lowered from 0.40
             self._color_margin_of = 0.05      # lowered from 0.12
             log.info("ball_touch.vlm_relaxed_thresholds",
@@ -217,6 +217,15 @@ class BallTouchDetector:
         # Pre-compute direction change thresholds as cosine
         self._cos_threshold = math.cos(math.radians(direction_change_deg))
         self._near_goal_cos_threshold = math.cos(math.radians(near_goal_direction_change_deg))
+
+        # Trajectory gap candidates — populated by detect_touches() for
+        # downstream Gemini classification in the worker pipeline.
+        self._gap_candidates: list = []
+
+    @property
+    def gap_candidates(self) -> list:
+        """Gap candidates found during last detect_touches() call."""
+        return self._gap_candidates
 
     def detect_touches(self, tracks: list[Track], fps: float) -> list[Event]:
         """
@@ -233,6 +242,9 @@ class BallTouchDetector:
                 ball_frames=len(trajectory),
             )
             return []
+
+        # Step 1b: Find trajectory gaps for downstream Gemini classification
+        self._gap_candidates = self._find_trajectory_gaps(trajectory, fps)
 
         # Step 2: Find touch moments
         touch_frames = self._find_touch_frames(trajectory, fps)
@@ -277,6 +289,50 @@ class BallTouchDetector:
             events_produced=len(events),
         )
         return events
+
+    def _find_trajectory_gaps(
+        self,
+        trajectory: BallTrajectory,
+        fps: float,
+        min_gap_sec: float = 1.5,
+        max_gap_sec: float = 30.0,
+    ) -> list:
+        """Find trajectory gaps where ball disappears for ≥1.5s.
+
+        Returns raw GapCandidate list without classification — Gemini
+        handles classification downstream. Gaps > 30s are skipped
+        (halftime, extended stoppages).
+        """
+        from src.detection.gemini_classifier import GapCandidate
+
+        min_frames = int(fps * min_gap_sec)
+        raw_gaps = trajectory.find_gaps(min_gap_frames=min_frames)
+        candidates: list[GapCandidate] = []
+
+        for gap_start, gap_end in raw_gaps:
+            ts_start = trajectory.timestamp_at(gap_start)
+            ts_end = trajectory.timestamp_at(gap_end)
+            if ts_start is None or ts_end is None:
+                continue
+
+            duration = ts_end - ts_start
+            if duration > max_gap_sec:
+                continue
+
+            candidates.append(GapCandidate(
+                gap_start_frame=gap_start,
+                gap_end_frame=gap_end,
+                gap_start_ts=ts_start,
+                gap_end_ts=ts_end,
+                gap_duration_sec=duration,
+                ball_pos_before=trajectory.position_at(gap_start),
+                ball_pos_after=trajectory.position_at(gap_end),
+            ))
+
+        log.info("ball_touch.trajectory_gaps",
+                 total_gaps=len(raw_gaps), candidates=len(candidates),
+                 min_gap_sec=min_gap_sec, max_gap_sec=max_gap_sec)
+        return candidates
 
     def _find_touch_frames(
         self, trajectory: BallTrajectory, fps: float,
@@ -989,6 +1045,25 @@ class BallTouchDetector:
                     px=round(player_pos[0], 3),
                 )
 
+        # VLM candidate bypass: when VLM is the quality gate and the touch
+        # looks save-like in the goal area, emit as a GK candidate even if
+        # jersey color is ambiguous.  The VLM will visually confirm/reject.
+        vlm_candidate = False
+        if not is_team_gk and self._vlm_bypass:
+            in_goal_area = player_pos[0] < 0.22 or player_pos[0] > 0.78
+            is_save_like = reason in _SAVE_CONTEXT_REASONS
+            if in_goal_area and is_save_like:
+                is_team_gk = True
+                vlm_candidate = True
+                log.info(
+                    "ball_touch.vlm_candidate_bypass",
+                    frame=touch_frame, reason=reason,
+                    sim_team_gk=round(sim_team_gk, 3),
+                    sim_opp_of=round(sim_opp_of, 3),
+                    ball_pre_speed=round(ball_pre_speed, 3) if ball_pre_speed else None,
+                    px=round(player_pos[0], 3),
+                )
+
         if not is_team_gk:
             # Outfield player touch — not a keeper event
             log.debug(
@@ -1051,6 +1126,7 @@ class BallTouchDetector:
                 "ball_pre_speed": round(ball_pre_speed, 3) if ball_pre_speed is not None else None,
                 "ball_post_speed": round(ball_post_speed, 3) if ball_post_speed is not None else None,
                 "speed_ratio": round(speed_ratio, 3) if speed_ratio is not None else None,
+                "vlm_candidate": vlm_candidate,
             },
         )
 
@@ -1495,7 +1571,7 @@ class BallTouchDetector:
     _SMART_ENDPOINT_TYPES: dict[EventType, float] = {
         EventType.DISTRIBUTION_SHORT: 10.0,
         EventType.DISTRIBUTION_LONG: 10.0,
-        EventType.GOAL_KICK: 12.0,
+        EventType.GOAL_KICK: 15.0,
         EventType.SHOT_STOP_STANDING: 5.0,
         EventType.SHOT_STOP_DIVING: 5.0,
         EventType.CATCH: 5.0,

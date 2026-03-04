@@ -193,6 +193,8 @@ _UI_HTML = r"""<!DOCTYPE html>
       <button class="btn btn-outline" onclick="addPresetReel('highlights')">+ Highlights</button>
       <button class="btn btn-outline" onclick="addPresetReel('saves')">+ Saves Only</button>
       <button class="btn btn-outline" onclick="addPresetReel('distribution')">+ Distribution</button>
+      <button class="btn btn-outline" onclick="addPresetReel('goal_kicks')">+ Goal Kicks</button>
+      <button class="btn btn-outline" onclick="addPresetReel('corner_kicks')">+ Corner Kicks</button>
       <button class="btn btn-outline" onclick="addCustomReel()">+ Custom Reel...</button>
     </div>
     <div class="reel-cards" id="reel-cards"></div>
@@ -278,6 +280,14 @@ const PRESETS = {
   distribution: {
     name: 'distribution',
     event_types: ['distribution_short','distribution_long','goal_kick']
+  },
+  goal_kicks: {
+    name: 'goal_kicks',
+    event_types: ['goal_kick']
+  },
+  corner_kicks: {
+    name: 'corner_kicks',
+    event_types: ['corner_kick']
   },
 };
 

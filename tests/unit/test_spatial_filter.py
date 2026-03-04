@@ -76,8 +76,13 @@ class TestSimGate:
         assert passes_sim_gate(e) is True
 
     def test_low_sim_fails(self):
-        e = _make_event(EventType.GOAL_KICK, sim_team_gk=0.60)
+        e = _make_event(EventType.DISTRIBUTION_SHORT, sim_team_gk=0.60)
         assert passes_sim_gate(e) is False
+
+    def test_goal_kick_exempt(self):
+        """Goal kicks are exempt from sim gate (Gemini is the quality gate)."""
+        e = _make_event(EventType.GOAL_KICK, sim_team_gk=0.0)
+        assert passes_sim_gate(e) is True
 
     def test_borderline_sim_passes(self):
         e = _make_event(EventType.DISTRIBUTION_SHORT, sim_team_gk=0.75)

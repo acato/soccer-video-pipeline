@@ -26,6 +26,9 @@ flower>=2.0.1
 # VLM classification (Claude API)
 anthropic>=0.42.0           # Claude API client for VLM save verification
 
+# Gemini classification (dead-ball restart events)
+google-genai>=1.0.0         # Google GenAI SDK for Gemini 2.5 Flash
+
 # Utilities
 watchdog>=4.0.0             # NAS directory watching
 tenacity>=8.3.0             # Retry logic

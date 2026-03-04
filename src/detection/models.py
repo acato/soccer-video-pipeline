@@ -142,7 +142,7 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
     ),
     EventType.GOAL_KICK: EventTypeConfig(
         label="Goal Kick", category="goalkeeper",
-        pre_pad_sec=1.0, post_pad_sec=2.0, max_clip_sec=15.0,
+        pre_pad_sec=10.0, post_pad_sec=3.0, max_clip_sec=35.0,
         min_confidence=0.65, is_gk_event=True,
     ),
     EventType.DISTRIBUTION_SHORT: EventTypeConfig(

@@ -44,7 +44,7 @@ def passes_sim_gate(event: Event) -> bool:
     Save events use a lower threshold because they're already curated by
     ball trajectory analysis (direction_change/speed_drop) + goal-area gate.
     """
-    if event.event_type in (EventType.PENALTY, EventType.CORNER_KICK):
+    if event.event_type in (EventType.PENALTY, EventType.CORNER_KICK, EventType.GOAL_KICK):
         return True
     if event.event_type in _SAVE_TYPES:
         return event.metadata.get("sim_team_gk", 0) >= _MIN_REEL_SIM_SAVE
