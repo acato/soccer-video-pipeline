@@ -244,7 +244,14 @@ class BallTouchDetector:
             return []
 
         # Step 1b: Find trajectory gaps for downstream Gemini classification
-        self._gap_candidates = self._find_trajectory_gaps(trajectory, fps)
+        # Dedup by timestamp proximity (chunk overlap can produce near-dupes)
+        new_gaps = self._find_trajectory_gaps(trajectory, fps)
+        for g in new_gaps:
+            if not any(
+                abs(g.gap_start_ts - existing.gap_start_ts) < 2.0
+                for existing in self._gap_candidates
+            ):
+                self._gap_candidates.append(g)
 
         # Step 2: Find touch moments
         touch_frames = self._find_touch_frames(trajectory, fps)
@@ -303,7 +310,7 @@ class BallTouchDetector:
         handles classification downstream. Gaps > 30s are skipped
         (halftime, extended stoppages).
         """
-        from src.detection.gemini_classifier import GapCandidate
+        from src.detection.restart_classifier import GapCandidate
 
         min_frames = int(fps * min_gap_sec)
         raw_gaps = trajectory.find_gaps(min_gap_frames=min_frames)

@@ -378,13 +378,13 @@ For a typical match (~17 candidate save events):
 
 `src/detection/vlm_classifier.py` — `VLMClassifier` class.
 
-## Gemini 2.5 Flash Classifier (Dead-Ball Restarts)
+## vLLM Classifier (Dead-Ball Restarts)
 
-Optional post-detection classification using Gemini 2.5 Flash for dead-ball restart events (goal kicks, corner kicks). Enabled via `GEMINI_ENABLED=true`.
+Optional post-detection classification using a vLLM-hosted vision model (Qwen3-VL) for dead-ball restart events (goal kicks, corner kicks). Enabled via `VLLM_ENABLED=true`.
 
 ### Why
 
-Ball-direction heuristics are too brittle for classifying restart types — they break across camera angles, zoom levels, and field positions. Gemini 2.5 Flash provides native video understanding at ~$0.001 per clip (~$0.05-0.20 per game), 13x cheaper than Claude's frame-based approach and with significantly better temporal understanding.
+Ball-direction heuristics are too brittle for classifying restart types — they break across camera angles, zoom levels, and field positions. A vision-language model with native video understanding can see ball motion, player positions, and scene context (GK placing ball on 6-yard box, corner flag, players in wall, etc.) across time and classify accurately.
 
 ### Architecture
 
@@ -392,36 +392,36 @@ Ball-direction heuristics are too brittle for classifying restart types — they
 BallTouchDetector._find_trajectory_gaps()
      ↓  Ball disappears ≥1.5s → GapCandidate list
      ↓
-GeminiClassifier.classify_gaps(candidates, fps)
-     ↓  FFmpeg extracts 12-15s clip per gap (scaled to 640px)
-     ↓  Gemini 2.5 Flash classifies: goal_kick / corner_kick / throw_in / free_kick / goal / other
+RestartClassifier.classify_gaps(candidates, fps)
+     ↓  FFmpeg extracts 12-15s video clip per gap (scaled to 640px)
+     ↓  vLLM classifies via OpenAI-compatible API: goal_kick / corner_kick / throw_in / free_kick / goal / other
      ↓  Returns structured Event list
      ↓
 Worker extends event list → Segmentation → Assembly
 ```
 
-Runs **post-detection, pre-segmentation** in the worker pipeline. Gemini events are appended to the event log alongside events from the existing BallTouchDetector.
+Runs **post-detection, pre-segmentation** in the worker pipeline. Classified events are appended to the event log alongside events from the existing BallTouchDetector.
 
 ### Two-Stage Pipeline
 
 **Stage 1 — Candidate Generation:** Scan ball trajectory for gaps where the ball disappears for ≥1.5s and reappears within 30s. These gaps reliably indicate dead-ball situations. No classification at this stage.
 
-**Stage 2 — Gemini Classification:** Extract a video clip around each gap (5s before + gap + 8s after). Upload to Gemini with match context (jersey colors, ball positions). Parse structured JSON response.
+**Stage 2 — vLLM Classification:** Extract a video clip around each gap (5s before + gap + 8s after). Send to vLLM as a base64 `video_url` via the OpenAI-compatible `/v1/chat/completions` endpoint with match context (jersey colors, ball positions). Parse structured JSON response.
 
 ### Configuration
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `GEMINI_ENABLED` | `false` | Toggle Gemini classification on/off |
-| `GEMINI_API_KEY` | (empty) | Required when GEMINI_ENABLED=true |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Gemini model for classification |
-| `GEMINI_CLIP_PRE_SEC` | `5.0` | Seconds before gap in clip |
-| `GEMINI_CLIP_POST_SEC` | `8.0` | Seconds after gap in clip |
-| `GEMINI_MIN_CONFIDENCE` | `0.5` | Minimum confidence to keep event |
+| `VLLM_ENABLED` | `false` | Toggle vLLM classification on/off |
+| `VLLM_URL` | `http://10.10.2.222:8000` | vLLM server URL (OpenAI-compatible) |
+| `VLLM_MODEL` | `Qwen/Qwen3-VL-32B-Instruct` | Model name as registered in vLLM |
+| `VLLM_CLIP_PRE_SEC` | `5.0` | Seconds before gap in clip |
+| `VLLM_CLIP_POST_SEC` | `8.0` | Seconds after gap in clip |
+| `VLLM_MIN_CONFIDENCE` | `0.5` | Minimum confidence to keep event |
 
 ### Sim Gate Exemption
 
-GOAL_KICK events (from Gemini or heuristic) are exempt from the jersey color sim gate in `spatial_filter.py`, alongside PENALTY and CORNER_KICK. Gemini classification is the quality gate — no jersey color check needed.
+GOAL_KICK events (from vLLM or heuristic) are exempt from the jersey color sim gate in `spatial_filter.py`, alongside PENALTY and CORNER_KICK. Model classification is the quality gate — no jersey color check needed.
 
 ### Goal Kick Clip Padding
 
@@ -436,19 +436,16 @@ GOAL_KICK events use extended padding to capture the full sequence: cause (shot 
 
 - **Fail-open**: if clip extraction or API call fails, the gap is skipped (not crashed)
 - **Parse errors**: malformed JSON responses are logged and skipped
-- Classification metadata stored in `event.metadata` (gemini_event_type, gemini_confidence, gemini_reasoning, gemini_model)
+- Classification metadata stored in `event.metadata` (vllm_event_type, vllm_confidence, vllm_reasoning, vllm_model)
 
-### Cost Estimate
+### Cost
 
-- ~50 dead-ball gaps per game × ~$0.001/clip = **~$0.05 per game**
-- At default resolution: ~$0.001 per clip, ~$0.05-0.20 per game
+Self-hosted via vLLM — no per-request API cost. Requires GPU server running the model.
 
 ### Source
 
-`src/detection/gemini_classifier.py` — `GeminiClassifier` class.
+`src/detection/restart_classifier.py` — `RestartClassifier` class.
 `src/detection/ball_touch_detector.py` — `_find_trajectory_gaps()` method.
-
-See also: `docs/video-classification-research.md` for comprehensive research findings.
 
 ## Known Issues
 

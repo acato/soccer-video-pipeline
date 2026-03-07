@@ -1,20 +1,19 @@
 """
-Unit tests for Gemini 2.5 Flash dead-ball restart classifier.
+Unit tests for vLLM-based dead-ball restart classifier.
 
-All tests mock the Google GenAI client — no real API calls.
+All tests mock the vLLM HTTP API — no real API calls.
 """
 import json
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.detection.gemini_classifier import (
+from src.detection.restart_classifier import (
     ClassificationResult,
     GapCandidate,
-    GeminiClassifier,
+    RestartClassifier,
 )
 from src.detection.models import BoundingBox, Event, EventType
 from src.ingestion.models import KitConfig, MatchConfig
@@ -34,9 +33,9 @@ def match_config():
 
 @pytest.fixture
 def classifier(match_config):
-    return GeminiClassifier(
-        api_key="test-key-123",
-        model="gemini-2.5-flash",
+    return RestartClassifier(
+        vllm_url="http://10.10.2.222:8000",
+        model="Qwen/Qwen3-VL-32B-Instruct",
         source_file="/tmp/test-match.mp4",
         match_config=match_config,
         job_id="test-job",
@@ -64,20 +63,19 @@ def _make_gap(
     )
 
 
-def _make_gemini_response(
+def _make_vllm_response(
     event_type: str = "goal_kick",
     confidence: float = 0.85,
     reasoning: str = "GK places ball on 6-yard box",
     kick_offset: float = 7.0,
-) -> SimpleNamespace:
-    """Build a mock Gemini response."""
-    body = json.dumps({
+) -> str:
+    """Build a mock vLLM response content text."""
+    return json.dumps({
         "event_type": event_type,
         "confidence": confidence,
         "reasoning": reasoning,
         "kick_timestamp_offset_sec": kick_offset,
     })
-    return SimpleNamespace(text=body)
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +89,8 @@ class TestClassifyGaps:
     def test_empty_gaps_returns_empty(self, classifier):
         assert classifier.classify_gaps([], fps=30.0) == []
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip")
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip")
     def test_classify_goal_kick(self, mock_classify, mock_extract, classifier):
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
         mock_classify.return_value = ClassificationResult(
@@ -104,12 +102,12 @@ class TestClassifyGaps:
 
         assert len(events) == 1
         assert events[0].event_type == EventType.GOAL_KICK
-        assert events[0].metadata["gemini_event_type"] == "goal_kick"
-        assert events[0].metadata["gemini_confidence"] == 0.9
+        assert events[0].metadata["vllm_event_type"] == "goal_kick"
+        assert events[0].metadata["vllm_confidence"] == 0.9
         assert events[0].is_goalkeeper_event is True
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip")
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip")
     def test_classify_corner_kick(self, mock_classify, mock_extract, classifier):
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
         mock_classify.return_value = ClassificationResult(
@@ -122,8 +120,8 @@ class TestClassifyGaps:
         assert len(events) == 1
         assert events[0].event_type == EventType.CORNER_KICK
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip")
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip")
     def test_filter_out_throw_in(self, mock_classify, mock_extract, classifier):
         """Throw-ins are not in target_types by default, so filtered out."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
@@ -136,8 +134,8 @@ class TestClassifyGaps:
 
         assert len(events) == 0
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip")
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip")
     def test_filter_low_confidence(self, mock_classify, mock_extract, classifier):
         """Events below min_confidence are filtered out."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
@@ -150,7 +148,7 @@ class TestClassifyGaps:
 
         assert len(events) == 0
 
-    @patch.object(GeminiClassifier, "_extract_clip", return_value=None)
+    @patch.object(RestartClassifier, "_extract_clip", return_value=None)
     def test_skip_on_extraction_failure(self, mock_extract, classifier):
         """Gaps with failed clip extraction are skipped (not crashed)."""
         gap = _make_gap()
@@ -158,8 +156,8 @@ class TestClassifyGaps:
 
         assert len(events) == 0
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip", return_value=None)
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip", return_value=None)
     def test_skip_on_classification_failure(self, mock_classify, mock_extract, classifier):
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
         gap = _make_gap()
@@ -167,8 +165,8 @@ class TestClassifyGaps:
 
         assert len(events) == 0
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip", side_effect=Exception("API timeout"))
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip", side_effect=Exception("API timeout"))
     def test_fail_open_on_api_error(self, mock_classify, mock_extract, classifier):
         """Pipeline doesn't crash on API errors — gap is skipped."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
@@ -177,8 +175,8 @@ class TestClassifyGaps:
 
         assert len(events) == 0  # skipped, not crashed
 
-    @patch.object(GeminiClassifier, "_extract_clip")
-    @patch.object(GeminiClassifier, "_classify_clip")
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip")
     def test_multiple_gaps(self, mock_classify, mock_extract, classifier):
         """Classify multiple gaps in sequence."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
@@ -312,6 +310,18 @@ class TestPromptGeneration:
         assert "corner flag" in prompt
         assert "both hands" in prompt  # throw-in
 
+    def test_prompt_says_video_clip(self, classifier):
+        gap = _make_gap()
+        prompt = classifier._build_prompt(gap)
+
+        assert "video clip" in prompt
+
+    def test_prompt_contains_coordinate_key(self, classifier):
+        gap = _make_gap()
+        prompt = classifier._build_prompt(gap)
+
+        assert "x=0 is left goal line" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Tests: response parsing
@@ -322,8 +332,8 @@ class TestResponseParsing:
     """Tests for _parse_response."""
 
     def test_parse_clean_json(self, classifier):
-        resp = _make_gemini_response("goal_kick", 0.9, "GK kick")
-        result = classifier._parse_response(resp)
+        text = _make_vllm_response("goal_kick", 0.9, "GK kick")
+        result = classifier._parse_response(text)
 
         assert result is not None
         assert result.event_type == "goal_kick"
@@ -331,8 +341,8 @@ class TestResponseParsing:
         assert result.reasoning == "GK kick"
 
     def test_parse_corner_kick(self, classifier):
-        resp = _make_gemini_response("corner_kick", 0.8, "Corner flag")
-        result = classifier._parse_response(resp)
+        text = _make_vllm_response("corner_kick", 0.8, "Corner flag")
+        result = classifier._parse_response(text)
 
         assert result.event_type == "corner_kick"
         assert result.confidence == 0.8
@@ -340,8 +350,7 @@ class TestResponseParsing:
     def test_parse_markdown_fenced_json(self, classifier):
         """Handle JSON wrapped in ```json ... ``` blocks."""
         body = '```json\n{"event_type": "goal_kick", "confidence": 0.85, "reasoning": "GK kick", "kick_timestamp_offset_sec": 7.0}\n```'
-        resp = SimpleNamespace(text=body)
-        result = classifier._parse_response(resp)
+        result = classifier._parse_response(body)
 
         assert result is not None
         assert result.event_type == "goal_kick"
@@ -350,36 +359,32 @@ class TestResponseParsing:
     def test_parse_json_with_surrounding_text(self, classifier):
         """Handle JSON with text before/after."""
         body = 'Here is my analysis:\n{"event_type": "goal_kick", "confidence": 0.8, "reasoning": "GK kick"}\nThat is my answer.'
-        resp = SimpleNamespace(text=body)
-        result = classifier._parse_response(resp)
+        result = classifier._parse_response(body)
 
         assert result is not None
         assert result.event_type == "goal_kick"
 
     def test_parse_clamps_confidence(self, classifier):
-        resp = _make_gemini_response("goal_kick", 1.5, "test")
-        result = classifier._parse_response(resp)
+        text = _make_vllm_response("goal_kick", 1.5, "test")
+        result = classifier._parse_response(text)
         assert result.confidence == 1.0
 
-        resp = _make_gemini_response("goal_kick", -0.5, "test")
-        result = classifier._parse_response(resp)
+        text = _make_vllm_response("goal_kick", -0.5, "test")
+        result = classifier._parse_response(text)
         assert result.confidence == 0.0
 
     def test_parse_malformed_json(self, classifier):
-        resp = SimpleNamespace(text="I think this is a goal kick")
-        result = classifier._parse_response(resp)
+        result = classifier._parse_response("I think this is a goal kick")
         assert result is None
 
     def test_parse_empty_response(self, classifier):
-        resp = SimpleNamespace(text="")
-        result = classifier._parse_response(resp)
+        result = classifier._parse_response("")
         assert result is None
 
     def test_parse_missing_fields(self, classifier):
         """Missing optional fields get defaults."""
         body = json.dumps({"event_type": "goal_kick"})
-        resp = SimpleNamespace(text=body)
-        result = classifier._parse_response(resp)
+        result = classifier._parse_response(body)
 
         assert result is not None
         assert result.event_type == "goal_kick"
@@ -407,8 +412,8 @@ class TestEventCreation:
         assert event.event_type == EventType.GOAL_KICK
         assert event.confidence == 0.9
         assert event.is_goalkeeper_event is True
-        assert event.metadata["gemini_event_type"] == "goal_kick"
-        assert event.metadata["gemini_model"] == "gemini-2.5-flash"
+        assert event.metadata["vllm_event_type"] == "goal_kick"
+        assert event.metadata["vllm_model"] == "Qwen/Qwen3-VL-32B-Instruct"
         assert event.metadata["gap_duration_sec"] == 3.0
         assert event.bounding_box is not None
 
@@ -474,22 +479,93 @@ class TestEventCreation:
 
 
 # ---------------------------------------------------------------------------
-# Tests: lazy client init
+# Tests: vLLM API call
 # ---------------------------------------------------------------------------
 
 @pytest.mark.unit
-class TestClientInit:
-    """Tests for lazy Google GenAI client initialization."""
+class TestVLLMApiCall:
+    """Tests for _classify_clip vLLM HTTP call."""
 
-    def test_client_not_created_on_init(self, classifier):
-        assert classifier._client is None
+    @patch("httpx.post")
+    def test_successful_api_call(self, mock_post, classifier, tmp_path):
+        """vLLM returns valid OpenAI-compatible response."""
+        clip_path = tmp_path / "clip.mp4"
+        clip_path.write_bytes(b"\x00\x00\x00" * 10)
 
-    def test_client_reused_on_subsequent_calls(self, classifier):
-        mock_client = MagicMock()
-        classifier._client = mock_client
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": _make_vllm_response("goal_kick", 0.9, "GK kick"),
+                    },
+                },
+            ],
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
 
-        client1 = classifier._get_client()
-        client2 = classifier._get_client()
+        gap = _make_gap()
+        result = classifier._classify_clip(clip_path, gap)
 
-        assert client1 is client2
-        assert client1 is mock_client
+        assert result is not None
+        assert result.event_type == "goal_kick"
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert "10.10.2.222:8000/v1/chat/completions" in call_args[0][0]
+
+    @patch("httpx.post", side_effect=Exception("Connection refused"))
+    def test_api_connection_error(self, mock_post, classifier, tmp_path):
+        clip_path = tmp_path / "clip.mp4"
+        clip_path.write_bytes(b"\x00" * 10)
+
+        gap = _make_gap()
+        result = classifier._classify_clip(clip_path, gap)
+
+        assert result is None
+
+    @patch("httpx.post")
+    def test_api_sends_video_as_data_url(self, mock_post, classifier, tmp_path):
+        """Verify video clip is sent as base64 data URL in video_url content."""
+        clip_path = tmp_path / "clip.mp4"
+        clip_path.write_bytes(b"\x00\x01\x02\x03")
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": _make_vllm_response()}}],
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        gap = _make_gap()
+        classifier._classify_clip(clip_path, gap)
+
+        payload = mock_post.call_args[1]["json"]
+        assert payload["model"] == "Qwen/Qwen3-VL-32B-Instruct"
+        content = payload["messages"][0]["content"]
+        # First item: video_url with data URL
+        assert content[0]["type"] == "video_url"
+        video_url = content[0]["video_url"]["url"]
+        assert video_url.startswith("data:video/mp4;base64,")
+        # Second item: text prompt
+        assert content[1]["type"] == "text"
+        assert "goal_kick" in content[1]["text"]
+
+    @patch("httpx.post")
+    def test_api_sets_max_tokens(self, mock_post, classifier, tmp_path):
+        clip_path = tmp_path / "clip.mp4"
+        clip_path.write_bytes(b"\x00" * 10)
+
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": _make_vllm_response()}}],
+        }
+        mock_resp.raise_for_status = MagicMock()
+        mock_post.return_value = mock_resp
+
+        gap = _make_gap()
+        classifier._classify_clip(clip_path, gap)
+
+        payload = mock_post.call_args[1]["json"]
+        assert payload["max_tokens"] == 300

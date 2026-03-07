@@ -1,24 +1,26 @@
 """
-Gemini 2.5 Flash classifier for dead-ball restart events.
+vLLM-based classifier for dead-ball restart events.
 
 Two-stage pipeline:
   Stage 1 — BallTouchDetector finds trajectory gaps (ball disappears ≥1.5s)
-  Stage 2 — GeminiClassifier extracts a short video clip around each gap,
-            uploads to Gemini 2.5 Flash, and gets a structured classification:
+  Stage 2 — RestartClassifier extracts a short video clip around each gap,
+            sends to a vLLM-hosted vision model via OpenAI-compatible API,
+            and gets a structured classification:
             goal_kick / corner_kick / throw_in / free_kick / goal / other
 
 Architecture:
     BallTouchDetector._find_trajectory_gaps() → GapCandidate list
          ↓
-    GeminiClassifier.classify_gaps(candidates, fps)
-         ↓  FFmpeg extracts 12-15s clip per gap
-         ↓  Gemini 2.5 Flash classifies each clip (native video understanding)
+    RestartClassifier.classify_gaps(candidates, fps)
+         ↓  FFmpeg extracts 12-15s video clip per gap
+         ↓  vLLM model classifies each clip (native video understanding)
          ↓  Returns classified Event list
          ↓
     Worker extends event list → Segmentation → Assembly
 """
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 import tempfile
@@ -51,7 +53,7 @@ class GapCandidate:
 
 
 # ---------------------------------------------------------------------------
-# Classification result from Gemini
+# Classification result
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -66,24 +68,25 @@ class ClassificationResult:
 # Event type mapping
 # ---------------------------------------------------------------------------
 
-_GEMINI_TYPE_TO_EVENT: dict[str, EventType] = {
+_RESTART_TYPE_TO_EVENT: dict[str, EventType] = {
     "goal_kick": EventType.GOAL_KICK,
     "corner_kick": EventType.CORNER_KICK,
     "goal": EventType.GOAL,
 }
 
 
-class GeminiClassifier:
-    """Classify dead-ball restart events using Gemini 2.5 Flash.
+class RestartClassifier:
+    """Classify dead-ball restart events using a vLLM-hosted vision model.
 
     For each trajectory gap candidate, extracts a short video clip,
-    uploads to Gemini, and gets a structured classification:
+    sends to vLLM via OpenAI-compatible API with video_url content type,
+    and gets a structured classification:
     goal_kick / corner_kick / throw_in / free_kick / goal / other.
     """
 
     def __init__(
         self,
-        api_key: str,
+        vllm_url: str,
         model: str,
         source_file: str,
         match_config,
@@ -94,7 +97,7 @@ class GeminiClassifier:
         min_confidence: float = 0.5,
         target_types: Optional[set[str]] = None,
     ):
-        self._api_key = api_key
+        self._vllm_url = vllm_url.rstrip("/")
         self._model = model
         self._source_file = source_file
         self._match_config = match_config
@@ -104,19 +107,11 @@ class GeminiClassifier:
         self._clip_width = clip_width
         self._min_confidence = min_confidence
         self._target_types = target_types or {"goal_kick", "corner_kick", "goal"}
-        self._client = None  # lazy google.genai init
-
-    def _get_client(self):
-        """Lazy-init the Google GenAI client."""
-        if self._client is None:
-            from google import genai
-            self._client = genai.Client(api_key=self._api_key)
-        return self._client
 
     def classify_gaps(
         self, gaps: list[GapCandidate], fps: float,
     ) -> list[Event]:
-        """Classify each gap candidate via Gemini video analysis.
+        """Classify each gap candidate via vLLM video analysis.
 
         Returns only events whose type is in target_types and whose
         confidence meets the minimum threshold.
@@ -129,7 +124,7 @@ class GeminiClassifier:
             try:
                 clip_path = self._extract_clip(gap)
                 if clip_path is None:
-                    log.warning("gemini.clip_extraction_failed",
+                    log.warning("vllm.clip_extraction_failed",
                                 gap_start=gap.gap_start_ts)
                     continue
 
@@ -148,24 +143,24 @@ class GeminiClassifier:
                         and result.confidence >= self._min_confidence):
                     event = self._make_event(gap, result, fps)
                     events.append(event)
-                    log.info("gemini.classified",
+                    log.info("vllm.classified",
                              event_type=result.event_type,
                              confidence=result.confidence,
                              reasoning=result.reasoning,
                              gap_start=gap.gap_start_ts)
                 else:
-                    log.debug("gemini.filtered_out",
+                    log.debug("vllm.filtered_out",
                               event_type=result.event_type,
                               confidence=result.confidence,
                               gap_start=gap.gap_start_ts)
 
             except Exception as exc:
-                log.error("gemini.classify_error",
+                log.error("vllm.classify_error",
                           gap_start=gap.gap_start_ts, error=str(exc))
                 # Fail-open: skip this gap, don't crash the pipeline
                 continue
 
-        log.info("gemini.classification_complete",
+        log.info("vllm.classification_complete",
                  gaps=len(gaps), events=len(events))
         return events
 
@@ -181,9 +176,8 @@ class GeminiClassifier:
             self._clip_pre_sec + gap.gap_duration_sec + self._clip_post_sec
         )
 
-        # Create temp file for the clip
         tmp = tempfile.NamedTemporaryFile(
-            suffix=".mp4", prefix="gemini_clip_", delete=False,
+            suffix=".mp4", prefix="vllm_clip_", delete=False,
         )
         tmp.close()
         clip_path = Path(tmp.name)
@@ -197,7 +191,7 @@ class GeminiClassifier:
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-crf", "28",
-            "-an",  # strip audio to reduce upload size
+            "-an",  # strip audio to reduce size
             str(clip_path),
         ]
         try:
@@ -206,35 +200,65 @@ class GeminiClassifier:
             )
             if result.returncode == 0 and clip_path.stat().st_size > 0:
                 return clip_path
-            log.warning("gemini.ffmpeg_failed",
+            log.warning("vllm.ffmpeg_failed",
                         returncode=result.returncode,
                         gap_start=gap.gap_start_ts)
             clip_path.unlink(missing_ok=True)
             return None
         except subprocess.TimeoutExpired:
-            log.warning("gemini.ffmpeg_timeout", gap_start=gap.gap_start_ts)
+            log.warning("vllm.ffmpeg_timeout", gap_start=gap.gap_start_ts)
             clip_path.unlink(missing_ok=True)
             return None
 
     def _classify_clip(
         self, clip_path: Path, gap: GapCandidate,
     ) -> Optional[ClassificationResult]:
-        """Upload clip to Gemini and get structured classification."""
-        client = self._get_client()
+        """Send video clip to vLLM via OpenAI-compatible API."""
+        import httpx
+
         prompt = self._build_prompt(gap)
 
+        # Base64-encode the video clip as a data URL
+        video_bytes = clip_path.read_bytes()
+        video_b64 = base64.b64encode(video_bytes).decode()
+        video_data_url = f"data:video/mp4;base64,{video_b64}"
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": video_data_url},
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                },
+            ],
+            "max_tokens": 300,
+        }
+
         try:
-            # Upload video file to Gemini
-            uploaded = client.files.upload(file=clip_path)
-
-            response = client.models.generate_content(
-                model=self._model,
-                contents=[uploaded, prompt],
+            resp = httpx.post(
+                f"{self._vllm_url}/v1/chat/completions",
+                json=payload,
+                timeout=120.0,
             )
-
-            return self._parse_response(response)
+            resp.raise_for_status()
+            data = resp.json()
+            text = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            return self._parse_response(text)
         except Exception as exc:
-            log.error("gemini.api_error", error=str(exc),
+            log.error("vllm.api_error", error=str(exc),
                       gap_start=gap.gap_start_ts)
             return None
 
@@ -251,7 +275,7 @@ class GeminiClassifier:
             pos_after = f"x={gap.ball_pos_after[0]:.2f}, y={gap.ball_pos_after[1]:.2f}"
 
         return (
-            f"You are analyzing a clip from a youth soccer match "
+            f"You are analyzing a video clip from a youth soccer match "
             f"(sideline camera, fixed position).\n"
             f"Teams: {mc.team.team_name} "
             f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
@@ -262,6 +286,8 @@ class GeminiClassifier:
             f"a dead-ball stoppage.\n"
             f"Ball position before gap: {pos_before}\n"
             f"Ball position after gap: {pos_after}\n"
+            f"(Coordinates: x=0 is left goal line, x=1 is right goal line; "
+            f"y=0 is top sideline, y=1 is bottom sideline)\n"
             f"\nClassify this restart event. Respond ONLY with JSON:\n"
             f'{{"event_type": "goal_kick"|"corner_kick"|"throw_in"|'
             f'"free_kick"|"goal"|"other",\n'
@@ -281,17 +307,17 @@ class GeminiClassifier:
             f"- Other: None of the above (e.g., substitution, injury, halftime).\n"
         )
 
-    def _parse_response(self, response) -> Optional[ClassificationResult]:
-        """Parse Gemini's response into a ClassificationResult.
+    def _parse_response(self, text: str) -> Optional[ClassificationResult]:
+        """Parse model response into a ClassificationResult.
 
         Handles both clean JSON and JSON embedded in markdown code blocks.
         Returns None on parse failure.
         """
-        try:
-            text = response.text.strip()
-        except (AttributeError, IndexError):
-            log.warning("gemini.empty_response")
+        if not text or not text.strip():
+            log.warning("vllm.empty_response")
             return None
+
+        text = text.strip()
 
         # Strip markdown code fences if present
         if text.startswith("```"):
@@ -300,7 +326,6 @@ class GeminiClassifier:
             text = "\n".join(lines).strip()
 
         # Try to extract JSON from text
-        # Find the first { and last } to handle surrounding text
         start = text.find("{")
         end = text.rfind("}")
         if start >= 0 and end > start:
@@ -326,14 +351,14 @@ class GeminiClassifier:
                 kick_timestamp_offset_sec=kick_offset,
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-            log.warning("gemini.parse_error", text=text[:200], error=str(exc))
+            log.warning("vllm.parse_error", text=text[:200], error=str(exc))
             return None
 
     def _make_event(
         self, gap: GapCandidate, result: ClassificationResult, fps: float,
     ) -> Event:
         """Create an Event from a gap candidate and classification result."""
-        event_type = _GEMINI_TYPE_TO_EVENT.get(
+        event_type = _RESTART_TYPE_TO_EVENT.get(
             result.event_type, EventType.GOAL_KICK
         )
 
@@ -371,11 +396,11 @@ class GeminiClassifier:
             frame_end=int((kick_ts + 0.5) * fps),
             bounding_box=bbox,
             metadata={
-                "gemini_event_type": result.event_type,
-                "gemini_confidence": result.confidence,
-                "gemini_reasoning": result.reasoning,
-                "gemini_model": self._model,
-                "gemini_kick_offset": result.kick_timestamp_offset_sec,
+                "vllm_event_type": result.event_type,
+                "vllm_confidence": result.confidence,
+                "vllm_reasoning": result.reasoning,
+                "vllm_model": self._model,
+                "vllm_kick_offset": result.kick_timestamp_offset_sec,
                 "gap_start_ts": gap.gap_start_ts,
                 "gap_end_ts": gap.gap_end_ts,
                 "gap_duration_sec": gap.gap_duration_sec,

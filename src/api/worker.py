@@ -243,28 +243,28 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     if not interrupted:
         log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
 
-    # ── Gemini dead-ball classification (optional) ─────────────────────────
-    gemini_enabled = str(cfg.GEMINI_ENABLED).lower() in ("1", "true", "yes")
-    if gemini_enabled and use_ball_touch and ball_touch_detector is not None:
-        from src.detection.gemini_classifier import GeminiClassifier
+    # ── vLLM dead-ball classification (optional) ───────────────────────────
+    vllm_enabled = str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes")
+    if vllm_enabled and use_ball_touch and ball_touch_detector is not None:
+        from src.detection.restart_classifier import RestartClassifier
         gap_candidates = ball_touch_detector.gap_candidates
         if gap_candidates:
-            gemini = GeminiClassifier(
-                api_key=cfg.GEMINI_API_KEY,
-                model=cfg.GEMINI_MODEL,
+            classifier = RestartClassifier(
+                vllm_url=cfg.VLLM_URL,
+                model=cfg.VLLM_MODEL,
                 source_file=vf.path,
                 match_config=job.match_config,
                 job_id=job_id,
-                clip_pre_sec=float(cfg.GEMINI_CLIP_PRE_SEC),
-                clip_post_sec=float(cfg.GEMINI_CLIP_POST_SEC),
-                min_confidence=float(cfg.GEMINI_MIN_CONFIDENCE),
+                clip_pre_sec=float(cfg.VLLM_CLIP_PRE_SEC),
+                clip_post_sec=float(cfg.VLLM_CLIP_POST_SEC),
+                min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
             )
-            gemini_events = gemini.classify_gaps(gap_candidates, vf.fps)
-            for ge in gemini_events:
-                event_log.append(ge)
-            log.info("pipeline.gemini_classification",
+            restart_events = classifier.classify_gaps(gap_candidates, vf.fps)
+            for re_evt in restart_events:
+                event_log.append(re_evt)
+            log.info("pipeline.vllm_classification",
                      job_id=job_id, gaps=len(gap_candidates),
-                     events=len(gemini_events))
+                     events=len(restart_events))
 
     # ── Stage: SEGMENTING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.SEGMENTING, progress=65.0)
