@@ -408,7 +408,7 @@ class TestPartialReelOnInterrupt:
              patch(_P["EventLog"]) as m_evlog, \
              patch(_P["compute_clips_v2"]) as m_clips, \
              patch(_P["postprocess_clips"]) as m_post, \
-             patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur: sel), \
+             patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur, **kw: sel), \
              patch(_P["passes_sim_gate"], return_value=True), \
              patch(_P["ReelComposer"]) as m_composer, \
              patch(_P["write_reel_to_nas"]) as m_nas, \

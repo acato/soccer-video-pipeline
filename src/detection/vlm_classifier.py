@@ -239,7 +239,10 @@ class VLMClassifier:
         response = client.messages.create(
             model=self._model,
             max_tokens=256,
-            messages=[{"role": "user", "content": content}],
+            messages=[
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": "{"},
+            ],
         )
 
         return self._parse_response(response)
@@ -248,16 +251,20 @@ class VLMClassifier:
         """Parse Claude's response into (is_save, confidence, reasoning).
 
         Handles both clean JSON and JSON embedded in markdown code blocks.
-        Falls back to conservative defaults on parse failure.
+        The assistant prefill starts with ``{`` so we prepend it here.
+        Falls back to fail-open (keep event) on parse failure.
         """
         text = response.content[0].text.strip()
 
         # Strip markdown code fences if present
         if text.startswith("```"):
             lines = text.split("\n")
-            # Remove first line (```json) and last line (```)
             lines = [l for l in lines if not l.strip().startswith("```")]
             text = "\n".join(lines).strip()
+
+        # The assistant prefill is "{", so the response continues from there
+        if not text.startswith("{"):
+            text = "{" + text
 
         try:
             data = json.loads(text)
@@ -269,5 +276,5 @@ class VLMClassifier:
             return (is_save, confidence, reasoning)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             log.warning("vlm.parse_error", text=text[:200], error=str(exc))
-            # Fail-open: if we can't parse, assume it might be a save
-            return (True, 0.0, f"parse_error: {exc}")
+            # Fail-open: keep the event (confidence=1.0 passes any gate)
+            return (True, 1.0, f"parse_error: {exc}")

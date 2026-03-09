@@ -90,8 +90,8 @@ class TestComputeClips:
         assert len(gk_clips) == 2
 
     def test_low_confidence_events_excluded(self):
-        """GOAL events below 0.85 threshold are excluded."""
-        events = [_make_event("e1", EventType.GOAL, 100.0, 101.0, ["highlights"], confidence=0.50)]
+        """GOAL events below 0.50 threshold are excluded."""
+        events = [_make_event("e1", EventType.GOAL, 100.0, 101.0, ["highlights"], confidence=0.40)]
         clips = compute_clips(events, 5400.0, "highlights")
         assert len(clips) == 0
 

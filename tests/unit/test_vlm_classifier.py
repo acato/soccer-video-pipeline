@@ -66,12 +66,18 @@ def _make_event(
 
 
 def _make_api_response(is_gk_save: bool, confidence: float, reasoning: str):
-    """Build a mock Anthropic message response."""
+    """Build a mock Anthropic message response.
+
+    The assistant prefill is ``{`` so the response continues from there —
+    i.e. the response text starts without the leading ``{``.
+    """
     body = json.dumps({
         "is_gk_save": is_gk_save,
         "confidence": confidence,
         "reasoning": reasoning,
     })
+    # Strip leading "{" to simulate assistant continuing from prefill
+    body = body[1:]
     content_block = SimpleNamespace(text=body)
     return SimpleNamespace(content=[content_block])
 
@@ -330,6 +336,7 @@ class TestResponseParsing:
 
     def test_parse_markdown_fenced_json(self, vlm):
         """Handle JSON wrapped in ```json ... ``` blocks."""
+        # After prefill "{", response continues without leading "{"
         body = '```json\n{"is_gk_save": true, "confidence": 0.8, "reasoning": "GK save"}\n```'
         content_block = SimpleNamespace(text=body)
         resp = SimpleNamespace(content=[content_block])
@@ -340,31 +347,33 @@ class TestResponseParsing:
 
     def test_parse_clamps_confidence(self, vlm):
         """Confidence values outside 0-1 are clamped."""
-        body = json.dumps({"is_gk_save": True, "confidence": 1.5, "reasoning": "test"})
-        resp = SimpleNamespace(content=[SimpleNamespace(text=body)])
+        # Simulate assistant continuing from prefill "{" — strip leading "{"
+        inner = json.dumps({"is_gk_save": True, "confidence": 1.5, "reasoning": "test"})[1:]
+        resp = SimpleNamespace(content=[SimpleNamespace(text=inner)])
 
         _, conf, _ = vlm._parse_response(resp)
         assert conf == 1.0
 
-        body = json.dumps({"is_gk_save": True, "confidence": -0.5, "reasoning": "test"})
-        resp = SimpleNamespace(content=[SimpleNamespace(text=body)])
+        inner = json.dumps({"is_gk_save": True, "confidence": -0.5, "reasoning": "test"})[1:]
+        resp = SimpleNamespace(content=[SimpleNamespace(text=inner)])
 
         _, conf, _ = vlm._parse_response(resp)
         assert conf == 0.0
 
     def test_parse_malformed_json(self, vlm):
-        """Fail-open on unparseable response."""
+        """Fail-open on unparseable response — confidence=1.0 so event is kept."""
         resp = SimpleNamespace(content=[SimpleNamespace(text="I think this is a save")])
         is_save, conf, reason = vlm._parse_response(resp)
 
         assert is_save is True  # fail-open
-        assert conf == 0.0
+        assert conf == 1.0
         assert "parse_error" in reason
 
     def test_parse_missing_fields(self, vlm):
         """Missing fields get defaults."""
-        body = json.dumps({"is_gk_save": True})
-        resp = SimpleNamespace(content=[SimpleNamespace(text=body)])
+        # Simulate assistant continuing from prefill "{"
+        inner = json.dumps({"is_gk_save": True})[1:]
+        resp = SimpleNamespace(content=[SimpleNamespace(text=inner)])
 
         is_save, conf, reason = vlm._parse_response(resp)
         assert is_save is True

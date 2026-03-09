@@ -116,14 +116,23 @@ VLLM_URL: str = _opt("VLLM_URL", "http://10.10.2.222:8000")
 VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct")
 """Model name as registered in vLLM."""
 
-VLLM_CLIP_PRE_SEC: float = _float("VLLM_CLIP_PRE_SEC", 5.0)
+VLLM_CLIP_PRE_SEC: float = _float("VLLM_CLIP_PRE_SEC", 10.0)
 """Seconds before gap to include in clip."""
 
-VLLM_CLIP_POST_SEC: float = _float("VLLM_CLIP_POST_SEC", 8.0)
+VLLM_CLIP_POST_SEC: float = _float("VLLM_CLIP_POST_SEC", 20.0)
 """Seconds after gap to include in clip."""
 
 VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
 """Minimum confidence to keep a classified event."""
+
+VLLM_CHUNK_DURATION_SEC: float = _float("VLLM_CHUNK_DURATION_SEC", 150.0)
+"""Duration of each video chunk sent to vLLM (seconds). 150s = 2.5 min."""
+
+VLLM_CHUNK_OVERLAP_SEC: float = _float("VLLM_CHUNK_OVERLAP_SEC", 15.0)
+"""Overlap between consecutive chunks (seconds) to catch boundary events."""
+
+VLLM_CHUNK_FPS: int = _int("VLLM_CHUNK_FPS", 2)
+"""FPS for extracted chunks. 2 FPS at 1080p = 76K tokens/chunk (fits 90K context)."""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -230,9 +239,12 @@ class _Config:
             "VLLM_ENABLED": ("VLLM_ENABLED", "false"),
             "VLLM_URL": ("VLLM_URL", "http://10.10.2.222:8000"),
             "VLLM_MODEL": ("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct"),
-            "VLLM_CLIP_PRE_SEC": ("VLLM_CLIP_PRE_SEC", "5.0"),
-            "VLLM_CLIP_POST_SEC": ("VLLM_CLIP_POST_SEC", "8.0"),
+            "VLLM_CLIP_PRE_SEC": ("VLLM_CLIP_PRE_SEC", "10.0"),
+            "VLLM_CLIP_POST_SEC": ("VLLM_CLIP_POST_SEC", "20.0"),
             "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
+            "VLLM_CHUNK_DURATION_SEC": ("VLLM_CHUNK_DURATION_SEC", "150.0"),
+            "VLLM_CHUNK_OVERLAP_SEC": ("VLLM_CHUNK_OVERLAP_SEC", "15.0"),
+            "VLLM_CHUNK_FPS": ("VLLM_CHUNK_FPS", "2"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

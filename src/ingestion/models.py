@@ -86,6 +86,7 @@ REEL_PRESETS: dict[str, ReelSpec] = {
     "highlights": ReelSpec(name="highlights", event_types=_ALL_HIGHLIGHTS_EVENT_TYPES),
     "goal_kicks": ReelSpec(name="goal_kicks", event_types=["goal_kick"]),
     "corner_kicks": ReelSpec(name="corner_kicks", event_types=["corner_kick"]),
+    "goals": ReelSpec(name="goals", event_types=["goal"]),
 }
 
 

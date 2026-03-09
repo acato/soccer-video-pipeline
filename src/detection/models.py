@@ -82,7 +82,7 @@ def is_gk_event_type(event_type: EventType) -> bool:
 
 # Per-event minimum confidence thresholds (override MIN_EVENT_CONFIDENCE global)
 EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
-    EventType.GOAL:               0.85,   # High precision — false goals are very bad UX
+    EventType.GOAL:               0.50,   # Lowered — vLLM kickoff detection is the quality gate
     EventType.SHOT_STOP_DIVING:   0.75,
     EventType.SHOT_STOP_STANDING: 0.70,
     EventType.ONE_ON_ONE:         0.75,
@@ -142,7 +142,7 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
     ),
     EventType.GOAL_KICK: EventTypeConfig(
         label="Goal Kick", category="goalkeeper",
-        pre_pad_sec=10.0, post_pad_sec=3.0, max_clip_sec=35.0,
+        pre_pad_sec=10.0, post_pad_sec=15.0, max_clip_sec=45.0,
         min_confidence=0.65, is_gk_event=True,
     ),
     EventType.DISTRIBUTION_SHORT: EventTypeConfig(
@@ -162,7 +162,7 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
     ),
     EventType.CORNER_KICK: EventTypeConfig(
         label="Corner Kick", category="goalkeeper",
-        pre_pad_sec=3.0, post_pad_sec=2.0, max_clip_sec=25.0,
+        pre_pad_sec=5.0, post_pad_sec=12.0, max_clip_sec=35.0,
         min_confidence=0.65, is_gk_event=True,
     ),
     EventType.PENALTY: EventTypeConfig(
@@ -183,8 +183,8 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
     ),
     EventType.GOAL: EventTypeConfig(
         label="Goal", category="highlights",
-        pre_pad_sec=5.0, post_pad_sec=8.0, max_clip_sec=60.0,
-        min_confidence=0.85, is_gk_event=False,
+        pre_pad_sec=10.0, post_pad_sec=15.0, max_clip_sec=60.0,
+        min_confidence=0.50, is_gk_event=False,
     ),
     EventType.NEAR_MISS: EventTypeConfig(
         label="Near Miss", category="highlights",

@@ -32,7 +32,7 @@ def match_config():
 
 
 @pytest.fixture
-def classifier(match_config):
+def classifier(match_config, tmp_path):
     return RestartClassifier(
         vllm_url="http://10.10.2.222:8000",
         model="Qwen/Qwen3-VL-32B-Instruct",
@@ -42,6 +42,7 @@ def classifier(match_config):
         clip_pre_sec=5.0,
         clip_post_sec=8.0,
         min_confidence=0.5,
+        working_dir=str(tmp_path),
     )
 
 
@@ -93,10 +94,10 @@ class TestClassifyGaps:
     @patch.object(RestartClassifier, "_classify_clip")
     def test_classify_goal_kick(self, mock_classify, mock_extract, classifier):
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
-        mock_classify.return_value = ClassificationResult(
+        mock_classify.return_value = (ClassificationResult(
             event_type="goal_kick", confidence=0.9,
             reasoning="GK places ball", kick_timestamp_offset_sec=7.0,
-        )
+        ), '{"event_type":"goal_kick"}')
         gap = _make_gap()
         events = classifier.classify_gaps([gap], fps=30.0)
 
@@ -110,10 +111,10 @@ class TestClassifyGaps:
     @patch.object(RestartClassifier, "_classify_clip")
     def test_classify_corner_kick(self, mock_classify, mock_extract, classifier):
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
-        mock_classify.return_value = ClassificationResult(
+        mock_classify.return_value = (ClassificationResult(
             event_type="corner_kick", confidence=0.8,
             reasoning="Ball at corner flag", kick_timestamp_offset_sec=6.0,
-        )
+        ), '{}')
         gap = _make_gap()
         events = classifier.classify_gaps([gap], fps=30.0)
 
@@ -122,13 +123,29 @@ class TestClassifyGaps:
 
     @patch.object(RestartClassifier, "_extract_clip")
     @patch.object(RestartClassifier, "_classify_clip")
+    def test_classify_goal(self, mock_classify, mock_extract, classifier):
+        """Goal classification produces a GOAL event."""
+        mock_extract.return_value = Path("/tmp/fake_clip.mp4")
+        mock_classify.return_value = (ClassificationResult(
+            event_type="goal", confidence=0.85,
+            reasoning="Players celebrating after ball entered net",
+            kick_timestamp_offset_sec=8.0,
+        ), '{"event_type":"goal"}')
+        gap = _make_gap(pos_before=(0.11, 0.5), pos_after=(0.50, 0.48))
+        events = classifier.classify_gaps([gap], fps=30.0)
+
+        assert len(events) == 1
+        assert events[0].event_type == EventType.GOAL
+
+    @patch.object(RestartClassifier, "_extract_clip")
+    @patch.object(RestartClassifier, "_classify_clip")
     def test_filter_out_throw_in(self, mock_classify, mock_extract, classifier):
         """Throw-ins are not in target_types by default, so filtered out."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
-        mock_classify.return_value = ClassificationResult(
+        mock_classify.return_value = (ClassificationResult(
             event_type="throw_in", confidence=0.9,
             reasoning="Player throws from sideline", kick_timestamp_offset_sec=5.0,
-        )
+        ), '{}')
         gap = _make_gap()
         events = classifier.classify_gaps([gap], fps=30.0)
 
@@ -139,10 +156,10 @@ class TestClassifyGaps:
     def test_filter_low_confidence(self, mock_classify, mock_extract, classifier):
         """Events below min_confidence are filtered out."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
-        mock_classify.return_value = ClassificationResult(
+        mock_classify.return_value = (ClassificationResult(
             event_type="goal_kick", confidence=0.3,
             reasoning="Uncertain", kick_timestamp_offset_sec=7.0,
-        )
+        ), '{}')
         gap = _make_gap()
         events = classifier.classify_gaps([gap], fps=30.0)
 
@@ -157,7 +174,7 @@ class TestClassifyGaps:
         assert len(events) == 0
 
     @patch.object(RestartClassifier, "_extract_clip")
-    @patch.object(RestartClassifier, "_classify_clip", return_value=None)
+    @patch.object(RestartClassifier, "_classify_clip", return_value=(None, ""))
     def test_skip_on_classification_failure(self, mock_classify, mock_extract, classifier):
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
         gap = _make_gap()
@@ -181,9 +198,9 @@ class TestClassifyGaps:
         """Classify multiple gaps in sequence."""
         mock_extract.return_value = Path("/tmp/fake_clip.mp4")
         mock_classify.side_effect = [
-            ClassificationResult("goal_kick", 0.9, "GK kick", 7.0),
-            ClassificationResult("throw_in", 0.85, "Throw", 5.0),
-            ClassificationResult("corner_kick", 0.8, "Corner", 6.0),
+            (ClassificationResult("goal_kick", 0.9, "GK kick", 7.0), '{}'),
+            (ClassificationResult("throw_in", 0.85, "Throw", 5.0), '{}'),
+            (ClassificationResult("corner_kick", 0.8, "Corner", 6.0), '{}'),
         ]
         gaps = [_make_gap(start_ts=t) for t in [60.0, 120.0, 180.0]]
         events = classifier.classify_gaps(gaps, fps=30.0)
@@ -203,46 +220,44 @@ class TestClipExtraction:
     """Tests for _extract_clip FFmpeg command."""
 
     @patch("subprocess.run")
-    def test_extract_clip_success(self, mock_run, classifier, tmp_path):
-        clip_path = tmp_path / "test_clip.mp4"
-        clip_path.write_bytes(b"\x00" * 100)
+    def test_extract_clip_success(self, mock_run, classifier):
+        def side_effect(cmd, **kwargs):
+            # Create the output file that FFmpeg would produce
+            output_path = cmd[-1]
+            Path(output_path).write_bytes(b"\x00" * 100)
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
 
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=b"", stderr=b"",
-        )
+        mock_run.side_effect = side_effect
 
-        with patch("tempfile.NamedTemporaryFile") as mock_tmp:
-            mock_file = MagicMock()
-            mock_file.name = str(clip_path)
-            mock_tmp.return_value = mock_file
+        gap = _make_gap(start_ts=60.0, end_ts=63.0)
+        result = classifier._extract_clip(gap, index=0)
 
-            gap = _make_gap(start_ts=60.0, end_ts=63.0)
-            result = classifier._extract_clip(gap)
-
-            assert result is not None
-            call_args = mock_run.call_args[0][0]
-            assert call_args[0] == "ffmpeg"
-            assert "-ss" in call_args
-            # start_ts=60, pre_sec=5 → ss=55.0
-            assert "55.000" in call_args[call_args.index("-ss") + 1]
-            # duration = 5 + 3 + 8 = 16
-            assert "16.000" in call_args[call_args.index("-t") + 1]
-            assert "scale=640:-2" in call_args[call_args.index("-vf") + 1]
+        assert result is not None
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == "ffmpeg"
+        assert "-ss" in call_args
+        # start_ts=60, pre_sec=5 → ss=55.0
+        assert "55.000" in call_args[call_args.index("-ss") + 1]
+        # duration = 5 + 3 + 8 = 16
+        assert "16.000" in call_args[call_args.index("-t") + 1]
+        assert "scale=640:-2" in call_args[call_args.index("-vf") + 1]
 
     @patch("subprocess.run")
     def test_extract_clip_failure(self, mock_run, classifier):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout=b"", stderr=b"error",
-        )
+        def side_effect(cmd, **kwargs):
+            Path(cmd[-1]).write_bytes(b"")
+            return subprocess.CompletedProcess(args=cmd, returncode=1, stderr=b"error")
+
+        mock_run.side_effect = side_effect
         gap = _make_gap()
-        result = classifier._extract_clip(gap)
+        result = classifier._extract_clip(gap, index=0)
 
         assert result is None
 
     @patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ffmpeg", 30))
     def test_extract_clip_timeout(self, mock_run, classifier):
         gap = _make_gap()
-        result = classifier._extract_clip(gap)
+        result = classifier._extract_clip(gap, index=0)
 
         assert result is None
 
@@ -309,6 +324,8 @@ class TestPromptGeneration:
         assert "6-yard box" in prompt
         assert "corner flag" in prompt
         assert "both hands" in prompt  # throw-in
+        assert "celebrate" in prompt.lower()  # goal
+        assert "center circle" in prompt  # goal restart
 
     def test_prompt_says_video_clip(self, classifier):
         gap = _make_gap()
@@ -439,8 +456,22 @@ class TestEventCreation:
         assert event.event_type == EventType.GOAL
         assert event.is_goalkeeper_event is False
 
+    def test_goal_event_from_celebration(self, classifier):
+        """Goal detected from celebration + center-circle restart."""
+        gap = _make_gap(pos_before=(0.11, 0.5), pos_after=(0.50, 0.48))
+        result = ClassificationResult(
+            event_type="goal", confidence=0.85,
+            reasoning="Players celebrating after ball entered net",
+            kick_timestamp_offset_sec=8.0,
+        )
+        event = classifier._make_event(gap, result, fps=30.0)
+
+        assert event.event_type == EventType.GOAL
+        assert event.metadata["vllm_event_type"] == "goal"
+        assert event.is_goalkeeper_event is False
+
     def test_event_without_kick_offset(self, classifier):
-        """When no kick offset, uses gap center for timestamp."""
+        """When no kick offset, uses gap_end + 2.0 for timestamp."""
         gap = _make_gap(start_ts=60.0, end_ts=66.0)
         result = ClassificationResult(
             event_type="goal_kick", confidence=0.8,
@@ -448,9 +479,9 @@ class TestEventCreation:
         )
         event = classifier._make_event(gap, result, fps=30.0)
 
-        # Gap center = (60 + 66) / 2 = 63
-        assert abs(event.timestamp_start - 62.5) < 0.01
-        assert abs(event.timestamp_end - 63.5) < 0.01
+        # kick_ts = gap_end + 2.0 = 68.0
+        assert abs(event.timestamp_start - 67.5) < 0.01
+        assert abs(event.timestamp_end - 68.5) < 0.01
 
     def test_event_with_kick_offset(self, classifier):
         """Kick offset is relative to clip start (gap_start - pre_sec)."""
@@ -507,10 +538,11 @@ class TestVLLMApiCall:
         mock_post.return_value = mock_resp
 
         gap = _make_gap()
-        result = classifier._classify_clip(clip_path, gap)
+        result, raw = classifier._classify_clip(clip_path, gap)
 
         assert result is not None
         assert result.event_type == "goal_kick"
+        assert raw  # raw response text is returned
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert "10.10.2.222:8000/v1/chat/completions" in call_args[0][0]
@@ -521,9 +553,10 @@ class TestVLLMApiCall:
         clip_path.write_bytes(b"\x00" * 10)
 
         gap = _make_gap()
-        result = classifier._classify_clip(clip_path, gap)
+        result, raw = classifier._classify_clip(clip_path, gap)
 
         assert result is None
+        assert "API_ERROR" in raw
 
     @patch("httpx.post")
     def test_api_sends_video_as_data_url(self, mock_post, classifier, tmp_path):
@@ -568,4 +601,4 @@ class TestVLLMApiCall:
         classifier._classify_clip(clip_path, gap)
 
         payload = mock_post.call_args[1]["json"]
-        assert payload["max_tokens"] == 300
+        assert payload["max_tokens"] == 512

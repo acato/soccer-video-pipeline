@@ -222,7 +222,7 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             raise PipelineCancelled(f"Job {job_id} cancelled by user")
         if job and job.pause_requested:
             raise PipelinePaused(f"Job {job_id} paused by user")
-        store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.60)
+        store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.50)
         # Save chunk checkpoint for resume support
         if chunk_idx >= 0:
             j = store.get(job_id)
@@ -243,28 +243,37 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     if not interrupted:
         log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
 
-    # ── vLLM dead-ball classification (optional) ───────────────────────────
+    # ── vLLM chunk-based video tagging (optional) ──────────────────────────
     vllm_enabled = str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes")
-    if vllm_enabled and use_ball_touch and ball_touch_detector is not None:
-        from src.detection.restart_classifier import RestartClassifier
-        gap_candidates = ball_touch_detector.gap_candidates
-        if gap_candidates:
-            classifier = RestartClassifier(
-                vllm_url=cfg.VLLM_URL,
-                model=cfg.VLLM_MODEL,
-                source_file=vf.path,
-                match_config=job.match_config,
-                job_id=job_id,
-                clip_pre_sec=float(cfg.VLLM_CLIP_PRE_SEC),
-                clip_post_sec=float(cfg.VLLM_CLIP_POST_SEC),
-                min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
-            )
-            restart_events = classifier.classify_gaps(gap_candidates, vf.fps)
-            for re_evt in restart_events:
-                event_log.append(re_evt)
-            log.info("pipeline.vllm_classification",
-                     job_id=job_id, gaps=len(gap_candidates),
-                     events=len(restart_events))
+    if vllm_enabled and job.match_config:
+        from src.detection.chunk_tagger import ChunkTagger
+
+        def on_vllm_progress(completed: int, total: int):
+            pct = 55.0 + (completed / total) * 10.0  # 55% → 65%
+            store.update_status(job_id, JobStatus.DETECTING, progress=pct)
+
+        store.update_status(job_id, JobStatus.DETECTING, progress=55.0)
+        tagger = ChunkTagger(
+            vllm_url=cfg.VLLM_URL,
+            model=cfg.VLLM_MODEL,
+            source_file=vf.path,
+            match_config=job.match_config,
+            job_id=job_id,
+            chunk_duration_sec=float(cfg.VLLM_CHUNK_DURATION_SEC),
+            chunk_overlap_sec=float(cfg.VLLM_CHUNK_OVERLAP_SEC),
+            chunk_fps=int(cfg.VLLM_CHUNK_FPS),
+            min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
+            working_dir=cfg.WORKING_DIR,
+        )
+        tagged_events = tagger.tag_video(
+            video_duration=vf.duration_sec,
+            fps=vf.fps,
+            progress_callback=on_vllm_progress,
+        )
+        for te in tagged_events:
+            event_log.append(te)
+        log.info("pipeline.chunk_tagger_complete",
+                 job_id=job_id, events=len(tagged_events))
 
     # ── Stage: SEGMENTING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.SEGMENTING, progress=65.0)
@@ -272,7 +281,11 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     event_conf_map = {e.event_id: e.confidence for e in all_events}
 
     # Filter GK events: VLM classification (if enabled) or spatial filter + sim gate
-    gk_events = [e for e in all_events if e.is_goalkeeper_event]
+    # GOAL_KICK and CORNER_KICK are exempt from VLM save verification —
+    # they are quality-gated by vLLM restart classifier, not the save detector.
+    _VLM_EXEMPT_TYPES = {EventType.GOAL_KICK, EventType.CORNER_KICK}
+    gk_events = [e for e in all_events if e.is_goalkeeper_event and e.event_type not in _VLM_EXEMPT_TYPES]
+    vlm_exempt_gk = [e for e in all_events if e.is_goalkeeper_event and e.event_type in _VLM_EXEMPT_TYPES]
     non_gk_events = [e for e in all_events if not e.is_goalkeeper_event]
     gk_side = job.match_config.gk_first_half_side if job.match_config else None
 
@@ -294,7 +307,11 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         filtered_gk = filter_wrong_side_events(gk_events, all_events, vf.duration_sec, gk_first_half_side=gk_side)
         filtered_gk = [e for e in filtered_gk if passes_sim_gate(e)]
 
-    all_events = filtered_gk + non_gk_events
+    if vlm_exempt_gk:
+        log.info("pipeline.vlm_exempt_gk", count=len(vlm_exempt_gk),
+                 types=[e.event_type.value for e in vlm_exempt_gk[:5]])
+
+    all_events = filtered_gk + vlm_exempt_gk + non_gk_events
 
     # Get reel specs from job (handles legacy reel_types → ReelSpec conversion)
     reel_specs = job.get_reel_specs()

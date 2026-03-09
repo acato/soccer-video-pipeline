@@ -12,7 +12,7 @@ Architecture:
     BallTouchDetector._find_trajectory_gaps() → GapCandidate list
          ↓
     RestartClassifier.classify_gaps(candidates, fps)
-         ↓  FFmpeg extracts 12-15s video clip per gap
+         ↓  FFmpeg extracts video clip per gap
          ↓  vLLM model classifies each clip (native video understanding)
          ↓  Returns classified Event list
          ↓
@@ -23,7 +23,6 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +95,7 @@ class RestartClassifier:
         clip_width: int = 640,
         min_confidence: float = 0.5,
         target_types: Optional[set[str]] = None,
+        working_dir: Optional[str] = None,
     ):
         self._vllm_url = vllm_url.rstrip("/")
         self._model = model
@@ -108,10 +108,27 @@ class RestartClassifier:
         self._min_confidence = min_confidence
         self._target_types = target_types or {"goal_kick", "corner_kick", "goal"}
 
+        # Debug output directory — clips + responses saved for manual review
+        if working_dir:
+            self._debug_dir = Path(working_dir) / job_id / "vllm_debug"
+        else:
+            self._debug_dir = Path("/tmp/soccer-pipeline") / job_id / "vllm_debug"
+        self._debug_dir.mkdir(parents=True, exist_ok=True)
+        self._debug_log = self._debug_dir / "classifications.jsonl"
+
     def classify_gaps(
-        self, gaps: list[GapCandidate], fps: float,
+        self,
+        gaps: list[GapCandidate],
+        fps: float,
+        progress_callback=None,
     ) -> list[Event]:
         """Classify each gap candidate via vLLM video analysis.
+
+        Args:
+            gaps: List of trajectory gap candidates.
+            fps: Video frame rate.
+            progress_callback: Optional callable(completed, total) for
+                progress reporting.
 
         Returns only events whose type is in target_types and whose
         confidence meets the minimum threshold.
@@ -120,21 +137,19 @@ class RestartClassifier:
             return []
 
         events: list[Event] = []
-        for gap in gaps:
+        total = len(gaps)
+        for i, gap in enumerate(gaps):
             try:
-                clip_path = self._extract_clip(gap)
+                clip_path = self._extract_clip(gap, index=i)
                 if clip_path is None:
                     log.warning("vllm.clip_extraction_failed",
                                 gap_start=gap.gap_start_ts)
                     continue
 
-                result = self._classify_clip(clip_path, gap)
+                result, raw_response = self._classify_clip(clip_path, gap)
 
-                # Clean up temp clip
-                try:
-                    clip_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                # Save debug info (clip path, prompt, response)
+                self._save_debug(i, gap, clip_path, raw_response, result)
 
                 if result is None:
                     continue
@@ -159,28 +174,29 @@ class RestartClassifier:
                           gap_start=gap.gap_start_ts, error=str(exc))
                 # Fail-open: skip this gap, don't crash the pipeline
                 continue
+            finally:
+                if progress_callback:
+                    progress_callback(i + 1, total)
 
         log.info("vllm.classification_complete",
-                 gaps=len(gaps), events=len(events))
+                 gaps=len(gaps), events=len(events),
+                 debug_dir=str(self._debug_dir))
         return events
 
     def _extract_clip(
-        self, gap: GapCandidate,
+        self, gap: GapCandidate, index: int = 0,
     ) -> Optional[Path]:
         """Extract video clip around gap via FFmpeg.
 
-        Returns path to temporary MP4 file, or None on failure.
+        Clips are saved to the debug directory for manual review.
         """
         start = max(0.0, gap.gap_start_ts - self._clip_pre_sec)
         duration = (
             self._clip_pre_sec + gap.gap_duration_sec + self._clip_post_sec
         )
 
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".mp4", prefix="vllm_clip_", delete=False,
-        )
-        tmp.close()
-        clip_path = Path(tmp.name)
+        # Save to debug dir with descriptive name
+        clip_path = self._debug_dir / f"gap_{index:03d}_t{gap.gap_start_ts:.0f}.mp4"
 
         cmd = [
             "ffmpeg", "-y",
@@ -212,8 +228,11 @@ class RestartClassifier:
 
     def _classify_clip(
         self, clip_path: Path, gap: GapCandidate,
-    ) -> Optional[ClassificationResult]:
-        """Send video clip to vLLM via OpenAI-compatible API."""
+    ) -> tuple[Optional[ClassificationResult], str]:
+        """Send video clip to vLLM via OpenAI-compatible API.
+
+        Returns (result, raw_response_text) — raw text is saved for debugging.
+        """
         import httpx
 
         prompt = self._build_prompt(gap)
@@ -240,7 +259,7 @@ class RestartClassifier:
                     ],
                 },
             ],
-            "max_tokens": 300,
+            "max_tokens": 512,
         }
 
         try:
@@ -249,18 +268,24 @@ class RestartClassifier:
                 json=payload,
                 timeout=120.0,
             )
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                body = resp.text[:500]
+                log.error("vllm.api_error",
+                          status=resp.status_code,
+                          body=body,
+                          gap_start=gap.gap_start_ts)
+                return None, f"HTTP_{resp.status_code}: {body}"
             data = resp.json()
             text = (
                 data.get("choices", [{}])[0]
                 .get("message", {})
                 .get("content", "")
             )
-            return self._parse_response(text)
+            return self._parse_response(text), text
         except Exception as exc:
             log.error("vllm.api_error", error=str(exc),
                       gap_start=gap.gap_start_ts)
-            return None
+            return None, f"API_ERROR: {exc}"
 
     def _build_prompt(self, gap: GapCandidate) -> str:
         """Build classification prompt with match context."""
@@ -288,22 +313,28 @@ class RestartClassifier:
             f"Ball position after gap: {pos_after}\n"
             f"(Coordinates: x=0 is left goal line, x=1 is right goal line; "
             f"y=0 is top sideline, y=1 is bottom sideline)\n"
-            f"\nClassify this restart event. Respond ONLY with JSON:\n"
+            f"\nClassify what happened. Respond ONLY with valid JSON "
+            f"(no markdown, no extra text):\n"
             f'{{"event_type": "goal_kick"|"corner_kick"|"throw_in"|'
             f'"free_kick"|"goal"|"other",\n'
             f' "confidence": 0.0-1.0,\n'
-            f' "reasoning": "brief explanation",\n'
             f' "kick_timestamp_offset_sec": <seconds from clip start '
-            f"when the restart kick occurs>}}\n"
+            f"when the restart kick occurs>,\n"
+            f' "reasoning": "one sentence"}}\n'
             f"\nKey visual cues:\n"
             f"- Goal kick: GK places ball on 6-yard box line, kicks upfield. "
             f"Few players nearby.\n"
             f"- Corner kick: Ball placed at corner flag, player kicks into "
             f"crowded penalty area.\n"
             f"- Throw-in: Player holds ball with both hands, throws from sideline.\n"
-            f"- Free kick: Ball placed on ground away from goal, wall of players "
-            f"may be present.\n"
-            f"- Goal: Ball in the net, celebration.\n"
+            f"- Free kick: Ball placed on ground, wall of players may be "
+            f"present. Play resumes quickly with little fanfare.\n"
+            f"- Goal: A goal was scored. Key signs: players celebrate "
+            f"enthusiastically (running, hugging, jumping, arms raised), "
+            f"the opposing team looks dejected, and play restarts from the "
+            f"center circle. The ball may have entered the net earlier in "
+            f"the clip. If you see jubilant celebration followed by a "
+            f"center-circle restart, classify as goal.\n"
             f"- Other: None of the above (e.g., substitution, injury, halftime).\n"
         )
 
@@ -354,6 +385,36 @@ class RestartClassifier:
             log.warning("vllm.parse_error", text=text[:200], error=str(exc))
             return None
 
+    def _save_debug(
+        self,
+        index: int,
+        gap: GapCandidate,
+        clip_path: Path,
+        raw_response: str,
+        result: Optional[ClassificationResult],
+    ) -> None:
+        """Append debug record to JSONL log for manual review."""
+        record = {
+            "index": index,
+            "clip_file": clip_path.name,
+            "gap_start_ts": gap.gap_start_ts,
+            "gap_end_ts": gap.gap_end_ts,
+            "gap_duration_sec": gap.gap_duration_sec,
+            "ball_pos_before": gap.ball_pos_before,
+            "ball_pos_after": gap.ball_pos_after,
+            "raw_response": raw_response,
+            "parsed": result is not None,
+            "event_type": result.event_type if result else None,
+            "confidence": result.confidence if result else None,
+            "kick_offset": result.kick_timestamp_offset_sec if result else None,
+            "reasoning": result.reasoning if result else None,
+        }
+        try:
+            with open(self._debug_log, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            pass
+
     def _make_event(
         self, gap: GapCandidate, result: ClassificationResult, fps: float,
     ) -> Event:
@@ -362,12 +423,13 @@ class RestartClassifier:
             result.event_type, EventType.GOAL_KICK
         )
 
-        # Use kick timestamp if available, otherwise center of gap
+        # Use kick timestamp if available, otherwise gap end (kick happens
+        # after ball reappears, not at gap center)
         if result.kick_timestamp_offset_sec is not None:
             clip_start = gap.gap_start_ts - self._clip_pre_sec
             kick_ts = clip_start + result.kick_timestamp_offset_sec
         else:
-            kick_ts = (gap.gap_start_ts + gap.gap_end_ts) / 2
+            kick_ts = gap.gap_end_ts + 2.0  # kick ~2s after ball reappears
 
         # For goal kicks, is_goalkeeper_event=True; for corners, True too
         is_gk = event_type in (
