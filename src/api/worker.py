@@ -162,86 +162,96 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     # ── Stage: DETECTING ──────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
 
-    if str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes"):
-        log.info("worker.null_detector_enabled", job_id=job_id)
-        player_detector = NullDetector(job_id=job_id, source_file=vf.path)
-    else:
-        player_detector = PlayerDetector(
-            job_id=job_id,
-            source_file=vf.path,
-            model_path=cfg.YOLO_MODEL_PATH,
-            use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
-            inference_size=int(cfg.YOLO_INFERENCE_SIZE),
-            frame_step=int(cfg.DETECTION_FRAME_STEP),
-            working_dir=cfg.WORKING_DIR,
-        )
-    gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
     event_log = EventLog(working / "events.jsonl")
-    # Only clear event log for fresh runs — preserve events on resume
-    resume_from_chunk = 0
-    if job.last_processed_chunk >= 0:
-        resume_from_chunk = job.last_processed_chunk + 1
-        log.info("worker.resuming", job_id=job_id, from_chunk=resume_from_chunk)
-    else:
-        event_log.clear()  # Remove stale events from previous failed runs
-
-    # Optionally use ball-first touch detector instead of GK-first path
-    ball_touch_detector = None
-    use_ball_touch = str(cfg.USE_BALL_TOUCH_DETECTOR).lower() in ("1", "true", "yes")
-    if use_ball_touch and job.match_config:
-        from src.detection.ball_touch_detector import BallTouchDetector
-        ball_touch_detector = BallTouchDetector(
-            job_id=job_id,
-            source_file=vf.path,
-            match_config=job.match_config,
-        )
-        log.info("worker.ball_touch_detector_enabled", job_id=job_id)
-
-    runner = PipelineRunner(
-        job_id=job_id,
-        video_file=vf,
-        player_detector=player_detector,
-        gk_detector=gk_detector,
-        event_log=event_log,
-        chunk_sec=int(cfg.CHUNK_DURATION_SEC),
-        overlap_sec=float(cfg.CHUNK_OVERLAP_SEC),
-        min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
-        ball_touch_detector=ball_touch_detector,
-        game_start_sec=job.game_start_sec,
-        resume_from_chunk=resume_from_chunk,
-    )
+    event_log.clear()
 
     # interrupted tracks whether the user paused/cancelled mid-detection.
     # When set, we still finish segmenting + assembling with partial events,
     # then set the final status to PAUSED or CANCELLED instead of COMPLETE.
     interrupted: str | None = None  # "paused" | "cancelled" | None
 
-    def on_detect_progress(pct: float, chunk_idx: int = -1):
-        job = store.get(job_id)
-        if job and job.cancel_requested:
-            raise PipelineCancelled(f"Job {job_id} cancelled by user")
-        if job and job.pause_requested:
-            raise PipelinePaused(f"Job {job_id} paused by user")
-        store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.50)
-        # Save chunk checkpoint for resume support
-        if chunk_idx >= 0:
-            j = store.get(job_id)
-            if j is not None:
-                data = j.model_dump()
-                data["last_processed_chunk"] = chunk_idx
-                store.save(Job(**data))
+    null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
+    vllm_enabled = str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes")
 
-    try:
-        total_events = runner.run(progress_callback=on_detect_progress)
-    except PipelinePaused:
-        interrupted = "paused"
-        log.info("pipeline.paused_partial", job_id=job_id)
-    except PipelineCancelled:
-        interrupted = "cancelled"
-        log.info("pipeline.cancelled_partial", job_id=job_id)
+    # When vLLM chunk tagger is enabled with null detector, skip YOLO entirely.
+    # The chunk tagger is the sole event source.
+    if null_mode and vllm_enabled:
+        log.info("worker.skip_yolo", job_id=job_id,
+                 reason="USE_NULL_DETECTOR + VLLM_ENABLED: chunk tagger is sole detector")
+    else:
+        if null_mode:
+            log.info("worker.null_detector_enabled", job_id=job_id)
+            player_detector = NullDetector(job_id=job_id, source_file=vf.path)
+        else:
+            player_detector = PlayerDetector(
+                job_id=job_id,
+                source_file=vf.path,
+                model_path=cfg.YOLO_MODEL_PATH,
+                use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
+                inference_size=int(cfg.YOLO_INFERENCE_SIZE),
+                frame_step=int(cfg.DETECTION_FRAME_STEP),
+                working_dir=cfg.WORKING_DIR,
+            )
+        gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
 
-    if not interrupted:
-        log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
+        # Only clear event log for fresh runs — preserve events on resume
+        resume_from_chunk = 0
+        if job.last_processed_chunk >= 0:
+            resume_from_chunk = job.last_processed_chunk + 1
+            log.info("worker.resuming", job_id=job_id, from_chunk=resume_from_chunk)
+
+        # Optionally use ball-first touch detector instead of GK-first path
+        ball_touch_detector = None
+        use_ball_touch = str(cfg.USE_BALL_TOUCH_DETECTOR).lower() in ("1", "true", "yes")
+        if use_ball_touch and job.match_config:
+            from src.detection.ball_touch_detector import BallTouchDetector
+            ball_touch_detector = BallTouchDetector(
+                job_id=job_id,
+                source_file=vf.path,
+                match_config=job.match_config,
+            )
+            log.info("worker.ball_touch_detector_enabled", job_id=job_id)
+
+        runner = PipelineRunner(
+            job_id=job_id,
+            video_file=vf,
+            player_detector=player_detector,
+            gk_detector=gk_detector,
+            event_log=event_log,
+            chunk_sec=int(cfg.CHUNK_DURATION_SEC),
+            overlap_sec=float(cfg.CHUNK_OVERLAP_SEC),
+            min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
+            ball_touch_detector=ball_touch_detector,
+            game_start_sec=job.game_start_sec,
+            resume_from_chunk=resume_from_chunk,
+        )
+
+        def on_detect_progress(pct: float, chunk_idx: int = -1):
+            job = store.get(job_id)
+            if job and job.cancel_requested:
+                raise PipelineCancelled(f"Job {job_id} cancelled by user")
+            if job and job.pause_requested:
+                raise PipelinePaused(f"Job {job_id} paused by user")
+            store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.50)
+            # Save chunk checkpoint for resume support
+            if chunk_idx >= 0:
+                j = store.get(job_id)
+                if j is not None:
+                    data = j.model_dump()
+                    data["last_processed_chunk"] = chunk_idx
+                    store.save(Job(**data))
+
+        try:
+            total_events = runner.run(progress_callback=on_detect_progress)
+        except PipelinePaused:
+            interrupted = "paused"
+            log.info("pipeline.paused_partial", job_id=job_id)
+        except PipelineCancelled:
+            interrupted = "cancelled"
+            log.info("pipeline.cancelled_partial", job_id=job_id)
+
+        if not interrupted:
+            log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
 
     # ── vLLM chunk-based video tagging (optional) ──────────────────────────
     vllm_enabled = str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes")
@@ -249,10 +259,10 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         from src.detection.chunk_tagger import ChunkTagger
 
         def on_vllm_progress(completed: int, total: int):
-            pct = 55.0 + (completed / total) * 10.0  # 55% → 65%
+            pct = 5.0 + (completed / total) * 85.0  # 5% → 90%
             store.update_status(job_id, JobStatus.DETECTING, progress=pct)
 
-        store.update_status(job_id, JobStatus.DETECTING, progress=55.0)
+        store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
         tagger = ChunkTagger(
             vllm_url=cfg.VLLM_URL,
             model=cfg.VLLM_MODEL,
@@ -276,16 +286,23 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
                  job_id=job_id, events=len(tagged_events))
 
     # ── Stage: SEGMENTING ─────────────────────────────────────────────────
-    store.update_status(job_id, JobStatus.SEGMENTING, progress=65.0)
+    store.update_status(job_id, JobStatus.SEGMENTING, progress=90.0)
     all_events = event_log.read_all()
     event_conf_map = {e.event_id: e.confidence for e in all_events}
 
     # Filter GK events: VLM classification (if enabled) or spatial filter + sim gate
-    # GOAL_KICK and CORNER_KICK are exempt from VLM save verification —
-    # they are quality-gated by vLLM restart classifier, not the save detector.
+    # Events from chunk tagger are exempt — the vLLM model IS the quality gate.
+    # GOAL_KICK and CORNER_KICK are also exempt (legacy restart classifier).
     _VLM_EXEMPT_TYPES = {EventType.GOAL_KICK, EventType.CORNER_KICK}
-    gk_events = [e for e in all_events if e.is_goalkeeper_event and e.event_type not in _VLM_EXEMPT_TYPES]
-    vlm_exempt_gk = [e for e in all_events if e.is_goalkeeper_event and e.event_type in _VLM_EXEMPT_TYPES]
+
+    def _is_tagger_event(e: Event) -> bool:
+        return "tagger_model" in e.metadata
+
+    gk_events = [e for e in all_events if e.is_goalkeeper_event
+                 and e.event_type not in _VLM_EXEMPT_TYPES
+                 and not _is_tagger_event(e)]
+    vlm_exempt_gk = [e for e in all_events if e.is_goalkeeper_event
+                     and (e.event_type in _VLM_EXEMPT_TYPES or _is_tagger_event(e))]
     non_gk_events = [e for e in all_events if not e.is_goalkeeper_event]
     gk_side = job.match_config.gk_first_half_side if job.match_config else None
 
