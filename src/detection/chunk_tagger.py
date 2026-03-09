@@ -59,7 +59,8 @@ _GK_TAG_TYPES = {"goal_kick", "corner_kick", "save_catch", "save_parry", "punch"
 class TaggedEvent:
     """A single event tagged by the model in one chunk."""
     event_type: str       # "goal_kick", "corner_kick", "goal", etc.
-    timestamp_abs: float  # Absolute timestamp in the source video (seconds)
+    timestamp_abs: float  # Absolute start timestamp in the source video (seconds)
+    timestamp_end_abs: float  # Absolute end timestamp in the source video (seconds)
     confidence: float
     team: str             # team name, opponent name, or "unknown"
     reasoning: str
@@ -321,44 +322,59 @@ class ChunkTagger:
             f"This clip covers {start_m}:{start_s:02d} – {end_m}:{end_s:02d} "
             f"of the match video.\n"
             f"\n"
-            f"Tag EVERY event you see from this list:\n"
+            f"Tag EVERY event you see. For each event, report BOTH a start and "
+            f"end timestamp that bound the full sequence (cause → action → effect).\n"
             f"\n"
-            f"GOAL — Ball enters the net. Signs: shot crossing goal line, "
-            f"player celebration (running, arms raised, team huddle), "
-            f"dejected opponents, restart from center circle.\n"
+            f"GOAL — A shot goes into the net AND is followed by a kickoff: "
+            f"all players walk to their own half, ball placed at center circle, "
+            f"play restarts from midfield. The kickoff restart is what confirms "
+            f"it was a goal (not a save or miss). This includes penalty kick goals.\n"
+            f"  START: when the shot is taken\n"
+            f"  END: when players line up at center circle for kickoff\n"
             f"\n"
-            f"GOAL_KICK — Goalkeeper places ball on or near the 6-yard box, "
-            f"kicks long upfield. Usually after a missed shot or cleared cross. "
-            f"Few players near goal, GK alone with ball.\n"
+            f"GOAL_KICK — Ball goes out of bounds past the back line (end line), "
+            f"then the goalkeeper sets the ball down near the 6-yard box, kicks "
+            f"or passes it to a teammate who receives and controls it.\n"
+            f"  START: when the ball goes out past the back line\n"
+            f"  END: when the receiving player touches/controls the ball\n"
             f"\n"
-            f"CORNER_KICK — Ball placed at corner flag, kicked into penalty "
-            f"area. Players crowding the box, waiting for the cross.\n"
+            f"CORNER_KICK — Ball goes out of bounds past the back line off a "
+            f"defender, then a player places the ball at the corner flag. "
+            f"Players from both teams crowd into the penalty box. The ball is "
+            f"kicked from the corner into the box.\n"
+            f"  START: when the ball goes out past the back line\n"
+            f"  END: when the ball leaves the penalty area after being kicked\n"
             f"\n"
-            f"SAVE_CATCH — Goalkeeper catches and holds the ball securely with "
-            f"both hands after a shot. Ball is secured, not released.\n"
+            f"SAVE_CATCH — A shot is taken and the goalkeeper catches and holds "
+            f"the ball securely with both hands.\n"
+            f"  START: when the shot is taken\n"
+            f"  END: when the ball is secured in the goalkeeper's hands\n"
             f"\n"
-            f"SAVE_PARRY — Goalkeeper deflects, pushes, or tips the ball away "
-            f"from the goal. Ball continues in play or goes out. GK makes a "
-            f"reaching or diving motion to redirect the ball.\n"
+            f"SAVE_PARRY — A shot is taken and the goalkeeper deflects, pushes, "
+            f"or tips the ball away from the goal.\n"
+            f"  START: when the shot is taken\n"
+            f"  END: when the ball goes out of bounds or is controlled by "
+            f"another player\n"
             f"\n"
-            f"PUNCH — Goalkeeper punches the ball away with fist(s), usually "
-            f"from a cross or corner kick. Ball struck upward/outward by fist.\n"
+            f"PUNCH — A cross or corner is played into the box and the "
+            f"goalkeeper punches the ball away with fist(s).\n"
+            f"  START: when the cross/corner is kicked\n"
+            f"  END: when the ball lands or is controlled by another player\n"
             f"\n"
-            f"Respond ONLY with a JSON array (no markdown, no extra text). "
-            f"Each event:\n"
+            f"Respond ONLY with a JSON array (no markdown, no extra text):\n"
             f'[{{"event_type": "goal"|"goal_kick"|"corner_kick"|'
             f'"save_catch"|"save_parry"|"punch",\n'
-            f'  "timestamp_sec": <seconds from START of this clip>,\n'
+            f'  "start_sec": <seconds from start of this clip when event begins>,\n'
+            f'  "end_sec": <seconds from start of this clip when event ends>,\n'
             f'  "confidence": 0.0-1.0,\n'
             f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
             f'  "reasoning": "brief description"}}]\n'
             f"\n"
             f"Rules:\n"
-            f"- timestamp_sec = 0 means the first frame of this clip\n"
+            f"- start_sec/end_sec = 0 means the first frame of this clip\n"
             f"- Only report events you clearly see — do not guess\n"
-            f"- For saves: timestamp is when the GK contacts the ball\n"
-            f"- For goals: timestamp is when the ball crosses the goal line\n"
-            f"- For goal kicks and corners: timestamp is when the ball is kicked\n"
+            f"- A goal MUST be followed by a center-circle kickoff. If you see "
+            f"a shot but no kickoff restart, it is a save or a miss, not a goal\n"
             f"- If no events, return: []\n"
         )
 
@@ -406,14 +422,18 @@ class ChunkTagger:
                 continue
             try:
                 event_type = str(item.get("event_type", "")).lower()
-                ts_sec = float(item.get("timestamp_sec", 0))
+                # Support both start_sec/end_sec and legacy timestamp_sec
+                start_sec = float(item.get("start_sec",
+                                           item.get("timestamp_sec", 0)))
+                end_sec = float(item.get("end_sec", start_sec + 1.0))
                 confidence = max(0.0, min(1.0, float(item.get("confidence", 0.0))))
                 team = str(item.get("team", "unknown"))
                 reasoning = str(item.get("reasoning", ""))
 
                 events.append(TaggedEvent(
                     event_type=event_type,
-                    timestamp_abs=chunk_start + ts_sec,
+                    timestamp_abs=chunk_start + start_sec,
+                    timestamp_end_abs=chunk_start + end_sec,
                     confidence=confidence,
                     team=team,
                     reasoning=reasoning,
@@ -440,20 +460,21 @@ class ChunkTagger:
                 and te.team.lower() == mc.opponent.team_name.lower()):
             is_gk = True
 
-        frame = max(0, int(te.timestamp_abs * fps))
+        frame_start = max(0, int(te.timestamp_abs * fps))
+        frame_end = max(frame_start, int(te.timestamp_end_abs * fps))
 
         return Event(
             event_id=str(uuid.uuid4()),
             job_id=self._job_id,
             source_file=self._source_file,
             event_type=event_type,
-            timestamp_start=te.timestamp_abs - 0.5,
-            timestamp_end=te.timestamp_abs + 0.5,
+            timestamp_start=te.timestamp_abs,
+            timestamp_end=te.timestamp_end_abs,
             confidence=te.confidence,
             reel_targets=[],
             is_goalkeeper_event=is_gk,
-            frame_start=max(0, frame - int(fps * 0.5)),
-            frame_end=frame + int(fps * 0.5),
+            frame_start=frame_start,
+            frame_end=frame_end,
             metadata={
                 "tagger_event_type": te.event_type,
                 "tagger_confidence": te.confidence,
@@ -511,6 +532,7 @@ class ChunkTagger:
                 {
                     "event_type": te.event_type,
                     "timestamp_abs": te.timestamp_abs,
+                    "timestamp_end_abs": te.timestamp_end_abs,
                     "confidence": te.confidence,
                     "team": te.team,
                     "reasoning": te.reasoning,

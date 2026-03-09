@@ -176,7 +176,8 @@ class TestBuildPrompt:
         tagger = _make_tagger()
         prompt = tagger._build_prompt(0.0, 150.0)
         assert "event_type" in prompt
-        assert "timestamp_sec" in prompt
+        assert "start_sec" in prompt
+        assert "end_sec" in prompt
         assert "confidence" in prompt
         assert "reasoning" in prompt
 
@@ -197,19 +198,21 @@ class TestParseResponse:
     def test_valid_json_array(self):
         tagger = _make_tagger()
         response = json.dumps([
-            {"event_type": "goal", "timestamp_sec": 45.0, "confidence": 0.9,
+            {"event_type": "goal", "start_sec": 45.0, "end_sec": 65.0, "confidence": 0.9,
              "team": "Rush", "reasoning": "Ball in net, celebration"},
-            {"event_type": "goal_kick", "timestamp_sec": 120.0, "confidence": 0.85,
+            {"event_type": "goal_kick", "start_sec": 120.0, "end_sec": 130.0, "confidence": 0.85,
              "team": "GA 2008", "reasoning": "GK kicks from 6-yard box"},
         ])
         events = tagger._parse_response(response, chunk_start=300.0)
         assert len(events) == 2
         assert events[0].event_type == "goal"
         assert events[0].timestamp_abs == 345.0  # 300 + 45
+        assert events[0].timestamp_end_abs == 365.0  # 300 + 65
         assert events[0].confidence == 0.9
         assert events[0].team == "Rush"
         assert events[1].event_type == "goal_kick"
         assert events[1].timestamp_abs == 420.0  # 300 + 120
+        assert events[1].timestamp_end_abs == 430.0  # 300 + 130
 
     def test_empty_array(self):
         tagger = _make_tagger()
@@ -218,14 +221,14 @@ class TestParseResponse:
 
     def test_markdown_wrapped(self):
         tagger = _make_tagger()
-        response = '```json\n[{"event_type": "goal", "timestamp_sec": 10.0, "confidence": 0.8, "team": "Rush", "reasoning": "goal scored"}]\n```'
+        response = '```json\n[{"event_type": "goal", "start_sec": 10.0, "end_sec": 30.0, "confidence": 0.8, "team": "Rush", "reasoning": "goal scored"}]\n```'
         events = tagger._parse_response(response, chunk_start=0.0)
         assert len(events) == 1
         assert events[0].event_type == "goal"
 
     def test_text_before_json(self):
         tagger = _make_tagger()
-        response = 'Here are the events:\n[{"event_type": "punch", "timestamp_sec": 5.0, "confidence": 0.7, "team": "Rush", "reasoning": "GK punched"}]'
+        response = 'Here are the events:\n[{"event_type": "punch", "start_sec": 5.0, "end_sec": 8.0, "confidence": 0.7, "team": "Rush", "reasoning": "GK punched"}]'
         events = tagger._parse_response(response, chunk_start=0.0)
         assert len(events) == 1
         assert events[0].event_type == "punch"
@@ -244,7 +247,7 @@ class TestParseResponse:
     def test_confidence_clamped(self):
         tagger = _make_tagger()
         response = json.dumps([
-            {"event_type": "goal", "timestamp_sec": 10.0, "confidence": 1.5,
+            {"event_type": "goal", "start_sec": 10.0, "end_sec": 30.0, "confidence": 1.5,
              "team": "Rush", "reasoning": "test"},
         ])
         events = tagger._parse_response(response, chunk_start=0.0)
@@ -253,12 +256,26 @@ class TestParseResponse:
     def test_missing_optional_fields_default(self):
         tagger = _make_tagger()
         response = json.dumps([
-            {"event_type": "goal_kick", "timestamp_sec": 50.0},
+            {"event_type": "goal_kick", "start_sec": 50.0},
         ])
         events = tagger._parse_response(response, chunk_start=0.0)
         assert len(events) == 1
         assert events[0].confidence == 0.0
         assert events[0].team == "unknown"
+        # end_sec defaults to start_sec + 1.0
+        assert events[0].timestamp_end_abs == 51.0
+
+    def test_legacy_timestamp_sec_still_works(self):
+        """Backward compat: timestamp_sec without start_sec/end_sec."""
+        tagger = _make_tagger()
+        response = json.dumps([
+            {"event_type": "goal", "timestamp_sec": 45.0, "confidence": 0.9,
+             "team": "Rush", "reasoning": "old format"},
+        ])
+        events = tagger._parse_response(response, chunk_start=300.0)
+        assert len(events) == 1
+        assert events[0].timestamp_abs == 345.0
+        assert events[0].timestamp_end_abs == 346.0  # default +1s
 
     def test_non_list_response_returns_empty(self):
         tagger = _make_tagger()
@@ -269,10 +286,10 @@ class TestParseResponse:
     def test_mixed_valid_invalid_items(self):
         tagger = _make_tagger()
         response = json.dumps([
-            {"event_type": "goal", "timestamp_sec": 10.0, "confidence": 0.9,
+            {"event_type": "goal", "start_sec": 10.0, "end_sec": 30.0, "confidence": 0.9,
              "team": "Rush", "reasoning": "scored"},
             "invalid item",
-            {"event_type": "corner_kick", "timestamp_sec": 80.0, "confidence": 0.8,
+            {"event_type": "corner_kick", "start_sec": 80.0, "end_sec": 95.0, "confidence": 0.8,
              "team": "GA 2008", "reasoning": "corner"},
         ])
         events = tagger._parse_response(response, chunk_start=0.0)
@@ -287,62 +304,62 @@ class TestParseResponse:
 class TestMakeEvent:
     def test_goal_kick_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal_kick", 100.0, 0.85, "Rush", "GK kicks")
+        te = TaggedEvent("goal_kick", 100.0, 110.0, 0.85, "Rush", "GK kicks")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.GOAL_KICK
 
     def test_save_catch_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("save_catch", 200.0, 0.90, "Rush", "GK catches")
+        te = TaggedEvent("save_catch", 200.0, 202.0, 0.90, "Rush", "GK catches")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.CATCH
 
     def test_save_parry_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("save_parry", 200.0, 0.80, "Rush", "GK parries")
+        te = TaggedEvent("save_parry", 200.0, 204.0, 0.80, "Rush", "GK parries")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.SHOT_STOP_DIVING
 
     def test_punch_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("punch", 300.0, 0.75, "Rush", "GK punches")
+        te = TaggedEvent("punch", 300.0, 303.0, 0.75, "Rush", "GK punches")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.PUNCH
 
     def test_goal_by_team_is_not_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal", 500.0, 0.95, "Rush", "Rush scores")
+        te = TaggedEvent("goal", 500.0, 520.0, 0.95, "Rush", "Rush scores")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is False
         assert event.event_type == EventType.GOAL
 
     def test_goal_conceded_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal", 500.0, 0.90, "GA 2008", "Opponent scores")
+        te = TaggedEvent("goal", 500.0, 520.0, 0.90, "GA 2008", "Opponent scores")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.GOAL
 
     def test_goal_unknown_team_not_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal", 500.0, 0.85, "unknown", "Goal scored")
+        te = TaggedEvent("goal", 500.0, 520.0, 0.85, "unknown", "Goal scored")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is False
 
     def test_event_timestamps(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal_kick", 100.0, 0.85, "Rush", "GK kicks")
+        te = TaggedEvent("goal_kick", 100.0, 110.0, 0.85, "Rush", "GK kicks")
         event = tagger._make_event(te, fps=30.0)
-        assert event.timestamp_start == 99.5
-        assert event.timestamp_end == 100.5
+        assert event.timestamp_start == 100.0
+        assert event.timestamp_end == 110.0
 
     def test_event_metadata(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal", 100.0, 0.95, "Rush", "Great goal")
+        te = TaggedEvent("goal", 100.0, 120.0, 0.95, "Rush", "Great goal")
         event = tagger._make_event(te, fps=30.0)
         assert event.metadata["tagger_event_type"] == "goal"
         assert event.metadata["tagger_confidence"] == 0.95
@@ -352,10 +369,10 @@ class TestMakeEvent:
 
     def test_event_frame_numbers(self):
         tagger = _make_tagger()
-        te = TaggedEvent("corner_kick", 100.0, 0.80, "Rush", "Corner")
+        te = TaggedEvent("corner_kick", 100.0, 115.0, 0.80, "Rush", "Corner")
         event = tagger._make_event(te, fps=30.0)
-        assert event.frame_start == 2985  # (100.0 - 0.5) * 30
-        assert event.frame_end == 3015    # (100.0 + 0.5) * 30
+        assert event.frame_start == 3000  # 100.0 * 30
+        assert event.frame_end == 3450   # 115.0 * 30
 
 
 # ---------------------------------------------------------------------------
@@ -366,16 +383,16 @@ class TestMakeEvent:
 class TestDeduplicate:
     def test_no_duplicates_unchanged(self):
         tagger = _make_tagger()
-        te1 = TaggedEvent("goal_kick", 100.0, 0.85, "Rush", "GK kicks")
-        te2 = TaggedEvent("goal_kick", 500.0, 0.80, "Rush", "GK kicks again")
+        te1 = TaggedEvent("goal_kick", 100.0, 110.0, 0.85, "Rush", "GK kicks")
+        te2 = TaggedEvent("goal_kick", 500.0, 510.0, 0.80, "Rush", "GK kicks again")
         events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
         deduped = tagger._deduplicate(events)
         assert len(deduped) == 2
 
     def test_duplicate_in_overlap_keeps_higher_confidence(self):
         tagger = _make_tagger()
-        te1 = TaggedEvent("goal_kick", 140.0, 0.75, "Rush", "From chunk 1")
-        te2 = TaggedEvent("goal_kick", 142.0, 0.90, "Rush", "From chunk 2")
+        te1 = TaggedEvent("goal_kick", 140.0, 150.0, 0.75, "Rush", "From chunk 1")
+        te2 = TaggedEvent("goal_kick", 142.0, 152.0, 0.90, "Rush", "From chunk 2")
         events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
         deduped = tagger._deduplicate(events)
         assert len(deduped) == 1
@@ -383,8 +400,8 @@ class TestDeduplicate:
 
     def test_different_types_not_deduplicated(self):
         tagger = _make_tagger()
-        te1 = TaggedEvent("goal_kick", 100.0, 0.85, "Rush", "Goal kick")
-        te2 = TaggedEvent("corner_kick", 102.0, 0.80, "GA 2008", "Corner")
+        te1 = TaggedEvent("goal_kick", 100.0, 110.0, 0.85, "Rush", "Goal kick")
+        te2 = TaggedEvent("corner_kick", 102.0, 112.0, 0.80, "GA 2008", "Corner")
         events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
         deduped = tagger._deduplicate(events)
         assert len(deduped) == 2
@@ -395,16 +412,16 @@ class TestDeduplicate:
 
     def test_single_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("goal", 100.0, 0.95, "Rush", "Goal")
+        te = TaggedEvent("goal", 100.0, 120.0, 0.95, "Rush", "Goal")
         events = [tagger._make_event(te, 30.0)]
         deduped = tagger._deduplicate(events)
         assert len(deduped) == 1
 
     def test_three_way_duplicate_keeps_best(self):
         tagger = _make_tagger()
-        te1 = TaggedEvent("save_catch", 140.0, 0.70, "Rush", "Save 1")
-        te2 = TaggedEvent("save_catch", 142.0, 0.95, "Rush", "Save 2")
-        te3 = TaggedEvent("save_catch", 144.0, 0.80, "Rush", "Save 3")
+        te1 = TaggedEvent("save_catch", 140.0, 142.0, 0.70, "Rush", "Save 1")
+        te2 = TaggedEvent("save_catch", 142.0, 144.0, 0.95, "Rush", "Save 2")
+        te3 = TaggedEvent("save_catch", 144.0, 146.0, 0.80, "Rush", "Save 3")
         events = [
             tagger._make_event(te1, 30.0),
             tagger._make_event(te2, 30.0),
@@ -417,8 +434,8 @@ class TestDeduplicate:
     def test_proximity_threshold(self):
         tagger = _make_tagger()
         # Events 11s apart — outside default 10s proximity, should NOT merge
-        te1 = TaggedEvent("goal_kick", 100.0, 0.85, "Rush", "GK kicks")
-        te2 = TaggedEvent("goal_kick", 111.0, 0.80, "Rush", "GK kicks")
+        te1 = TaggedEvent("goal_kick", 100.0, 110.0, 0.85, "Rush", "GK kicks")
+        te2 = TaggedEvent("goal_kick", 111.0, 121.0, 0.80, "Rush", "GK kicks")
         events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
         deduped = tagger._deduplicate(events)
         assert len(deduped) == 2
@@ -433,8 +450,8 @@ class TestConfidenceFilter:
     def test_below_threshold_excluded(self):
         """tag_video filters events below min_confidence."""
         tagger = _make_tagger(min_confidence=0.6)
-        te_low = TaggedEvent("goal_kick", 100.0, 0.4, "Rush", "Low conf")
-        te_high = TaggedEvent("goal_kick", 200.0, 0.8, "Rush", "High conf")
+        te_low = TaggedEvent("goal_kick", 100.0, 110.0, 0.4, "Rush", "Low conf")
+        te_high = TaggedEvent("goal_kick", 200.0, 210.0, 0.8, "Rush", "High conf")
         # Directly test the filter logic from tag_video
         assert te_low.confidence < tagger._min_confidence
         assert te_high.confidence >= tagger._min_confidence
@@ -499,7 +516,7 @@ class TestTagVideoMocked:
         # First chunk errors, second succeeds
         mock_tag.side_effect = [
             Exception("API down"),
-            ([TaggedEvent("goal", 50.0, 0.9, "Rush", "Goal")], '[]'),
+            ([TaggedEvent("goal", 50.0, 70.0, 0.9, "Rush", "Goal")], '[]'),
         ]
 
         events = tagger.tag_video(300.0, fps=30.0)
@@ -512,8 +529,8 @@ class TestTagVideoMocked:
         mock_extract.return_value = MagicMock()
 
         # Same event in overlap zone from two chunks
-        events_chunk1 = [TaggedEvent("goal_kick", 140.0, 0.75, "Rush", "GK kicks")]
-        events_chunk2 = [TaggedEvent("goal_kick", 142.0, 0.90, "Rush", "GK kicks")]
+        events_chunk1 = [TaggedEvent("goal_kick", 140.0, 150.0, 0.75, "Rush", "GK kicks")]
+        events_chunk2 = [TaggedEvent("goal_kick", 142.0, 152.0, 0.90, "Rush", "GK kicks")]
         mock_tag.side_effect = [
             (events_chunk1, "[]"),
             (events_chunk2, "[]"),

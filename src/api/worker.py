@@ -259,6 +259,11 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         from src.detection.chunk_tagger import ChunkTagger
 
         def on_vllm_progress(completed: int, total: int):
+            job = store.get(job_id)
+            if job and job.cancel_requested:
+                raise PipelineCancelled(f"Job {job_id} cancelled by user")
+            if job and job.pause_requested:
+                raise PipelinePaused(f"Job {job_id} paused by user")
             pct = 5.0 + (completed / total) * 85.0  # 5% → 90%
             store.update_status(job_id, JobStatus.DETECTING, progress=pct)
 
@@ -275,11 +280,20 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
             working_dir=cfg.WORKING_DIR,
         )
-        tagged_events = tagger.tag_video(
-            video_duration=vf.duration_sec,
-            fps=vf.fps,
-            progress_callback=on_vllm_progress,
-        )
+        try:
+            tagged_events = tagger.tag_video(
+                video_duration=vf.duration_sec,
+                fps=vf.fps,
+                progress_callback=on_vllm_progress,
+            )
+        except PipelinePaused:
+            interrupted = "paused"
+            tagged_events = []
+            log.info("pipeline.paused_partial", job_id=job_id, stage="chunk_tagger")
+        except PipelineCancelled:
+            interrupted = "cancelled"
+            tagged_events = []
+            log.info("pipeline.cancelled_partial", job_id=job_id, stage="chunk_tagger")
         for te in tagged_events:
             event_log.append(te)
         log.info("pipeline.chunk_tagger_complete",
