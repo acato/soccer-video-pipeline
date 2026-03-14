@@ -140,8 +140,11 @@ class ChunkTagger:
 
         all_events: list[Event] = []
         all_kickoffs: list[TaggedEvent] = []
+        # Track per-chunk event counts for hallucination detection
+        chunk_event_counts: list[tuple[float, float, int]] = []
 
         for i, (start, end) in enumerate(chunks):
+            chunk_events_in_pass = 0
             try:
                 chunk_path = self._extract_chunk(start, end, i)
                 if chunk_path is None:
@@ -153,6 +156,7 @@ class ChunkTagger:
 
                 self._save_debug(i, start, end, raw_response, tagged)
 
+                chunk_events_in_pass = len(tagged)
                 for te in tagged:
                     if te.event_type == "kickoff":
                         all_kickoffs.append(te)
@@ -177,10 +181,17 @@ class ChunkTagger:
                           chunk=i, start=start, error=str(exc))
                 continue
             finally:
+                chunk_event_counts.append((start, end, chunk_events_in_pass))
                 if progress_callback:
                     progress_callback(i + 1, total)
 
-        # --- Pass 2: rescan orphan kickoffs at high FPS ---
+        # --- Pass 2: rescan hallucinating chunks at high FPS ---
+        halluc_events = self._rescan_hallucinating_chunks(
+            chunk_event_counts, all_events, fps,
+        )
+        all_events.extend(halluc_events)
+
+        # --- Pass 3: rescan orphan kickoffs at high FPS ---
         rescan_events = self._rescan_orphan_kickoffs(
             all_kickoffs, all_events, fps, video_duration,
         )
@@ -191,7 +202,8 @@ class ChunkTagger:
                  chunks=total,
                  raw_events=len(all_events),
                  kickoffs=len(all_kickoffs),
-                 rescans=len(rescan_events),
+                 halluc_rescans=len(halluc_events),
+                 goal_rescans=len(rescan_events),
                  deduped_events=len(deduped),
                  debug_dir=str(self._debug_dir))
         return deduped
@@ -323,10 +335,13 @@ class ChunkTagger:
 
     # ----- prompt construction ----------------------------------------------
 
-    def _build_prompt(self, chunk_start: float, chunk_end: float) -> str:
+    def _build_prompt(
+        self, chunk_start: float, chunk_end: float, fps_override: int = 0,
+    ) -> str:
         """Build tagging prompt with match context."""
         mc = self._match_config
         duration = chunk_end - chunk_start
+        prompt_fps = fps_override or self._chunk_fps
 
         # Format timestamps as mm:ss
         start_m, start_s = divmod(int(chunk_start), 60)
@@ -335,7 +350,7 @@ class ChunkTagger:
         return (
             f"You are analyzing a {duration:.0f}-second video clip from a youth "
             f"soccer match. Camera: fixed sideline position. "
-            f"Video: {self._chunk_fps} frames per second.\n"
+            f"Video: {prompt_fps} frames per second.\n"
             f"\n"
             f"Match: {mc.team.team_name} "
             f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
@@ -544,7 +559,178 @@ class ChunkTagger:
             },
         )
 
-    # ----- kickoff rescan (pass 2) -----------------------------------------
+    # ----- hallucination rescan (pass 2) ------------------------------------
+
+    # Max events per minute of chunk duration before we consider it hallucination
+    _HALLUC_EVENTS_PER_MIN = 8.0
+
+    def _rescan_hallucinating_chunks(
+        self,
+        chunk_event_counts: list[tuple[float, float, int]],
+        all_events: list[Event],
+        fps: float,
+    ) -> list[Event]:
+        """Detect hallucinating chunks and rescan them at high FPS.
+
+        When a chunk has an abnormally high event count (>8 per minute), the
+        model is likely fabricating repetitive events. Discard those events
+        and re-query the region with shorter 15s chunks at rescan_fps for
+        focused analysis.
+        """
+        halluc_chunks: list[tuple[float, float]] = []
+
+        for start, end, count in chunk_event_counts:
+            duration_min = (end - start) / 60.0
+            threshold = max(6, int(self._HALLUC_EVENTS_PER_MIN * duration_min))
+            if count > threshold:
+                halluc_chunks.append((start, end))
+                log.warning("chunk_tagger.hallucination_detected",
+                            start=start, end=end, events=count,
+                            threshold=threshold)
+
+        if not halluc_chunks:
+            return []
+
+        # Remove events from hallucinating chunk time ranges
+        removed = 0
+        for hc_start, hc_end in halluc_chunks:
+            before = len(all_events)
+            all_events[:] = [
+                e for e in all_events
+                if not (hc_start <= e.timestamp_start <= hc_end)
+            ]
+            removed += before - len(all_events)
+
+        log.info("chunk_tagger.halluc_events_removed", count=removed)
+
+        # Rescan each hallucinating chunk region at high FPS
+        new_events: list[Event] = []
+        for hc_start, hc_end in halluc_chunks:
+            events = self._rescan_region(hc_start, hc_end, fps)
+            new_events.extend(events)
+
+        log.info("chunk_tagger.halluc_rescan_complete",
+                 chunks_rescanned=len(halluc_chunks),
+                 events_found=len(new_events))
+        return new_events
+
+    def _rescan_region(
+        self,
+        region_start: float,
+        region_end: float,
+        fps: float,
+    ) -> list[Event]:
+        """Rescan a region at high FPS with 15s sub-chunks."""
+        chunk_dur = 15.0
+        sub_chunks: list[tuple[float, float]] = []
+        t = region_start
+        while t < region_end:
+            c_end = min(t + chunk_dur, region_end)
+            if c_end - t >= 3.0:
+                sub_chunks.append((t, c_end))
+            t += chunk_dur
+
+        log.info("chunk_tagger.rescan_region",
+                 start=region_start, end=region_end,
+                 sub_chunks=len(sub_chunks), fps=self._rescan_fps)
+
+        events: list[Event] = []
+        for i, (start, end) in enumerate(sub_chunks):
+            chunk_path = self._extract_rescan_chunk(
+                start, end, region_start, i,
+            )
+            if chunk_path is None:
+                continue
+
+            tagged, raw_response = self._tag_rescan_region_chunk(
+                chunk_path, start, end, fps,
+            )
+            self._save_debug(
+                index=f"halluc_{region_start:.0f}_{i}",
+                start=start, end=end,
+                raw_response=raw_response, tagged=tagged,
+            )
+
+            for te in tagged:
+                if te.event_type == "kickoff":
+                    continue  # kickoffs handled by pass 3
+                if (te.event_type in _TAG_TO_EVENT
+                        and te.confidence >= self._min_confidence):
+                    event = self._make_event(te, fps)
+                    event.metadata["halluc_rescan"] = True
+                    event.metadata["rescan_fps"] = self._rescan_fps
+                    events.append(event)
+                    log.info("chunk_tagger.halluc_rescan_event",
+                             event_type=te.event_type,
+                             timestamp=te.timestamp_abs,
+                             confidence=te.confidence,
+                             team=te.team,
+                             reasoning=te.reasoning)
+
+        return events
+
+    def _tag_rescan_region_chunk(
+        self,
+        chunk_path: Path,
+        chunk_start: float,
+        chunk_end: float,
+        fps: float,
+    ) -> tuple[list[TaggedEvent], str]:
+        """Send a high-FPS sub-chunk to vLLM with the standard prompt."""
+        import httpx
+
+        # Use the standard prompt with rescan FPS so timestamps are accurate
+        prompt = self._build_prompt(chunk_start, chunk_end,
+                                    fps_override=self._rescan_fps)
+
+        video_bytes = chunk_path.read_bytes()
+        video_b64 = base64.b64encode(video_bytes).decode()
+        video_data_url = f"data:video/mp4;base64,{video_b64}"
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": video_data_url},
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                },
+            ],
+            "max_tokens": 2048,
+        }
+
+        try:
+            resp = httpx.post(
+                f"{self._vllm_url}/v1/chat/completions",
+                json=payload,
+                timeout=600.0,
+            )
+            if resp.status_code != 200:
+                body = resp.text[:500]
+                log.error("chunk_tagger.halluc_rescan_api_error",
+                          status=resp.status_code, body=body)
+                return [], f"HTTP_{resp.status_code}: {body}"
+            data = resp.json()
+            text = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            events = self._parse_response(text, chunk_start)
+            return events, text
+        except Exception as exc:
+            log.error("chunk_tagger.halluc_rescan_api_error", error=str(exc))
+            return [], f"API_ERROR: {exc}"
+
+    # ----- kickoff rescan (pass 3) -----------------------------------------
 
     def _rescan_orphan_kickoffs(
         self,
