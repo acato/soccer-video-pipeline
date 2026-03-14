@@ -66,8 +66,8 @@ class TestEventShouldInclude:
                 reel_targets=["highlights"],
                 frame_start=300, frame_end=330,
             )
-        assert not make_goal(0.84).should_include()  # Below 0.85 threshold
-        assert make_goal(0.85).should_include()
+        assert not make_goal(0.49).should_include()  # Below 0.50 threshold
+        assert make_goal(0.50).should_include()
         assert make_goal(0.90).should_include()
 
     def test_review_override_true_forces_include(self):

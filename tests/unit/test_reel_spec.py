@@ -105,8 +105,8 @@ class TestEventTypeConfig:
     def test_goal_kick_has_extended_padding(self):
         cfg = EVENT_TYPE_CONFIG[EventType.GOAL_KICK]
         assert cfg.pre_pad_sec == 10.0
-        assert cfg.post_pad_sec == 3.0
-        assert cfg.max_clip_sec == 35.0
+        assert cfg.post_pad_sec == 15.0
+        assert cfg.max_clip_sec == 45.0
 
 
 # ===========================================================================
@@ -134,6 +134,7 @@ class TestReelSpec:
         assert "shot_stop_diving" in keeper.event_types
         assert "corner_kick" in keeper.event_types
         assert "penalty" in keeper.event_types
+        assert "goal" in keeper.event_types
 
     def test_highlights_preset_has_shot_types(self):
         hl = REEL_PRESETS["highlights"]
@@ -228,14 +229,14 @@ class TestComputeClipsV2:
         clips = compute_clips_v2([event], video_duration=5400.0, reel_name="keeper")
         assert len(clips) == 1
         assert clips[0].start_sec == pytest.approx(50.0)  # 60 - 10
-        assert clips[0].end_sec == pytest.approx(64.0)     # 61 + 3
+        assert clips[0].end_sec == pytest.approx(76.0)     # 61 + 15
 
     def test_goal_uses_wide_padding(self):
         event = _make_event(EventType.GOAL, start=100.0)
         clips = compute_clips_v2([event], video_duration=5400.0, reel_name="highlights")
         assert len(clips) == 1
-        assert clips[0].start_sec == pytest.approx(95.0)   # 100 - 5
-        assert clips[0].end_sec == pytest.approx(109.0)     # 101 + 8
+        assert clips[0].start_sec == pytest.approx(90.0)   # 100 - 10
+        assert clips[0].end_sec == pytest.approx(116.0)     # 101 + 15
 
     def test_empty_events_returns_empty(self):
         clips = compute_clips_v2([], video_duration=5400.0)

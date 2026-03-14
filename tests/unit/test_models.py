@@ -42,7 +42,7 @@ class TestEventModel:
         ev = Event(
             job_id="j1", source_file="m.mp4",
             event_type=EventType.GOAL, timestamp_start=10, timestamp_end=11,
-            confidence=0.50,  # Below GOAL threshold of 0.85
+            confidence=0.40,  # Below GOAL threshold of 0.50
             reel_targets=["highlights"],
             frame_start=300, frame_end=330,
         )

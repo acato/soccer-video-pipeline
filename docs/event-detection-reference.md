@@ -13,7 +13,7 @@ class ReelSpec(BaseModel):
     max_reel_duration_sec: float = 1200.0
 ```
 
-Four presets are available: `"keeper"` (all GK event types), `"highlights"` (shot/goal types), `"goal_kicks"` (goal kicks only), and `"corner_kicks"` (corner kicks only). Users can also build custom reels by selecting individual event types.
+Five presets are available: `"keeper"` (all GK event types + goals), `"highlights"` (shot/goal types), `"goal_kicks"` (goal kicks only), `"corner_kicks"` (corner kicks only), and `"goals"` (goals only). Users can also build custom reels by selecting individual event types.
 
 Each event type has a per-type configuration in `EVENT_TYPE_CONFIG` (`src/detection/models.py`):
 
@@ -23,15 +23,15 @@ Each event type has a per-type configuration in `EVENT_TYPE_CONFIG` (`src/detect
 | SHOT_STOP_STANDING | goalkeeper | 8.0s | 2.0s | 25s | 0.70 | Yes |
 | PUNCH | goalkeeper | 8.0s | 2.0s | 25s | 0.65 | Yes |
 | CATCH | goalkeeper | 8.0s | 2.0s | 25s | 0.70 | Yes |
-| GOAL_KICK | goalkeeper | 10.0s | 3.0s | 35s | 0.65 | Yes |
+| GOAL_KICK | goalkeeper | 10.0s | 15.0s | 45s | 0.65 | Yes |
 | DISTRIBUTION_SHORT | goalkeeper | 1.0s | 2.0s | 20s | 0.65 | Yes |
 | DISTRIBUTION_LONG | goalkeeper | 1.0s | 2.0s | 20s | 0.68 | Yes |
 | ONE_ON_ONE | goalkeeper | 3.0s | 2.0s | 30s | 0.75 | Yes |
-| CORNER_KICK | goalkeeper | 3.0s | 2.0s | 25s | 0.65 | Yes |
-| PENALTY | goalkeeper | 3.0s | 2.0s | 25s | 0.60 | Yes |
+| CORNER_KICK | goalkeeper | 5.0s | 12.0s | 35s | 0.65 | Yes |
+| PENALTY | goalkeeper | 8.0s | 2.0s | 25s | 0.60 | Yes |
 | SHOT_ON_TARGET | highlights | 3.0s | 5.0s | 30s | 0.70 | No |
 | SHOT_OFF_TARGET | highlights | 3.0s | 5.0s | 30s | 0.65 | No |
-| GOAL | highlights | 5.0s | 8.0s | 60s | 0.85 | No |
+| GOAL | highlights+keeper | 10.0s | 15.0s | 60s | 0.50 | Opponent goals |
 | NEAR_MISS | highlights | 3.0s | 5.0s | 30s | 0.70 | No |
 | FREE_KICK_SHOT | highlights | 3.0s | 5.0s | 30s | 0.65 | No |
 | DRIBBLE_SEQUENCE | highlights | 3.0s | 5.0s | 30s | 0.65 | No |
@@ -460,7 +460,7 @@ When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTag
 | `free_kick` | FREE_KICK_SHOT | No | Ball placed down → kicked with no one approaching. |
 | `shot` | SHOT_ON_TARGET | No | Ball struck toward goal → goes out past back line (miss). Only when no GK touch or goal. |
 | `corner_kick` | CORNER_KICK | Yes | Ball placed on corner arc → kicked into penalty area. |
-| `goal_kick` | GOAL_KICK | Yes | Ball placed in 6-yard box → kicked by GK/defender → no opponents in box. |
+| `goal_kick` | GOAL_KICK | Yes | Ball placed on ground in six-yard box → kicked by GK/defender → no opponents in box. NOT a throw-in. |
 | `catch` | CATCH | Yes | GK grabs ball and holds it. |
 | `save` | SHOT_STOP_DIVING | Yes | Shot → keeper touch/deflection → ball out for corner. |
 
@@ -469,6 +469,8 @@ When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTag
 - GOAL requires confirmation by center-circle kickoff (no kickoff = not a goal)
 - SAVE always ends with a corner kick; if keeper holds the ball = CATCH
 - SHOT is only tagged when the outcome is a miss (not goal/save/catch)
+- Throw-ins are NOT goal kicks — a throw-in is a player holding the ball overhead at the sideline
+- KICKOFF only happens from the exact center circle after a goal or at halftime — not after any other stoppage
 - "team" field = team performing the action (scoring team, GK's team, kicking team)
 
 ### Kickoff-Based Goal Recovery (Two-Pass)

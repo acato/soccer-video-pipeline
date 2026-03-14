@@ -73,7 +73,7 @@ class ReelSpec(BaseModel):
 _ALL_GK_EVENT_TYPES = [
     "shot_stop_diving", "shot_stop_standing", "punch", "catch",
     "goal_kick", "distribution_short", "distribution_long",
-    "one_on_one", "corner_kick", "penalty",
+    "one_on_one", "corner_kick", "penalty", "goal",
 ]
 
 _ALL_HIGHLIGHTS_EVENT_TYPES = [

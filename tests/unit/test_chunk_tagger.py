@@ -668,3 +668,16 @@ class TestRescanOrphanKickoffs:
         prompt = tagger._build_prompt(0.0, 150.0)
         assert "KICKOFF" in prompt
         assert '"kickoff"' in prompt
+
+    def test_prompt_warns_throw_in_not_goal_kick(self):
+        """Prompt should warn against confusing throw-ins with goal kicks."""
+        tagger = _make_tagger()
+        prompt = tagger._build_prompt(0.0, 150.0)
+        assert "throw-in" in prompt.lower()
+
+    def test_prompt_kickoff_only_after_goal(self):
+        """Prompt should clarify kickoff only happens after a goal/halftime."""
+        tagger = _make_tagger()
+        prompt = tagger._build_prompt(0.0, 150.0)
+        assert "center circle" in prompt.lower()
+        assert "after a goal" in prompt.lower()
