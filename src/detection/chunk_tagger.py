@@ -294,6 +294,7 @@ class ChunkTagger:
                 },
             ],
             "max_tokens": 2048,
+            "temperature": 0.0,
         }
 
         try:
@@ -751,6 +752,7 @@ class ChunkTagger:
                 },
             ],
             "max_tokens": 1024,
+            "temperature": 0.0,
         }
 
         try:
