@@ -471,6 +471,17 @@ When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTag
 - SHOT is only tagged when the outcome is a miss (not goal/save/catch)
 - "team" field = team performing the action (scoring team, GK's team, kicking team)
 
+### Kickoff-Based Goal Recovery (Two-Pass)
+
+Fast goals (breakouts, quick shots) can be invisible at 2 FPS. The tagger detects these via kickoffs:
+
+1. **Pass 1 (2 FPS)**: Tags all events including `kickoff` (center-circle restart)
+2. **Orphan detection**: A kickoff not preceded by a detected goal within 90s, and not halftime (>120s event gap), implies a missed goal
+3. **Pass 2 (8 FPS)**: Extracts the 30s before the orphan kickoff in 15s chunks at 8 FPS, sends to vLLM with a focused "find the goal" prompt
+4. Goal events from the rescan are added to the event list
+
+Config: `VLLM_RESCAN_FPS` (default 8), `VLLM_RESCAN_PRE_SEC` (default 30).
+
 ### Deduplication
 
 Events from overlapping chunks are deduplicated: same event type within 10s proximity → keep higher confidence.

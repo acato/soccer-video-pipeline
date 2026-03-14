@@ -279,6 +279,8 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             chunk_fps=int(cfg.VLLM_CHUNK_FPS),
             min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
             working_dir=cfg.WORKING_DIR,
+            rescan_fps=int(getattr(cfg, "VLLM_RESCAN_FPS", "8")),
+            rescan_pre_sec=float(getattr(cfg, "VLLM_RESCAN_PRE_SEC", "30")),
         )
         try:
             tagged_events = tagger.tag_video(

@@ -574,3 +574,97 @@ class TestTagVideoMocked:
         # Should deduplicate to 1 event with higher confidence
         assert len(events) == 1
         assert events[0].confidence == 0.90
+
+
+# ---------------------------------------------------------------------------
+# Orphan kickoff rescan
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestRescanOrphanKickoffs:
+    def test_no_kickoffs_no_rescan(self):
+        tagger = _make_tagger()
+        result = tagger._rescan_orphan_kickoffs([], [], fps=30.0, video_duration=6000.0)
+        assert result == []
+
+    def test_kickoff_with_preceding_goal_skipped(self):
+        """Kickoff preceded by a goal within 90s is not an orphan."""
+        tagger = _make_tagger()
+        kickoffs = [TaggedEvent("kickoff", 850.0, 850.0, 0.9, "unknown", "Kickoff")]
+        # Goal at 830s — within 90s of kickoff
+        goal_te = TaggedEvent("goal", 830.0, 840.0, 0.95, "Rush", "Goal")
+        events = [tagger._make_event(goal_te, 30.0)]
+        result = tagger._rescan_orphan_kickoffs(kickoffs, events, 30.0, 6000.0)
+        assert result == []
+
+    def test_kickoff_early_in_video_skipped(self):
+        """Kickoffs in first 60s are match-start, not goal kickoffs."""
+        tagger = _make_tagger()
+        kickoffs = [TaggedEvent("kickoff", 30.0, 30.0, 0.9, "unknown", "Match start")]
+        result = tagger._rescan_orphan_kickoffs(kickoffs, [], 30.0, 6000.0)
+        assert result == []
+
+    def test_kickoff_after_long_gap_is_halftime(self):
+        """Kickoff preceded by >120s gap with no events is halftime."""
+        tagger = _make_tagger()
+        kickoffs = [TaggedEvent("kickoff", 3600.0, 3600.0, 0.9, "unknown", "2nd half")]
+        # Last event was at 3400s — 200s gap = halftime
+        gk_te = TaggedEvent("goal_kick", 3400.0, 3410.0, 0.8, "Rush", "GK")
+        events = [tagger._make_event(gk_te, 30.0)]
+        result = tagger._rescan_orphan_kickoffs(kickoffs, events, 30.0, 6000.0)
+        assert result == []
+
+    @patch("src.detection.chunk_tagger.ChunkTagger._rescan_for_goal")
+    def test_orphan_kickoff_triggers_rescan(self, mock_rescan):
+        """Kickoff with no preceding goal and continuous play triggers rescan."""
+        tagger = _make_tagger()
+        kickoffs = [TaggedEvent("kickoff", 850.0, 850.0, 0.9, "unknown", "Kickoff")]
+        # Events at 800s and 810s — play was happening, but no goal detected
+        te1 = TaggedEvent("catch", 800.0, 802.0, 0.8, "Rush", "GK catch")
+        te2 = TaggedEvent("goal_kick", 810.0, 820.0, 0.7, "Rush", "Goal kick")
+        events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
+
+        mock_rescan.return_value = []
+        tagger._rescan_orphan_kickoffs(kickoffs, events, 30.0, 6000.0)
+        mock_rescan.assert_called_once()
+
+    def test_duplicate_kickoffs_deduped(self):
+        """Kickoffs within 15s of each other are deduped."""
+        tagger = _make_tagger()
+        # Two kickoffs 5s apart (from overlapping chunks)
+        ko1 = TaggedEvent("kickoff", 850.0, 850.0, 0.8, "unknown", "KO1")
+        ko2 = TaggedEvent("kickoff", 855.0, 855.0, 0.9, "unknown", "KO2")
+        # Event at 820s so they're not halftime and not start-of-match
+        te = TaggedEvent("catch", 820.0, 822.0, 0.8, "Rush", "Catch")
+        events = [tagger._make_event(te, 30.0)]
+
+        with patch.object(tagger, "_rescan_for_goal", return_value=[]) as mock:
+            tagger._rescan_orphan_kickoffs([ko1, ko2], events, 30.0, 6000.0)
+            # Only one rescan despite two kickoffs
+            assert mock.call_count == 1
+
+    def test_rescan_prompt_contains_kickoff_context(self):
+        """Rescan prompt mentions the kickoff timestamp."""
+        tagger = _make_tagger()
+        prompt = tagger._build_rescan_prompt(820.0, 850.0, 855.0)
+        assert "kickoff" in prompt.lower()
+        assert "14:15" in prompt  # 855s = 14:15
+        assert "goal" in prompt.lower()
+        assert str(tagger._rescan_fps) in prompt
+
+    def test_rescan_prompt_contains_match_info(self):
+        tagger = _make_tagger()
+        prompt = tagger._build_rescan_prompt(820.0, 850.0, 855.0)
+        assert "Rush" in prompt
+        assert "GA 2008" in prompt
+
+    def test_kickoff_not_in_tag_to_event(self):
+        """Kickoff is a detection signal, not a pipeline event type."""
+        assert "kickoff" not in _TAG_TO_EVENT
+
+    def test_prompt_contains_kickoff_event_type(self):
+        """The main prompt should include kickoff as a taggable type."""
+        tagger = _make_tagger()
+        prompt = tagger._build_prompt(0.0, 150.0)
+        assert "KICKOFF" in prompt
+        assert '"kickoff"' in prompt

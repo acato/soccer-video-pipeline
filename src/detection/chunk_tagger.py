@@ -90,6 +90,8 @@ class ChunkTagger:
         chunk_fps: int = 2,
         min_confidence: float = 0.5,
         working_dir: Optional[str] = None,
+        rescan_fps: int = 8,
+        rescan_pre_sec: float = 30.0,
     ):
         self._vllm_url = vllm_url.rstrip("/")
         self._model = model
@@ -100,6 +102,8 @@ class ChunkTagger:
         self._chunk_overlap = chunk_overlap_sec
         self._chunk_fps = chunk_fps
         self._min_confidence = min_confidence
+        self._rescan_fps = rescan_fps
+        self._rescan_pre_sec = rescan_pre_sec
 
         # Debug output directory
         if working_dir:
@@ -135,6 +139,7 @@ class ChunkTagger:
                  video_duration=video_duration)
 
         all_events: list[Event] = []
+        all_kickoffs: list[TaggedEvent] = []
 
         for i, (start, end) in enumerate(chunks):
             try:
@@ -149,6 +154,13 @@ class ChunkTagger:
                 self._save_debug(i, start, end, raw_response, tagged)
 
                 for te in tagged:
+                    if te.event_type == "kickoff":
+                        all_kickoffs.append(te)
+                        log.info("chunk_tagger.kickoff_detected",
+                                 timestamp=te.timestamp_abs,
+                                 team=te.team,
+                                 reasoning=te.reasoning)
+                        continue
                     if (te.event_type in _TAG_TO_EVENT
                             and te.confidence >= self._min_confidence):
                         event = self._make_event(te, fps)
@@ -168,10 +180,18 @@ class ChunkTagger:
                 if progress_callback:
                     progress_callback(i + 1, total)
 
+        # --- Pass 2: rescan orphan kickoffs at high FPS ---
+        rescan_events = self._rescan_orphan_kickoffs(
+            all_kickoffs, all_events, fps, video_duration,
+        )
+        all_events.extend(rescan_events)
+
         deduped = self._deduplicate(all_events)
         log.info("chunk_tagger.complete",
                  chunks=total,
                  raw_events=len(all_events),
+                 kickoffs=len(all_kickoffs),
+                 rescans=len(rescan_events),
                  deduped_events=len(deduped),
                  debug_dir=str(self._debug_dir))
         return deduped
@@ -374,9 +394,14 @@ class ChunkTagger:
             f"  START: when the shot is taken\n"
             f"  END: when the ball goes out for a corner\n"
             f"\n"
+            f"KICKOFF — Play restarts from the center circle. All players are "
+            f"in their own half. The ball is at the center spot and is kicked.\n"
+            f"  START: when the ball is kicked from center\n"
+            f"  END: same as start (single moment)\n"
+            f"\n"
             f"Respond ONLY with a JSON array (no markdown, no extra text):\n"
             f'[{{"event_type": "goal"|"penalty"|"free_kick"|"shot"|'
-            f'"corner_kick"|"goal_kick"|"catch"|"save",\n'
+            f'"corner_kick"|"goal_kick"|"catch"|"save"|"kickoff",\n'
             f'  "start_sec": <seconds from start of this clip when event begins>,\n'
             f'  "end_sec": <seconds from start of this clip when event ends>,\n'
             f'  "confidence": 0.0-1.0,\n'
@@ -505,6 +530,278 @@ class ChunkTagger:
             },
         )
 
+    # ----- kickoff rescan (pass 2) -----------------------------------------
+
+    def _rescan_orphan_kickoffs(
+        self,
+        kickoffs: list[TaggedEvent],
+        events: list[Event],
+        fps: float,
+        video_duration: float,
+    ) -> list[Event]:
+        """Find kickoffs not preceded by a detected goal, rescan at high FPS.
+
+        A kickoff not preceded by a goal within 90s is an "orphan" — it implies
+        a goal the first pass missed (fast play, low FPS). Halftime kickoffs
+        (preceded by a >120s gap with no events) are excluded.
+
+        For each orphan, extract the preceding 30s at 8 FPS and re-query
+        the model with a focused goal-finding prompt.
+        """
+        if not kickoffs:
+            return []
+
+        # Dedup kickoffs within 15s of each other (overlap zones)
+        kickoffs_sorted = sorted(kickoffs, key=lambda k: k.timestamp_abs)
+        deduped_kickoffs: list[TaggedEvent] = [kickoffs_sorted[0]]
+        for ko in kickoffs_sorted[1:]:
+            if ko.timestamp_abs - deduped_kickoffs[-1].timestamp_abs > 15.0:
+                deduped_kickoffs.append(ko)
+
+        # All event timestamps for gap checking
+        event_times = sorted(e.timestamp_start for e in events)
+
+        orphans: list[TaggedEvent] = []
+        for ko in deduped_kickoffs:
+            ko_t = ko.timestamp_abs
+            # Skip kickoffs in the first 60s (match start)
+            if ko_t < 60.0:
+                log.info("chunk_tagger.kickoff_skip_start", timestamp=ko_t)
+                continue
+
+            # Check if a goal was already detected within 90s before
+            has_goal = any(
+                e.event_type == EventType.GOAL
+                and 0 < (ko_t - e.timestamp_start) < 90.0
+                for e in events
+            )
+            if has_goal:
+                log.info("chunk_tagger.kickoff_has_goal", timestamp=ko_t)
+                continue
+
+            # Check for halftime: no events in the 120s before the kickoff
+            latest_before = max(
+                (t for t in event_times if t < ko_t - 10.0), default=0.0,
+            )
+            gap = ko_t - latest_before
+            if gap > 120.0:
+                log.info("chunk_tagger.kickoff_skip_halftime",
+                         timestamp=ko_t, gap=gap)
+                continue
+
+            orphans.append(ko)
+            log.info("chunk_tagger.orphan_kickoff",
+                     timestamp=ko_t, gap_to_last_event=gap)
+
+        if not orphans:
+            return []
+
+        log.info("chunk_tagger.rescan_start", orphan_kickoffs=len(orphans),
+                 rescan_fps=self._rescan_fps)
+
+        rescan_events: list[Event] = []
+        for ko in orphans:
+            try:
+                goal_events = self._rescan_for_goal(ko, fps, video_duration)
+                rescan_events.extend(goal_events)
+            except Exception as exc:
+                log.error("chunk_tagger.rescan_error",
+                          kickoff_t=ko.timestamp_abs, error=str(exc))
+
+        log.info("chunk_tagger.rescan_complete",
+                 orphans=len(orphans), goals_found=len(rescan_events))
+        return rescan_events
+
+    def _rescan_for_goal(
+        self,
+        kickoff: TaggedEvent,
+        fps: float,
+        video_duration: float,
+    ) -> list[Event]:
+        """Extract high-FPS chunks before a kickoff and find the missed goal."""
+        ko_t = kickoff.timestamp_abs
+        scan_start = max(0.0, ko_t - self._rescan_pre_sec)
+        scan_end = ko_t
+
+        # Split into 15s chunks to stay within VRAM budget
+        chunk_dur = 15.0
+        rescan_chunks: list[tuple[float, float]] = []
+        t = scan_start
+        while t < scan_end:
+            c_end = min(t + chunk_dur, scan_end)
+            if c_end - t >= 3.0:  # skip tiny trailing chunks
+                rescan_chunks.append((t, c_end))
+            t += chunk_dur
+
+        log.info("chunk_tagger.rescan_goal",
+                 kickoff_t=ko_t, scan_start=scan_start,
+                 scan_end=scan_end, chunks=len(rescan_chunks),
+                 fps=self._rescan_fps)
+
+        goal_events: list[Event] = []
+        for i, (start, end) in enumerate(rescan_chunks):
+            chunk_path = self._extract_rescan_chunk(start, end, ko_t, i)
+            if chunk_path is None:
+                continue
+
+            tagged, raw_response = self._tag_rescan_chunk(
+                chunk_path, start, end, ko_t, fps,
+            )
+            self._save_debug(
+                index=f"rescan_ko{ko_t:.0f}_{i}",
+                start=start, end=end,
+                raw_response=raw_response, tagged=tagged,
+            )
+
+            for te in tagged:
+                if te.event_type == "goal" and te.confidence >= self._min_confidence:
+                    event = self._make_event(te, fps)
+                    event.metadata["rescan_kickoff_t"] = ko_t
+                    event.metadata["rescan_fps"] = self._rescan_fps
+                    goal_events.append(event)
+                    log.info("chunk_tagger.rescan_goal_found",
+                             timestamp=te.timestamp_abs,
+                             confidence=te.confidence,
+                             team=te.team,
+                             reasoning=te.reasoning)
+
+        return goal_events
+
+    def _extract_rescan_chunk(
+        self, start: float, end: float, kickoff_t: float, index: int,
+    ) -> Optional[Path]:
+        """Extract a high-FPS chunk for goal rescan."""
+        duration = end - start
+        chunk_path = (
+            self._debug_dir
+            / f"rescan_ko{kickoff_t:.0f}_{index}_t{start:.0f}.mp4"
+        )
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.3f}",
+            "-i", self._source_file,
+            "-t", f"{duration:.3f}",
+            "-vf", f"fps={self._rescan_fps}",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "28",
+            "-an",
+            str(chunk_path),
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=120)
+            if (result.returncode == 0 and chunk_path.exists()
+                    and chunk_path.stat().st_size > 0):
+                log.debug("chunk_tagger.rescan_extracted",
+                          path=str(chunk_path),
+                          size_mb=chunk_path.stat().st_size / 1e6)
+                return chunk_path
+            chunk_path.unlink(missing_ok=True)
+            return None
+        except subprocess.TimeoutExpired:
+            chunk_path.unlink(missing_ok=True)
+            return None
+
+    def _tag_rescan_chunk(
+        self,
+        chunk_path: Path,
+        chunk_start: float,
+        chunk_end: float,
+        kickoff_t: float,
+        fps: float,
+    ) -> tuple[list[TaggedEvent], str]:
+        """Send a high-FPS rescan chunk to vLLM with a goal-focused prompt."""
+        import httpx
+
+        prompt = self._build_rescan_prompt(chunk_start, chunk_end, kickoff_t)
+
+        video_bytes = chunk_path.read_bytes()
+        video_b64 = base64.b64encode(video_bytes).decode()
+        video_data_url = f"data:video/mp4;base64,{video_b64}"
+
+        payload = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "video_url",
+                            "video_url": {"url": video_data_url},
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        },
+                    ],
+                },
+            ],
+            "max_tokens": 1024,
+        }
+
+        try:
+            resp = httpx.post(
+                f"{self._vllm_url}/v1/chat/completions",
+                json=payload,
+                timeout=600.0,
+            )
+            if resp.status_code != 200:
+                body = resp.text[:500]
+                log.error("chunk_tagger.rescan_api_error",
+                          status=resp.status_code, body=body)
+                return [], f"HTTP_{resp.status_code}: {body}"
+            data = resp.json()
+            text = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            events = self._parse_response(text, chunk_start)
+            return events, text
+        except Exception as exc:
+            log.error("chunk_tagger.rescan_api_error", error=str(exc))
+            return [], f"API_ERROR: {exc}"
+
+    def _build_rescan_prompt(
+        self, chunk_start: float, chunk_end: float, kickoff_t: float,
+    ) -> str:
+        """Build a focused goal-finding prompt for high-FPS rescan."""
+        mc = self._match_config
+        duration = chunk_end - chunk_start
+
+        start_m, start_s = divmod(int(chunk_start), 60)
+        end_m, end_s = divmod(int(chunk_end), 60)
+        ko_m, ko_s = divmod(int(kickoff_t), 60)
+
+        return (
+            f"You are analyzing a {duration:.0f}-second video clip from a youth "
+            f"soccer match at {self._rescan_fps} frames per second (high detail).\n"
+            f"\n"
+            f"Match: {mc.team.team_name} "
+            f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
+            f"{mc.opponent.team_name} "
+            f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
+            f"This clip covers {start_m}:{start_s:02d} – {end_m}:{end_s:02d}.\n"
+            f"\n"
+            f"CONTEXT: A kickoff from the center circle was detected at "
+            f"{ko_m}:{ko_s:02d}, which means a goal was scored shortly before. "
+            f"Find the goal in this clip.\n"
+            f"\n"
+            f"Look for: a fast attack or breakout, a shot on goal, the ball "
+            f"going into the net, and the goalkeeper failing to stop it. The "
+            f"goal may happen very quickly (1-2 seconds from shot to net).\n"
+            f"\n"
+            f"Respond ONLY with a JSON array:\n"
+            f'[{{"event_type": "goal",\n'
+            f'  "start_sec": <seconds from start of this clip when the shot is taken>,\n'
+            f'  "end_sec": <seconds from start of this clip when celebration starts>,\n'
+            f'  "confidence": 0.0-1.0,\n'
+            f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
+            f'  "reasoning": "brief description of what you see"}}]\n'
+            f"\n"
+            f"If you do not see a goal in this clip, return: []\n"
+        )
+
     # ----- deduplication ----------------------------------------------------
 
     def _deduplicate(
@@ -537,7 +834,7 @@ class ChunkTagger:
 
     def _save_debug(
         self,
-        index: int,
+        index,
         start: float,
         end: float,
         raw_response: str,
