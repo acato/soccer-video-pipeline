@@ -563,9 +563,6 @@ class ChunkTagger:
 
     # Max events per minute of chunk duration before we consider it hallucination
     _HALLUC_EVENTS_PER_MIN = 8.0
-    # A "busy" chunk followed by an empty chunk suggests the model exhausted
-    # its pattern-matching on fabricated events, missing real ones next door.
-    _BUSY_CHUNK_MIN_EVENTS = 5
 
     def _rescan_hallucinating_chunks(
         self,
@@ -575,17 +572,14 @@ class ChunkTagger:
     ) -> list[Event]:
         """Detect hallucinating chunks and rescan them at high FPS.
 
-        Two triggers:
-        1. A chunk with >8 events/minute — likely fabricating repetitive events.
-           Discard those events and re-query at 8 FPS.
-        2. An empty chunk (0 events) immediately after a busy chunk (>=5 events) —
-           the model may have missed real events in the quiet zone. Rescan the
-           empty chunk at 8 FPS without discarding anything.
+        When a chunk has an abnormally high event count (>8 per minute), the
+        model is likely fabricating repetitive events. Discard those events
+        and re-query the region with shorter 15s chunks at rescan_fps for
+        focused analysis.
         """
         halluc_chunks: list[tuple[float, float]] = []
-        empty_after_busy: list[tuple[float, float]] = []
 
-        for i, (start, end, count) in enumerate(chunk_event_counts):
+        for start, end, count in chunk_event_counts:
             duration_min = (end - start) / 60.0
             threshold = max(6, int(self._HALLUC_EVENTS_PER_MIN * duration_min))
             if count > threshold:
@@ -593,15 +587,8 @@ class ChunkTagger:
                 log.warning("chunk_tagger.hallucination_detected",
                             start=start, end=end, events=count,
                             threshold=threshold)
-            elif count == 0 and i > 0:
-                prev_start, prev_end, prev_count = chunk_event_counts[i - 1]
-                if prev_count >= self._BUSY_CHUNK_MIN_EVENTS:
-                    empty_after_busy.append((start, end))
-                    log.info("chunk_tagger.empty_after_busy",
-                             start=start, end=end,
-                             prev_events=prev_count)
 
-        if not halluc_chunks and not empty_after_busy:
+        if not halluc_chunks:
             return []
 
         # Remove events from hallucinating chunk time ranges
@@ -614,19 +601,16 @@ class ChunkTagger:
             ]
             removed += before - len(all_events)
 
-        if removed:
-            log.info("chunk_tagger.halluc_events_removed", count=removed)
+        log.info("chunk_tagger.halluc_events_removed", count=removed)
 
-        # Rescan hallucinating chunks + empty-after-busy chunks at high FPS
-        all_rescan = halluc_chunks + empty_after_busy
+        # Rescan each hallucinating chunk region at high FPS
         new_events: list[Event] = []
-        for rc_start, rc_end in all_rescan:
-            events = self._rescan_region(rc_start, rc_end, fps)
+        for hc_start, hc_end in halluc_chunks:
+            events = self._rescan_region(hc_start, hc_end, fps)
             new_events.extend(events)
 
         log.info("chunk_tagger.halluc_rescan_complete",
-                 halluc_chunks=len(halluc_chunks),
-                 empty_after_busy=len(empty_after_busy),
+                 chunks_rescanned=len(halluc_chunks),
                  events_found=len(new_events))
         return new_events
 

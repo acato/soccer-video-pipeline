@@ -667,39 +667,6 @@ class TestRescanHallucinatingChunks:
         prompt_8fps = tagger._build_prompt(0.0, 60.0, fps_override=8)
         assert "8 frames per second" in prompt_8fps
 
-    def test_empty_after_busy_triggers_rescan(self):
-        """Empty chunk following a busy chunk (>=5 events) triggers rescan."""
-        tagger = _make_tagger()
-        # Chunk 0: 7 events (busy), Chunk 1: 0 events (empty after busy)
-        counts = [(2000.0, 2060.0, 7), (2050.0, 2110.0, 0)]
-        all_events = []
-        with patch.object(tagger, "_rescan_region", return_value=[]) as mock:
-            tagger._rescan_hallucinating_chunks(counts, all_events, 30.0)
-            # Should rescan the empty chunk, not the busy one
-            mock.assert_called_once_with(2050.0, 2110.0, 30.0)
-
-    def test_empty_after_quiet_no_rescan(self):
-        """Empty chunk after a quiet chunk (<5 events) is not rescanned."""
-        tagger = _make_tagger()
-        counts = [(2000.0, 2060.0, 2), (2050.0, 2110.0, 0)]
-        all_events = []
-        with patch.object(tagger, "_rescan_region", return_value=[]) as mock:
-            tagger._rescan_hallucinating_chunks(counts, all_events, 30.0)
-            mock.assert_not_called()
-
-    def test_both_halluc_and_empty_after_busy(self):
-        """Both hallucination AND empty-after-busy can trigger in same run."""
-        tagger = _make_tagger()
-        counts = [
-            (1000.0, 1060.0, 15),  # hallucination
-            (2000.0, 2060.0, 7),   # busy
-            (2050.0, 2110.0, 0),   # empty after busy
-        ]
-        all_events = []
-        with patch.object(tagger, "_rescan_region", return_value=[]) as mock:
-            tagger._rescan_hallucinating_chunks(counts, all_events, 30.0)
-            assert mock.call_count == 2  # halluc + empty-after-busy
-
 
 # ---------------------------------------------------------------------------
 # Orphan kickoff rescan
