@@ -39,16 +39,18 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _TAG_TO_EVENT: dict[str, EventType] = {
-    "goal_kick": EventType.GOAL_KICK,
-    "corner_kick": EventType.CORNER_KICK,
     "goal": EventType.GOAL,
-    "save_catch": EventType.CATCH,
-    "save_parry": EventType.SHOT_STOP_DIVING,
-    "punch": EventType.PUNCH,
+    "penalty": EventType.PENALTY,
+    "free_kick": EventType.FREE_KICK_SHOT,
+    "shot": EventType.SHOT_ON_TARGET,
+    "corner_kick": EventType.CORNER_KICK,
+    "goal_kick": EventType.GOAL_KICK,
+    "catch": EventType.CATCH,
+    "save": EventType.SHOT_STOP_DIVING,
 }
 
 # Event types that are goalkeeper events
-_GK_TAG_TYPES = {"goal_kick", "corner_kick", "save_catch", "save_parry", "punch"}
+_GK_TAG_TYPES = {"goal_kick", "corner_kick", "catch", "save", "penalty"}
 
 
 # ---------------------------------------------------------------------------
@@ -323,47 +325,58 @@ class ChunkTagger:
             f"of the match video.\n"
             f"\n"
             f"Tag EVERY event you see. For each event, report BOTH a start and "
-            f"end timestamp that bound the full sequence (cause → action → effect).\n"
+            f"end timestamp that bound the full sequence.\n"
             f"\n"
-            f"GOAL — A shot goes into the net AND is followed by a kickoff: "
-            f"all players walk to their own half, ball placed at center circle, "
-            f"play restarts from midfield. The kickoff restart is what confirms "
-            f"it was a goal (not a save or miss). This includes penalty kick goals.\n"
+            f"EVENT TYPES AND OBSERVATION CHAINS:\n"
+            f"\n"
+            f"GOAL — A shot goes into the net. Confirmed by: players celebrate, "
+            f"teams walk to their own halves, kickoff from center circle. The "
+            f"kickoff restart is what proves it was a goal (not a save or miss).\n"
             f"  START: when the shot is taken\n"
-            f"  END: when players line up at center circle for kickoff\n"
+            f"  END: when the celebration ends (do NOT include teams walking "
+            f"to halves or kickoff)\n"
             f"\n"
-            f"GOAL_KICK — Ball goes out of bounds past the back line (end line), "
-            f"then the goalkeeper sets the ball down near the 6-yard box, kicks "
-            f"or passes it to a teammate who receives and controls it.\n"
-            f"  START: when the ball goes out past the back line\n"
-            f"  END: when the receiving player touches/controls the ball\n"
+            f"PENALTY — Everyone except the referee, the goalkeeper, and one "
+            f"player leaves the penalty box. The ball is set down on the penalty "
+            f"spot. Only the shooter approaches and takes the shot.\n"
+            f"  START: when the box clears (only keeper and shooter remain)\n"
+            f"  END: when the shot result is clear (goal, save, or miss)\n"
             f"\n"
-            f"CORNER_KICK — Ball goes out of bounds past the back line off a "
-            f"defender, then a player places the ball at the corner flag. "
-            f"Players from both teams crowd into the penalty box. The ball is "
-            f"kicked from the corner into the box.\n"
-            f"  START: when the ball goes out past the back line\n"
+            f"FREE_KICK — The ball is placed on the ground and kicked with no "
+            f"opposing player approaching. Players may form a wall at distance.\n"
+            f"  START: when the ball is placed down\n"
+            f"  END: when the ball is kicked\n"
+            f"\n"
+            f"SHOT — The ball, touched last by a member of the attacking team, "
+            f"travels towards the goal and goes out past the back line without "
+            f"the goalkeeper touching it (a miss). If the keeper touches it, "
+            f"tag as SAVE or CATCH instead. If it goes in the net, tag as GOAL.\n"
+            f"  START: when the ball is struck towards goal\n"
+            f"  END: when the ball goes out of play\n"
+            f"\n"
+            f"CORNER_KICK — The ball is placed on the corner arc of the field. "
+            f"A player kicks it into the penalty area.\n"
+            f"  START: when the ball is placed on the corner\n"
             f"  END: when the ball leaves the penalty area after being kicked\n"
             f"\n"
-            f"SAVE_CATCH — A shot is taken and the goalkeeper catches and holds "
-            f"the ball securely with both hands.\n"
-            f"  START: when the shot is taken\n"
-            f"  END: when the ball is secured in the goalkeeper's hands\n"
+            f"GOAL_KICK — The ball is placed on the ground inside the six-yard "
+            f"box. The goalkeeper or a defender kicks it out with no opposing "
+            f"player inside the box.\n"
+            f"  START: when the ball is placed in the box\n"
+            f"  END: when a receiving player touches or controls the ball\n"
             f"\n"
-            f"SAVE_PARRY — A shot is taken and the goalkeeper deflects, pushes, "
-            f"or tips the ball away from the goal.\n"
-            f"  START: when the shot is taken\n"
-            f"  END: when the ball goes out of bounds or is controlled by "
-            f"another player\n"
+            f"CATCH — The goalkeeper grabs the ball and holds it securely.\n"
+            f"  START: when the preceding shot or cross is played\n"
+            f"  END: when the goalkeeper secures the ball\n"
             f"\n"
-            f"PUNCH — A cross or corner is played into the box and the "
-            f"goalkeeper punches the ball away with fist(s).\n"
-            f"  START: when the cross/corner is kicked\n"
-            f"  END: when the ball lands or is controlled by another player\n"
+            f"SAVE — A shot is taken, the goalkeeper touches or deflects the "
+            f"ball, and the ball goes out for a corner kick.\n"
+            f"  START: when the shot is taken\n"
+            f"  END: when the ball goes out for a corner\n"
             f"\n"
             f"Respond ONLY with a JSON array (no markdown, no extra text):\n"
-            f'[{{"event_type": "goal"|"goal_kick"|"corner_kick"|'
-            f'"save_catch"|"save_parry"|"punch",\n'
+            f'[{{"event_type": "goal"|"penalty"|"free_kick"|"shot"|'
+            f'"corner_kick"|"goal_kick"|"catch"|"save",\n'
             f'  "start_sec": <seconds from start of this clip when event begins>,\n'
             f'  "end_sec": <seconds from start of this clip when event ends>,\n'
             f'  "confidence": 0.0-1.0,\n'
@@ -373,8 +386,15 @@ class ChunkTagger:
             f"Rules:\n"
             f"- start_sec/end_sec = 0 means the first frame of this clip\n"
             f"- Only report events you clearly see — do not guess\n"
-            f"- A goal MUST be followed by a center-circle kickoff. If you see "
-            f"a shot but no kickoff restart, it is a save or a miss, not a goal\n"
+            f"- A GOAL must be confirmed by a center-circle kickoff. No kickoff "
+            f"= save or miss, not a goal\n"
+            f"- A SAVE always ends with a corner kick. If the keeper holds the "
+            f"ball, that is a CATCH, not a save\n"
+            f"- If a shot results in a goal, catch, or save, tag the specific "
+            f"outcome — do not also tag it as SHOT\n"
+            f'- "team" = the team performing the action (scoring team for goals, '
+            f"goalkeeper's team for saves/catches, kicking team for corners/"
+            f"goal kicks/free kicks)\n"
             f"- If no events, return: []\n"
         )
 
@@ -455,9 +475,10 @@ class ChunkTagger:
         is_gk = te.event_type in _GK_TAG_TYPES
 
         # Goal conceded (opponent scored) is also a GK event
+        # Penalty by opponent = shooting at our keeper = GK event
         mc = self._match_config
-        if (te.event_type == "goal"
-                and te.team.lower() == mc.opponent.team_name.lower()):
+        opp = mc.opponent.team_name.lower()
+        if te.event_type in ("goal", "penalty") and te.team.lower() == opp:
             is_gk = True
 
         frame_start = max(0, int(te.timestamp_abs * fps))

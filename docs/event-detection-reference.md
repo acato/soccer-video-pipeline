@@ -447,6 +447,34 @@ Self-hosted via vLLM — no per-request API cost. Requires GPU server running th
 `src/detection/restart_classifier.py` — `RestartClassifier` class.
 `src/detection/ball_touch_detector.py` — `_find_trajectory_gaps()` method.
 
+## Chunk Tagger (vLLM Vision Model)
+
+When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTagger` (`src/detection/chunk_tagger.py`) instead of YOLO-based detection. The tagger splits the video into overlapping chunks, sends each to Qwen3-VL via vLLM, and the model tags events using observation chains.
+
+### Tagged Event Types
+
+| Model Tag | Pipeline EventType | GK Event? | Observation Chain |
+|-----------|-------------------|-----------|-------------------|
+| `goal` | GOAL | If opponent scores | Shot → net → celebration → teams to halves → kickoff. Clip: shot to celebration. |
+| `penalty` | PENALTY | If opponent takes it | Box clears (only ref+GK+shooter) → ball set → shot. |
+| `free_kick` | FREE_KICK_SHOT | No | Ball placed down → kicked with no one approaching. |
+| `shot` | SHOT_ON_TARGET | No | Ball struck toward goal → goes out past back line (miss). Only when no GK touch or goal. |
+| `corner_kick` | CORNER_KICK | Yes | Ball placed on corner arc → kicked into penalty area. |
+| `goal_kick` | GOAL_KICK | Yes | Ball placed in 6-yard box → kicked by GK/defender → no opponents in box. |
+| `catch` | CATCH | Yes | GK grabs ball and holds it. |
+| `save` | SHOT_STOP_DIVING | Yes | Shot → keeper touch/deflection → ball out for corner. |
+
+### Key Rules in Prompt
+
+- GOAL requires confirmation by center-circle kickoff (no kickoff = not a goal)
+- SAVE always ends with a corner kick; if keeper holds the ball = CATCH
+- SHOT is only tagged when the outcome is a miss (not goal/save/catch)
+- "team" field = team performing the action (scoring team, GK's team, kicking team)
+
+### Deduplication
+
+Events from overlapping chunks are deduplicated: same event type within 10s proximity → keep higher confidence.
+
 ## Known Issues
 
 1. **Shot detection has no spatial awareness** — fires on clearances, long passes, and goal kicks because it only checks ball velocity, not position relative to opposing goal or direction toward goal.

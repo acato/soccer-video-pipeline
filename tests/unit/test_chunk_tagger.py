@@ -50,7 +50,10 @@ def _make_tagger(**kwargs):
 @pytest.mark.unit
 class TestTagMapping:
     def test_all_expected_tags_mapped(self):
-        expected = {"goal_kick", "corner_kick", "goal", "save_catch", "save_parry", "punch"}
+        expected = {
+            "goal", "penalty", "free_kick", "shot",
+            "corner_kick", "goal_kick", "catch", "save",
+        }
         assert set(_TAG_TO_EVENT.keys()) == expected
 
     def test_goal_kick_maps_to_event(self):
@@ -62,22 +65,30 @@ class TestTagMapping:
     def test_goal_maps_to_event(self):
         assert _TAG_TO_EVENT["goal"] == EventType.GOAL
 
-    def test_save_catch_maps_to_catch(self):
-        assert _TAG_TO_EVENT["save_catch"] == EventType.CATCH
+    def test_catch_maps_to_catch(self):
+        assert _TAG_TO_EVENT["catch"] == EventType.CATCH
 
-    def test_save_parry_maps_to_diving_save(self):
-        assert _TAG_TO_EVENT["save_parry"] == EventType.SHOT_STOP_DIVING
+    def test_save_maps_to_diving_save(self):
+        assert _TAG_TO_EVENT["save"] == EventType.SHOT_STOP_DIVING
 
-    def test_punch_maps_to_punch(self):
-        assert _TAG_TO_EVENT["punch"] == EventType.PUNCH
+    def test_penalty_maps_to_penalty(self):
+        assert _TAG_TO_EVENT["penalty"] == EventType.PENALTY
+
+    def test_free_kick_maps_to_free_kick_shot(self):
+        assert _TAG_TO_EVENT["free_kick"] == EventType.FREE_KICK_SHOT
+
+    def test_shot_maps_to_shot_on_target(self):
+        assert _TAG_TO_EVENT["shot"] == EventType.SHOT_ON_TARGET
 
     def test_gk_tag_types(self):
         assert "goal_kick" in _GK_TAG_TYPES
         assert "corner_kick" in _GK_TAG_TYPES
-        assert "save_catch" in _GK_TAG_TYPES
-        assert "save_parry" in _GK_TAG_TYPES
-        assert "punch" in _GK_TAG_TYPES
+        assert "catch" in _GK_TAG_TYPES
+        assert "save" in _GK_TAG_TYPES
+        assert "penalty" in _GK_TAG_TYPES
         assert "goal" not in _GK_TAG_TYPES
+        assert "shot" not in _GK_TAG_TYPES
+        assert "free_kick" not in _GK_TAG_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +163,11 @@ class TestBuildPrompt:
         assert "GOAL_KICK" in prompt
         assert "CORNER_KICK" in prompt
         assert "GOAL" in prompt
-        assert "SAVE_CATCH" in prompt
-        assert "SAVE_PARRY" in prompt
-        assert "PUNCH" in prompt
+        assert "CATCH" in prompt
+        assert "SAVE" in prompt
+        assert "PENALTY" in prompt
+        assert "FREE_KICK" in prompt
+        assert "SHOT" in prompt
 
     def test_contains_timestamps(self):
         tagger = _make_tagger()
@@ -228,10 +241,10 @@ class TestParseResponse:
 
     def test_text_before_json(self):
         tagger = _make_tagger()
-        response = 'Here are the events:\n[{"event_type": "punch", "start_sec": 5.0, "end_sec": 8.0, "confidence": 0.7, "team": "Rush", "reasoning": "GK punched"}]'
+        response = 'Here are the events:\n[{"event_type": "save", "start_sec": 5.0, "end_sec": 8.0, "confidence": 0.7, "team": "Rush", "reasoning": "GK deflected"}]'
         events = tagger._parse_response(response, chunk_start=0.0)
         assert len(events) == 1
-        assert events[0].event_type == "punch"
+        assert events[0].event_type == "save"
 
     def test_invalid_json_returns_empty(self):
         tagger = _make_tagger()
@@ -309,26 +322,47 @@ class TestMakeEvent:
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.GOAL_KICK
 
-    def test_save_catch_is_gk_event(self):
+    def test_catch_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("save_catch", 200.0, 202.0, 0.90, "Rush", "GK catches")
+        te = TaggedEvent("catch", 200.0, 202.0, 0.90, "Rush", "GK catches")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.CATCH
 
-    def test_save_parry_is_gk_event(self):
+    def test_save_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("save_parry", 200.0, 204.0, 0.80, "Rush", "GK parries")
+        te = TaggedEvent("save", 200.0, 204.0, 0.80, "Rush", "GK parries")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.SHOT_STOP_DIVING
 
-    def test_punch_is_gk_event(self):
+    def test_penalty_is_gk_event(self):
         tagger = _make_tagger()
-        te = TaggedEvent("punch", 300.0, 303.0, 0.75, "Rush", "GK punches")
+        te = TaggedEvent("penalty", 300.0, 310.0, 0.85, "GA 2008", "Opponent PK")
         event = tagger._make_event(te, fps=30.0)
         assert event.is_goalkeeper_event is True
-        assert event.event_type == EventType.PUNCH
+        assert event.event_type == EventType.PENALTY
+
+    def test_penalty_by_own_team_is_not_gk_event(self):
+        tagger = _make_tagger()
+        te = TaggedEvent("penalty", 300.0, 310.0, 0.85, "Rush", "Our PK")
+        event = tagger._make_event(te, fps=30.0)
+        # penalty in _GK_TAG_TYPES so always marked GK
+        assert event.is_goalkeeper_event is True
+
+    def test_free_kick_is_not_gk_event(self):
+        tagger = _make_tagger()
+        te = TaggedEvent("free_kick", 400.0, 402.0, 0.70, "Rush", "Free kick")
+        event = tagger._make_event(te, fps=30.0)
+        assert event.is_goalkeeper_event is False
+        assert event.event_type == EventType.FREE_KICK_SHOT
+
+    def test_shot_is_not_gk_event(self):
+        tagger = _make_tagger()
+        te = TaggedEvent("shot", 500.0, 503.0, 0.75, "GA 2008", "Shot wide")
+        event = tagger._make_event(te, fps=30.0)
+        assert event.is_goalkeeper_event is False
+        assert event.event_type == EventType.SHOT_ON_TARGET
 
     def test_goal_by_team_is_not_gk_event(self):
         tagger = _make_tagger()
@@ -419,9 +453,9 @@ class TestDeduplicate:
 
     def test_three_way_duplicate_keeps_best(self):
         tagger = _make_tagger()
-        te1 = TaggedEvent("save_catch", 140.0, 142.0, 0.70, "Rush", "Save 1")
-        te2 = TaggedEvent("save_catch", 142.0, 144.0, 0.95, "Rush", "Save 2")
-        te3 = TaggedEvent("save_catch", 144.0, 146.0, 0.80, "Rush", "Save 3")
+        te1 = TaggedEvent("catch", 140.0, 142.0, 0.70, "Rush", "Save 1")
+        te2 = TaggedEvent("catch", 142.0, 144.0, 0.95, "Rush", "Save 2")
+        te3 = TaggedEvent("catch", 144.0, 146.0, 0.80, "Rush", "Save 3")
         events = [
             tagger._make_event(te1, 30.0),
             tagger._make_event(te2, 30.0),
@@ -459,7 +493,7 @@ class TestConfidenceFilter:
     def test_unknown_event_type_excluded(self):
         """Events with types not in _TAG_TO_EVENT are filtered out."""
         assert "throw_in" not in _TAG_TO_EVENT
-        assert "free_kick" not in _TAG_TO_EVENT
+        assert "offside" not in _TAG_TO_EVENT
 
 
 # ---------------------------------------------------------------------------
