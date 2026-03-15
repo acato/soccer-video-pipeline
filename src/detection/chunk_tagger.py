@@ -615,17 +615,77 @@ class ChunkTagger:
                  rescan_fps=self._rescan_fps)
 
         rescan_events: list[Event] = []
+        inferred_count = 0
         for ko in orphans:
             try:
                 goal_events = self._rescan_for_goal(ko, fps, video_duration)
-                rescan_events.extend(goal_events)
+                if goal_events:
+                    rescan_events.extend(goal_events)
+                else:
+                    # Rescan found nothing — trust the kickoff and infer a goal
+                    inferred = self._infer_goal_from_kickoff(ko, fps)
+                    rescan_events.append(inferred)
+                    inferred_count += 1
+                    log.info("chunk_tagger.goal_inferred",
+                             kickoff_t=ko.timestamp_abs,
+                             goal_t=inferred.timestamp_start)
             except Exception as exc:
                 log.error("chunk_tagger.rescan_error",
                           kickoff_t=ko.timestamp_abs, error=str(exc))
 
         log.info("chunk_tagger.rescan_complete",
-                 orphans=len(orphans), goals_found=len(rescan_events))
+                 orphans=len(orphans),
+                 goals_found=len(rescan_events) - inferred_count,
+                 goals_inferred=inferred_count)
         return rescan_events
+
+    def _infer_goal_from_kickoff(
+        self, kickoff: TaggedEvent, fps: float,
+    ) -> Event:
+        """Create a synthetic goal event inferred from an orphan kickoff.
+
+        When a kickoff is detected but the goal is invisible at any FPS,
+        we trust the kickoff: a goal must have happened ~20s before it.
+        """
+        ko_t = kickoff.timestamp_abs
+        # Goal typically happens 15-30s before the kickoff (celebration + walk)
+        goal_t = ko_t - 20.0
+        goal_end = ko_t - 5.0  # celebration ends ~5s before kickoff
+
+        # Attribute to opponent by default (goal conceded = GK event),
+        # unless kickoff team info suggests otherwise
+        mc = self._match_config
+        team = "unknown"
+        is_gk = True  # assume goal conceded until proven otherwise
+
+        frame_start = max(0, int(goal_t * fps))
+        frame_end = max(frame_start, int(goal_end * fps))
+
+        return Event(
+            event_id=str(uuid.uuid4()),
+            job_id=self._job_id,
+            source_file=self._source_file,
+            event_type=EventType.GOAL,
+            timestamp_start=goal_t,
+            timestamp_end=goal_end,
+            confidence=0.70,  # lower confidence for inferred events
+            reel_targets=[],
+            is_goalkeeper_event=is_gk,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            metadata={
+                "tagger_event_type": "goal",
+                "tagger_confidence": 0.70,
+                "tagger_team": team,
+                "tagger_reasoning": (
+                    f"Inferred from orphan kickoff at {ko_t:.0f}s — "
+                    f"kickoff confirmed but goal not visible at any FPS"
+                ),
+                "tagger_model": self._model,
+                "inferred_from_kickoff": True,
+                "kickoff_timestamp": ko_t,
+            },
+        )
 
     def _rescan_for_goal(
         self,

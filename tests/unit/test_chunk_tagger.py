@@ -643,6 +643,71 @@ class TestRescanOrphanKickoffs:
             # Only one rescan despite two kickoffs
             assert mock.call_count == 1
 
+    @patch("src.detection.chunk_tagger.ChunkTagger._rescan_for_goal")
+    def test_orphan_kickoff_infers_goal_when_rescan_empty(self, mock_rescan):
+        """When rescan finds nothing, a synthetic goal is inferred from the kickoff."""
+        tagger = _make_tagger()
+        kickoffs = [TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "Kickoff")]
+        te = TaggedEvent("catch", 1050.0, 1052.0, 0.8, "Rush", "Save")
+        events = [tagger._make_event(te, 30.0)]
+
+        mock_rescan.return_value = []  # rescan finds nothing
+        result = tagger._rescan_orphan_kickoffs(kickoffs, events, 30.0, 6000.0)
+
+        assert len(result) == 1
+        inferred = result[0]
+        assert inferred.event_type == EventType.GOAL
+        assert inferred.confidence == 0.70
+        assert inferred.is_goalkeeper_event is True
+        assert inferred.metadata["inferred_from_kickoff"] is True
+        assert inferred.metadata["kickoff_timestamp"] == 1080.0
+        # Goal placed ~20s before kickoff
+        assert inferred.timestamp_start == 1060.0
+        assert inferred.timestamp_end == 1075.0
+
+    @patch("src.detection.chunk_tagger.ChunkTagger._rescan_for_goal")
+    def test_rescan_goal_found_no_inference(self, mock_rescan):
+        """When rescan finds a goal, no inference is generated."""
+        tagger = _make_tagger()
+        kickoffs = [TaggedEvent("kickoff", 850.0, 850.0, 0.9, "unknown", "Kickoff")]
+        te = TaggedEvent("catch", 820.0, 822.0, 0.8, "Rush", "Save")
+        events = [tagger._make_event(te, 30.0)]
+
+        # Rescan finds a real goal
+        real_goal = tagger._make_event(
+            TaggedEvent("goal", 830.0, 840.0, 0.92, "GA 2008", "Opponent scored"), 30.0
+        )
+        mock_rescan.return_value = [real_goal]
+        result = tagger._rescan_orphan_kickoffs(kickoffs, events, 30.0, 6000.0)
+
+        assert len(result) == 1
+        assert result[0].confidence == 0.92  # the real goal, not inferred
+        assert "inferred_from_kickoff" not in result[0].metadata
+
+    @patch("src.detection.chunk_tagger.ChunkTagger._rescan_for_goal")
+    def test_multiple_orphans_mix_rescan_and_inferred(self, mock_rescan):
+        """Some orphans find goals via rescan, others get inferred."""
+        tagger = _make_tagger()
+        ko1 = TaggedEvent("kickoff", 850.0, 850.0, 0.9, "unknown", "KO1")
+        ko2 = TaggedEvent("kickoff", 1200.0, 1200.0, 0.85, "unknown", "KO2")
+        te1 = TaggedEvent("catch", 820.0, 822.0, 0.8, "Rush", "Save")
+        te2 = TaggedEvent("goal_kick", 1170.0, 1180.0, 0.7, "Rush", "GK")
+        events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
+
+        real_goal = tagger._make_event(
+            TaggedEvent("goal", 830.0, 840.0, 0.92, "GA 2008", "Goal"), 30.0
+        )
+        # First kickoff → rescan finds goal; second → rescan empty → inferred
+        mock_rescan.side_effect = [[real_goal], []]
+        result = tagger._rescan_orphan_kickoffs([ko1, ko2], events, 30.0, 6000.0)
+
+        assert len(result) == 2
+        # First is real goal
+        assert result[0].confidence == 0.92
+        # Second is inferred
+        assert result[1].metadata["inferred_from_kickoff"] is True
+        assert result[1].timestamp_start == 1180.0  # 1200 - 20
+
     def test_rescan_prompt_contains_kickoff_context(self):
         """Rescan prompt mentions the kickoff timestamp."""
         tagger = _make_tagger()
@@ -681,3 +746,66 @@ class TestRescanOrphanKickoffs:
         prompt = tagger._build_prompt(0.0, 150.0)
         assert "center circle" in prompt.lower()
         assert "after a goal" in prompt.lower()
+
+
+# ---------------------------------------------------------------------------
+# Infer goal from kickoff
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestInferGoalFromKickoff:
+    def test_basic_inference(self):
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "Kickoff")
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
+
+        assert event.event_type == EventType.GOAL
+        assert event.confidence == 0.70
+        assert event.is_goalkeeper_event is True
+        assert event.timestamp_start == 1060.0  # 1080 - 20
+        assert event.timestamp_end == 1075.0    # 1080 - 5
+        assert event.reel_targets == []
+
+    def test_metadata_marks_inferred(self):
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 500.0, 500.0, 0.85, "unknown", "KO")
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
+
+        assert event.metadata["inferred_from_kickoff"] is True
+        assert event.metadata["kickoff_timestamp"] == 500.0
+        assert event.metadata["tagger_event_type"] == "goal"
+        assert event.metadata["tagger_model"] == "Qwen/Qwen3-VL-32B-Instruct"
+        assert "orphan kickoff" in event.metadata["tagger_reasoning"].lower()
+
+    def test_frame_numbers(self):
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 100.0, 100.0, 0.9, "unknown", "KO")
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
+
+        assert event.frame_start == int(80.0 * 30)   # (100-20) * 30
+        assert event.frame_end == int(95.0 * 30)      # (100-5) * 30
+
+    def test_early_kickoff_clamps_to_zero(self):
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 15.0, 15.0, 0.9, "unknown", "KO")
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
+
+        # goal_t = 15 - 20 = -5 → frame_start clamped to 0
+        assert event.frame_start == 0
+        assert event.timestamp_start == -5.0  # timestamp can be negative
+        assert event.timestamp_end == 10.0
+
+    def test_unique_event_ids(self):
+        tagger = _make_tagger()
+        ko1 = TaggedEvent("kickoff", 500.0, 500.0, 0.9, "unknown", "KO1")
+        ko2 = TaggedEvent("kickoff", 1000.0, 1000.0, 0.9, "unknown", "KO2")
+        e1 = tagger._infer_goal_from_kickoff(ko1, fps=30.0)
+        e2 = tagger._infer_goal_from_kickoff(ko2, fps=30.0)
+        assert e1.event_id != e2.event_id
+
+    def test_job_id_and_source_file(self):
+        tagger = _make_tagger(job_id="my-job", source_file="/nas/match.mp4")
+        ko = TaggedEvent("kickoff", 500.0, 500.0, 0.9, "unknown", "KO")
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
+        assert event.job_id == "my-job"
+        assert event.source_file == "/nas/match.mp4"
