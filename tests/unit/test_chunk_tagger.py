@@ -809,3 +809,73 @@ class TestInferGoalFromKickoff:
         event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
         assert event.job_id == "my-job"
         assert event.source_file == "/nas/match.mp4"
+
+
+# ---------------------------------------------------------------------------
+# Event gap scan (pass 3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestScanEventGaps:
+    def test_no_gaps_returns_empty(self):
+        tagger = _make_tagger()
+        # Events 30s apart — well under 90s threshold
+        te1 = TaggedEvent("goal_kick", 100.0, 110.0, 0.8, "Rush", "GK")
+        te2 = TaggedEvent("catch", 130.0, 132.0, 0.8, "Rush", "Catch")
+        events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
+        result = tagger._scan_event_gaps(events, 30.0, 6000.0)
+        assert result == []
+
+    def test_empty_events_returns_empty(self):
+        tagger = _make_tagger()
+        assert tagger._scan_event_gaps([], 30.0, 6000.0) == []
+
+    def test_halftime_gap_skipped(self):
+        """Gaps >300s are treated as halftime and skipped."""
+        tagger = _make_tagger()
+        te1 = TaggedEvent("goal_kick", 2800.0, 2810.0, 0.8, "Rush", "GK")
+        te2 = TaggedEvent("goal_kick", 3500.0, 3510.0, 0.8, "Rush", "GK")
+        events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
+        # Gap = 700s > 300s → halftime, skipped
+        result = tagger._scan_event_gaps(events, 30.0, 6000.0)
+        assert result == []
+
+    @patch("src.detection.chunk_tagger.ChunkTagger._rescan_gap")
+    def test_gap_triggers_rescan(self, mock_rescan):
+        """Gap >90s triggers a rescan."""
+        tagger = _make_tagger()
+        te1 = TaggedEvent("goal_kick", 2000.0, 2010.0, 0.8, "Rush", "GK")
+        te2 = TaggedEvent("corner_kick", 2200.0, 2210.0, 0.8, "Rush", "Corner")
+        events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
+        # Gap = 200s > 90s → should trigger rescan
+        mock_rescan.return_value = []
+        tagger._scan_event_gaps(events, 30.0, 6000.0)
+        mock_rescan.assert_called_once()
+        call_args = mock_rescan.call_args[0]
+        assert call_args[0] == 2000.0  # gap_start
+        assert call_args[1] == 2200.0  # gap_end
+
+    @patch("src.detection.chunk_tagger.ChunkTagger._rescan_gap")
+    def test_gap_returns_found_events(self, mock_rescan):
+        """Events found during gap scan are returned."""
+        tagger = _make_tagger()
+        te1 = TaggedEvent("goal_kick", 2000.0, 2010.0, 0.8, "Rush", "GK")
+        te2 = TaggedEvent("corner_kick", 2200.0, 2210.0, 0.8, "Rush", "Corner")
+        events = [tagger._make_event(te1, 30.0), tagger._make_event(te2, 30.0)]
+
+        penalty = tagger._make_event(
+            TaggedEvent("penalty", 2050.0, 2060.0, 0.85, "GA 2008", "PK"), 30.0
+        )
+        mock_rescan.return_value = [penalty]
+        result = tagger._scan_event_gaps(events, 30.0, 6000.0)
+        assert len(result) == 1
+        assert result[0].event_type.value == "penalty"
+
+    def test_gap_prompt_contains_penalty_info(self):
+        tagger = _make_tagger()
+        prompt = tagger._build_gap_prompt(2050.0, 2065.0, 2000.0, 2200.0)
+        assert "penalty" in prompt.lower()
+        assert "goal" in prompt.lower()
+        assert "Rush" in prompt
+        assert "GA 2008" in prompt
+        assert "200-second gap" in prompt  # gap duration

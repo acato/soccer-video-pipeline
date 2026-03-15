@@ -186,12 +186,17 @@ class ChunkTagger:
         )
         all_events.extend(rescan_events)
 
+        # --- Pass 3: scan event gaps for missed goals/penalties ---
+        gap_events = self._scan_event_gaps(all_events, fps, video_duration)
+        all_events.extend(gap_events)
+
         deduped = self._deduplicate(all_events)
         log.info("chunk_tagger.complete",
                  chunks=total,
                  raw_events=len(all_events),
                  kickoffs=len(all_kickoffs),
                  rescans=len(rescan_events),
+                 gap_scans=len(gap_events),
                  deduped_events=len(deduped),
                  debug_dir=str(self._debug_dir))
         return deduped
@@ -685,6 +690,206 @@ class ChunkTagger:
                 "inferred_from_kickoff": True,
                 "kickoff_timestamp": ko_t,
             },
+        )
+
+    # ----- event gap scan (pass 3) -------------------------------------------
+
+    def _scan_event_gaps(
+        self,
+        events: list[Event],
+        fps: float,
+        video_duration: float,
+        min_gap_sec: float = 90.0,
+    ) -> list[Event]:
+        """Find long gaps between events and rescan for missed goals/penalties.
+
+        After passes 1+2, if there's a gap >90s where events exist before and
+        after (active play, not halftime), it may contain a missed goal or
+        penalty. Rescan each gap at high FPS with a focused prompt.
+        """
+        if not events:
+            return []
+
+        timestamps = sorted(e.timestamp_start for e in events)
+        gaps: list[tuple[float, float]] = []
+
+        for i in range(len(timestamps) - 1):
+            gap = timestamps[i + 1] - timestamps[i]
+            if gap >= min_gap_sec:
+                gap_start = timestamps[i]
+                gap_end = timestamps[i + 1]
+                # Skip halftime-like gaps (>5 min = probably halftime break)
+                if gap > 300.0:
+                    log.info("chunk_tagger.gap_skip_halftime",
+                             start=gap_start, end=gap_end, gap=gap)
+                    continue
+                gaps.append((gap_start, gap_end))
+
+        if not gaps:
+            return []
+
+        log.info("chunk_tagger.gap_scan_start", gaps=len(gaps),
+                 rescan_fps=self._rescan_fps)
+
+        gap_events: list[Event] = []
+        for gap_start, gap_end in gaps:
+            try:
+                found = self._rescan_gap(gap_start, gap_end, fps, video_duration)
+                gap_events.extend(found)
+            except Exception as exc:
+                log.error("chunk_tagger.gap_scan_error",
+                          start=gap_start, end=gap_end, error=str(exc))
+
+        log.info("chunk_tagger.gap_scan_complete",
+                 gaps=len(gaps), events_found=len(gap_events))
+        return gap_events
+
+    def _rescan_gap(
+        self,
+        gap_start: float,
+        gap_end: float,
+        fps: float,
+        video_duration: float,
+    ) -> list[Event]:
+        """Rescan a single event gap at high FPS for goals/penalties."""
+        # Scan the full gap region in 15s chunks
+        chunk_dur = 15.0
+        rescan_chunks: list[tuple[float, float]] = []
+        t = gap_start
+        while t < gap_end:
+            c_end = min(t + chunk_dur, gap_end)
+            if c_end - t >= 3.0:
+                rescan_chunks.append((t, c_end))
+            t += chunk_dur
+
+        log.info("chunk_tagger.gap_rescan",
+                 gap_start=gap_start, gap_end=gap_end,
+                 gap_sec=gap_end - gap_start,
+                 chunks=len(rescan_chunks),
+                 fps=self._rescan_fps)
+
+        found_events: list[Event] = []
+        for i, (start, end) in enumerate(rescan_chunks):
+            chunk_path = self._extract_rescan_chunk(
+                start, end, kickoff_t=gap_start, index=i,
+            )
+            if chunk_path is None:
+                continue
+
+            prompt = self._build_gap_prompt(start, end, gap_start, gap_end)
+
+            video_bytes = chunk_path.read_bytes()
+            video_b64 = base64.b64encode(video_bytes).decode()
+            video_data_url = f"data:video/mp4;base64,{video_b64}"
+
+            import httpx
+            payload = {
+                "model": self._model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "video_url",
+                                "video_url": {"url": video_data_url},
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    },
+                ],
+                "max_tokens": 1024,
+                "temperature": 0.0,
+            }
+
+            try:
+                resp = httpx.post(
+                    f"{self._vllm_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=600.0,
+                )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
+                text = (
+                    data.get("choices", [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                tagged = self._parse_response(text, start)
+                self._save_debug(
+                    index=f"gap_{gap_start:.0f}_{i}",
+                    start=start, end=end,
+                    raw_response=text, tagged=tagged,
+                )
+
+                for te in tagged:
+                    if (te.event_type in ("goal", "penalty")
+                            and te.confidence >= self._min_confidence):
+                        event = self._make_event(te, fps)
+                        event.metadata["gap_scan"] = True
+                        event.metadata["gap_start"] = gap_start
+                        event.metadata["gap_end"] = gap_end
+                        event.metadata["gap_scan_fps"] = self._rescan_fps
+                        found_events.append(event)
+                        log.info("chunk_tagger.gap_event_found",
+                                 event_type=te.event_type,
+                                 timestamp=te.timestamp_abs,
+                                 confidence=te.confidence,
+                                 team=te.team,
+                                 reasoning=te.reasoning)
+            except Exception as exc:
+                log.error("chunk_tagger.gap_api_error",
+                          start=start, end=end, error=str(exc))
+
+        return found_events
+
+    def _build_gap_prompt(
+        self,
+        chunk_start: float,
+        chunk_end: float,
+        gap_start: float,
+        gap_end: float,
+    ) -> str:
+        """Build a focused prompt for scanning event gaps."""
+        mc = self._match_config
+        duration = chunk_end - chunk_start
+        gap_duration = gap_end - gap_start
+
+        start_m, start_s = divmod(int(chunk_start), 60)
+        end_m, end_s = divmod(int(chunk_end), 60)
+
+        return (
+            f"You are analyzing a {duration:.0f}-second video clip from a youth "
+            f"soccer match at {self._rescan_fps} frames per second (high detail).\n"
+            f"\n"
+            f"Match: {mc.team.team_name} "
+            f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
+            f"{mc.opponent.team_name} "
+            f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
+            f"This clip covers {start_m}:{start_s:02d} – {end_m}:{end_s:02d}.\n"
+            f"\n"
+            f"CONTEXT: There is a {gap_duration:.0f}-second gap with no detected "
+            f"events during active play. This gap may contain a missed goal or "
+            f"penalty kick. Look carefully for:\n"
+            f"\n"
+            f"1. PENALTY: A single player standing over the ball at the penalty "
+            f"   spot (~12 yards from goal), with only the goalkeeper defending. "
+            f"   All other players stand outside the penalty area. The player "
+            f"   runs up and shoots.\n"
+            f"2. GOAL: A shot that goes into the net, followed by celebration. "
+            f"   Could be from open play, a penalty kick, or a free kick.\n"
+            f"3. KICKOFF: Teams lined up in their halves, ball kicked from the "
+            f"   center circle (confirms a goal was scored before this).\n"
+            f"\n"
+            f"Respond ONLY with a JSON array:\n"
+            f'[{{"event_type": "goal"|"penalty",\n'
+            f'  "start_sec": <seconds from start of this clip>,\n'
+            f'  "end_sec": <seconds from start of this clip>,\n'
+            f'  "confidence": 0.0-1.0,\n'
+            f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
+            f'  "reasoning": "brief description"}}]\n'
+            f"\n"
+            f"If you see nothing significant, return: []\n"
         )
 
     def _rescan_for_goal(
