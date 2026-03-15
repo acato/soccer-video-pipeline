@@ -74,6 +74,7 @@ _ALL_GK_EVENT_TYPES = [
     "shot_stop_diving", "shot_stop_standing", "punch", "catch",
     "goal_kick", "distribution_short", "distribution_long",
     "one_on_one", "corner_kick", "penalty", "goal",
+    "shot_on_target",
 ]
 
 _ALL_HIGHLIGHTS_EVENT_TYPES = [
@@ -133,6 +134,7 @@ class Job(BaseModel):
     pause_requested: bool = False
     cancel_requested: bool = False
     last_processed_chunk: int = -1
+    tag_only: bool = False
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""

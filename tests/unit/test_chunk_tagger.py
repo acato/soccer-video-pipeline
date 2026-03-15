@@ -9,7 +9,7 @@ from src.detection.chunk_tagger import (
     _TAG_TO_EVENT,
     _GK_TAG_TYPES,
 )
-from src.detection.models import EventType
+from src.detection.models import Event, EventType
 
 
 def _make_match_config():
@@ -86,8 +86,8 @@ class TestTagMapping:
         assert "catch" in _GK_TAG_TYPES
         assert "save" in _GK_TAG_TYPES
         assert "penalty" in _GK_TAG_TYPES
+        assert "shot" in _GK_TAG_TYPES
         assert "goal" not in _GK_TAG_TYPES
-        assert "shot" not in _GK_TAG_TYPES
         assert "free_kick" not in _GK_TAG_TYPES
 
 
@@ -357,11 +357,11 @@ class TestMakeEvent:
         assert event.is_goalkeeper_event is False
         assert event.event_type == EventType.FREE_KICK_SHOT
 
-    def test_shot_is_not_gk_event(self):
+    def test_shot_is_gk_event(self):
         tagger = _make_tagger()
         te = TaggedEvent("shot", 500.0, 503.0, 0.75, "GA 2008", "Shot wide")
         event = tagger._make_event(te, fps=30.0)
-        assert event.is_goalkeeper_event is False
+        assert event.is_goalkeeper_event is True
         assert event.event_type == EventType.SHOT_ON_TARGET
 
     def test_goal_by_team_is_not_gk_event(self):
@@ -809,6 +809,82 @@ class TestInferGoalFromKickoff:
         event = tagger._infer_goal_from_kickoff(ko, fps=30.0)
         assert event.job_id == "my-job"
         assert event.source_file == "/nas/match.mp4"
+
+    def test_anchors_to_preceding_shot(self):
+        """When a shot_on_target exists before the kickoff, use its timestamp."""
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "Kickoff")
+        shot = Event(
+            event_id="shot-840", job_id="test-job", source_file="/tmp/test.mp4",
+            event_type=EventType.SHOT_ON_TARGET,
+            timestamp_start=840.0, timestamp_end=843.0,
+            confidence=0.8, reel_targets=[], frame_start=25200, frame_end=25290,
+            metadata={"tagger_team": "GA 2008"},
+        )
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0, events=[shot])
+
+        assert event.event_type == EventType.GOAL
+        assert event.timestamp_start == 840.0  # anchored to shot
+        assert event.timestamp_end == 843.0
+        assert event.metadata["anchored_to_shot"] == 840.0
+        assert event.metadata["tagger_team"] == "GA 2008"
+        assert "anchored to shot" in event.metadata["tagger_reasoning"].lower()
+
+    def test_anchors_to_latest_shot_within_300s(self):
+        """When multiple shots exist, pick the one closest to the kickoff."""
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "KO")
+        shot_old = Event(
+            event_id="shot-700", job_id="test-job", source_file="/tmp/test.mp4",
+            event_type=EventType.SHOT_ON_TARGET,
+            timestamp_start=700.0, timestamp_end=702.0,
+            confidence=0.8, reel_targets=[], frame_start=21000, frame_end=21060,
+        )
+        shot_recent = Event(
+            event_id="shot-840", job_id="test-job", source_file="/tmp/test.mp4",
+            event_type=EventType.SHOT_ON_TARGET,
+            timestamp_start=840.0, timestamp_end=843.0,
+            confidence=0.8, reel_targets=[], frame_start=25200, frame_end=25290,
+        )
+        event = tagger._infer_goal_from_kickoff(
+            ko, fps=30.0, events=[shot_old, shot_recent]
+        )
+        assert event.timestamp_start == 840.0  # latest shot
+
+    def test_shot_too_far_falls_back(self):
+        """Shot >300s before kickoff is ignored — falls back to ko_t-20."""
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "KO")
+        shot_old = Event(
+            event_id="shot-500", job_id="test-job", source_file="/tmp/test.mp4",
+            event_type=EventType.SHOT_ON_TARGET,
+            timestamp_start=500.0, timestamp_end=502.0,
+            confidence=0.8, reel_targets=[], frame_start=15000, frame_end=15060,
+        )
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0, events=[shot_old])
+        assert event.timestamp_start == 1060.0  # fallback: 1080 - 20
+        assert event.metadata["anchored_to_shot"] is None
+
+    def test_no_events_falls_back(self):
+        """No events passed → fallback to ko_t-20 (same as default)."""
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "KO")
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0, events=None)
+        assert event.timestamp_start == 1060.0  # 1080 - 20
+        assert event.metadata["anchored_to_shot"] is None
+
+    def test_ignores_non_shot_events(self):
+        """Only shot_on_target events are considered for anchoring."""
+        tagger = _make_tagger()
+        ko = TaggedEvent("kickoff", 1080.0, 1080.0, 0.9, "unknown", "KO")
+        goal_kick = Event(
+            event_id="gk-900", job_id="test-job", source_file="/tmp/test.mp4",
+            event_type=EventType.GOAL_KICK,
+            timestamp_start=900.0, timestamp_end=905.0,
+            confidence=0.8, reel_targets=[], frame_start=27000, frame_end=27150,
+        )
+        event = tagger._infer_goal_from_kickoff(ko, fps=30.0, events=[goal_kick])
+        assert event.timestamp_start == 1060.0  # fallback, ignored goal_kick
 
 
 # ---------------------------------------------------------------------------

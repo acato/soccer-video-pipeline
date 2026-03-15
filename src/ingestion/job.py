@@ -121,6 +121,7 @@ def create_job(
     match_config: Optional[MatchConfig] = None,
     game_start_sec: float = 0.0,
     reels: Optional[list[ReelSpec]] = None,
+    tag_only: bool = False,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
@@ -132,6 +133,7 @@ def create_job(
         reels=reels or [],
         match_config=match_config,
         game_start_sec=game_start_sec,
+        tag_only=tag_only,
     )
     store.save(job)
     log.info(

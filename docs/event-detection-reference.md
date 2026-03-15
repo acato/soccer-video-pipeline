@@ -29,7 +29,7 @@ Each event type has a per-type configuration in `EVENT_TYPE_CONFIG` (`src/detect
 | ONE_ON_ONE | goalkeeper | 3.0s | 2.0s | 30s | 0.75 | Yes |
 | CORNER_KICK | goalkeeper | 5.0s | 12.0s | 35s | 0.65 | Yes |
 | PENALTY | goalkeeper | 8.0s | 2.0s | 25s | 0.60 | Yes |
-| SHOT_ON_TARGET | highlights | 3.0s | 5.0s | 30s | 0.70 | No |
+| SHOT_ON_TARGET | highlights+keeper | 3.0s | 5.0s | 30s | 0.70 | Yes |
 | SHOT_OFF_TARGET | highlights | 3.0s | 5.0s | 30s | 0.65 | No |
 | GOAL | highlights+keeper | 10.0s | 15.0s | 60s | 0.50 | Opponent goals |
 | NEAR_MISS | highlights | 3.0s | 5.0s | 30s | 0.70 | No |
@@ -458,7 +458,7 @@ When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTag
 | `goal` | GOAL | If opponent scores | Shot → net → celebration → teams to halves → kickoff. Clip: shot to celebration. |
 | `penalty` | PENALTY | If opponent takes it | Box clears (only ref+GK+shooter) → ball set → shot. |
 | `free_kick` | FREE_KICK_SHOT | No | Ball placed down → kicked with no one approaching. |
-| `shot` | SHOT_ON_TARGET | No | Ball struck toward goal → goes out past back line (miss). Only when no GK touch or goal. |
+| `shot` | SHOT_ON_TARGET | Yes | Ball struck toward goal → goes out past back line (miss). Only when no GK touch or goal. |
 | `corner_kick` | CORNER_KICK | Yes | Ball placed on corner arc → kicked into penalty area. |
 | `goal_kick` | GOAL_KICK | Yes | Ball placed on ground in six-yard box → kicked by GK/defender → no opponents in box. NOT a throw-in. |
 | `catch` | CATCH | Yes | GK grabs ball and holds it. |

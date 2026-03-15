@@ -50,7 +50,7 @@ _TAG_TO_EVENT: dict[str, EventType] = {
 }
 
 # Event types that are goalkeeper events
-_GK_TAG_TYPES = {"goal_kick", "corner_kick", "catch", "save", "penalty"}
+_GK_TAG_TYPES = {"goal_kick", "corner_kick", "catch", "save", "penalty", "shot"}
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +160,11 @@ class ChunkTagger:
                                  timestamp=te.timestamp_abs,
                                  team=te.team,
                                  reasoning=te.reasoning)
+                        continue
+                    if te.event_type == "throw_in":
+                        log.debug("chunk_tagger.throw_in_discarded",
+                                  timestamp=te.timestamp_abs,
+                                  team=te.team)
                         continue
                     if (te.event_type in _TAG_TO_EVENT
                             and te.confidence >= self._min_confidence):
@@ -372,7 +377,9 @@ class ChunkTagger:
             f"  END: when the shot result is clear (goal, save, or miss)\n"
             f"\n"
             f"FREE_KICK — The ball is placed on the ground and kicked with no "
-            f"opposing player approaching. Players may form a wall at distance.\n"
+            f"opposing player approaching. Players may form a wall at distance. "
+            f"The ball is always on the GROUND and kicked with the FOOT. "
+            f"NOT a throw-in (ball thrown overhead from the sideline).\n"
             f"  START: when the ball is placed down\n"
             f"  END: when the ball is kicked\n"
             f"\n"
@@ -393,7 +400,8 @@ class ChunkTagger:
             f"defender kicks it while standing still. No opposing player is "
             f"inside the penalty area. The ball is kicked from the GROUND — "
             f"NOT thrown. Do NOT confuse with a throw-in (player holding ball "
-            f"overhead at the sideline).\n"
+            f"overhead at the sideline). A goal kick can ONLY happen at the "
+            f"END of the field near a goal, NEVER from the sideline.\n"
             f"  START: when the ball is placed in the six-yard box\n"
             f"  END: when a receiving player touches or controls the ball\n"
             f"\n"
@@ -406,6 +414,16 @@ class ChunkTagger:
             f"  START: when the shot is taken\n"
             f"  END: when the ball goes out for a corner\n"
             f"\n"
+            f"THROW_IN — A player stands at the SIDELINE (touchline, the long "
+            f"edge of the field), holds the ball overhead with BOTH HANDS, and "
+            f"throws it onto the field. This is very common and happens many "
+            f"times per match. Key visual cues: player faces the field from "
+            f"the sideline, ball held above/behind the head with two hands, "
+            f"ball is THROWN (not kicked). A throw-in is NOT a goal kick and "
+            f"NOT a free kick — those are always KICKED from the ground.\n"
+            f"  START: when the player holds the ball overhead\n"
+            f"  END: when the ball is released\n"
+            f"\n"
             f"KICKOFF — Play restarts from the CENTER CIRCLE (the large circle "
             f"at the exact midpoint of the field). All players are standing in "
             f"their own half. Two players stand over the ball at the center "
@@ -417,7 +435,7 @@ class ChunkTagger:
             f"\n"
             f"Respond ONLY with a JSON array (no markdown, no extra text):\n"
             f'[{{"event_type": "goal"|"penalty"|"free_kick"|"shot"|'
-            f'"corner_kick"|"goal_kick"|"catch"|"save"|"kickoff",\n'
+            f'"corner_kick"|"goal_kick"|"catch"|"save"|"throw_in"|"kickoff",\n'
             f'  "start_sec": <seconds from start of this clip when event begins>,\n'
             f'  "end_sec": <seconds from start of this clip when event ends>,\n'
             f'  "confidence": 0.0-1.0,\n'
@@ -436,8 +454,12 @@ class ChunkTagger:
             f'- "team" = the team performing the action (scoring team for goals, '
             f"goalkeeper's team for saves/catches, kicking team for corners/"
             f"goal kicks/free kicks)\n"
-            f"- Do NOT tag throw-ins (player holding ball overhead at the "
-            f"sideline and throwing it in) — they are not goal kicks\n"
+            f"- If a player holds the ball overhead with both hands at the "
+            f"sideline (touchline), that is a THROW_IN — tag it as throw_in, "
+            f"NOT as goal_kick or free_kick. Throw-ins are very common.\n"
+            f"- GOAL_KICK vs THROW_IN: a goal kick is always KICKED from the "
+            f"GROUND inside the six-yard box near the goal. If the ball is "
+            f"THROWN (hands overhead, from the sideline), it is a throw_in.\n"
             f"- A KICKOFF only happens from the center circle after a goal or "
             f"at halftime — any other restart from midfield is a free kick\n"
             f"- If no events, return: []\n"
@@ -628,7 +650,7 @@ class ChunkTagger:
                     rescan_events.extend(goal_events)
                 else:
                     # Rescan found nothing — trust the kickoff and infer a goal
-                    inferred = self._infer_goal_from_kickoff(ko, fps)
+                    inferred = self._infer_goal_from_kickoff(ko, fps, events)
                     rescan_events.append(inferred)
                     inferred_count += 1
                     log.info("chunk_tagger.goal_inferred",
@@ -646,21 +668,49 @@ class ChunkTagger:
 
     def _infer_goal_from_kickoff(
         self, kickoff: TaggedEvent, fps: float,
+        events: list[Event] | None = None,
     ) -> Event:
         """Create a synthetic goal event inferred from an orphan kickoff.
 
         When a kickoff is detected but the goal is invisible at any FPS,
-        we trust the kickoff: a goal must have happened ~20s before it.
+        we trust the kickoff: a goal must have happened before it.
+
+        If a shot_on_target exists within 300s before the kickoff, use its
+        timestamp (the shot was likely the goal the model misclassified).
+        Otherwise fall back to ko_t - 20s.
         """
         ko_t = kickoff.timestamp_abs
-        # Goal typically happens 15-30s before the kickoff (celebration + walk)
-        goal_t = ko_t - 20.0
-        goal_end = ko_t - 5.0  # celebration ends ~5s before kickoff
 
-        # Attribute to opponent by default (goal conceded = GK event),
-        # unless kickoff team info suggests otherwise
+        # Look for the last shot before the kickoff — it may be the goal
+        preceding_shot = None
+        if events:
+            shots = [
+                e for e in events
+                if e.event_type == EventType.SHOT_ON_TARGET
+                and 0 < (ko_t - e.timestamp_start) < 300.0
+            ]
+            if shots:
+                preceding_shot = max(shots, key=lambda e: e.timestamp_start)
+
+        if preceding_shot:
+            goal_t = preceding_shot.timestamp_start
+            goal_end = preceding_shot.timestamp_end
+            reasoning = (
+                f"Inferred from orphan kickoff at {ko_t:.0f}s — "
+                f"anchored to shot at {goal_t:.0f}s (likely misclassified goal)"
+            )
+            team = preceding_shot.metadata.get("tagger_team", "unknown")
+        else:
+            goal_t = ko_t - 20.0
+            goal_end = ko_t - 5.0
+            reasoning = (
+                f"Inferred from orphan kickoff at {ko_t:.0f}s — "
+                f"kickoff confirmed but goal not visible at any FPS"
+            )
+            team = "unknown"
+
+        # Attribute to opponent by default (goal conceded = GK event)
         mc = self._match_config
-        team = "unknown"
         is_gk = True  # assume goal conceded until proven otherwise
 
         frame_start = max(0, int(goal_t * fps))
@@ -673,7 +723,7 @@ class ChunkTagger:
             event_type=EventType.GOAL,
             timestamp_start=goal_t,
             timestamp_end=goal_end,
-            confidence=0.70,  # lower confidence for inferred events
+            confidence=0.70,
             reel_targets=[],
             is_goalkeeper_event=is_gk,
             frame_start=frame_start,
@@ -682,13 +732,11 @@ class ChunkTagger:
                 "tagger_event_type": "goal",
                 "tagger_confidence": 0.70,
                 "tagger_team": team,
-                "tagger_reasoning": (
-                    f"Inferred from orphan kickoff at {ko_t:.0f}s — "
-                    f"kickoff confirmed but goal not visible at any FPS"
-                ),
+                "tagger_reasoning": reasoning,
                 "tagger_model": self._model,
                 "inferred_from_kickoff": True,
                 "kickoff_timestamp": ko_t,
+                "anchored_to_shot": preceding_shot.timestamp_start if preceding_shot else None,
             },
         )
 

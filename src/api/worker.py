@@ -301,6 +301,35 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         log.info("pipeline.chunk_tagger_complete",
                  job_id=job_id, events=len(tagged_events))
 
+    # ── Tag-only mode: write event list as text and skip reel assembly ────
+    if job.tag_only:
+        all_events = event_log.read_all()
+        all_events.sort(key=lambda e: e.timestamp_start)
+        output_dir = Path(cfg.NAS_OUTPUT_PATH) / job_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        tag_file = output_dir / "events.txt"
+        with open(tag_file, "w") as f:
+            for e in all_events:
+                mins = int(e.timestamp_start // 60)
+                secs = e.timestamp_start % 60
+                end_mins = int(e.timestamp_end // 60)
+                end_secs = e.timestamp_end % 60
+                team = e.metadata.get("tagger_team", "unknown")
+                gk = " [GK]" if e.is_goalkeeper_event else ""
+                inf = " [INF]" if e.metadata.get("inferred_from_kickoff") else ""
+                f.write(
+                    f"{e.event_type.value} — "
+                    f"{mins:02d}:{secs:05.2f} → {end_mins:02d}:{end_secs:05.2f} — "
+                    f"team={team} conf={e.confidence:.2f}{gk}{inf}\n"
+                )
+        log.info("pipeline.tag_only_complete", job_id=job_id,
+                 events=len(all_events), path=str(tag_file))
+        store.update_status(
+            job_id, JobStatus.COMPLETE, progress=100.0,
+            output_paths={"events": str(tag_file)},
+        )
+        return {"job_id": job_id, "output_paths": {"events": str(tag_file)}}
+
     # ── Stage: SEGMENTING ─────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.SEGMENTING, progress=90.0)
     all_events = event_log.read_all()

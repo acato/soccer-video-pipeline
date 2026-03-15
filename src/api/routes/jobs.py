@@ -33,6 +33,7 @@ class SubmitJobRequest(BaseModel):
     reels: Optional[list[ReelSpec]] = None
     reel_types: list[str] = ["keeper", "highlights"]
     game_start_sec: float = 0.0
+    tag_only: bool = False
 
 
 class JobStatusResponse(BaseModel):
@@ -124,7 +125,8 @@ def submit_job(request: SubmitJobRequest):
         return existing
 
     job = create_job(video_file, request.reel_types, store, match_config,
-                     game_start_sec=request.game_start_sec, reels=reel_specs)
+                     game_start_sec=request.game_start_sec, reels=reel_specs,
+                     tag_only=request.tag_only)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job
