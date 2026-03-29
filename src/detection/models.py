@@ -35,6 +35,10 @@ class EventType(str, Enum):
     PENALTY             = "penalty"
     FREE_KICK_SHOT      = "free_kick_shot"
 
+    # ── Structural / restart events ──────────────────────────────────────
+    KICKOFF             = "kickoff"
+    THROW_IN            = "throw_in"
+
 
 # Map each event type to which reels it contributes to.
 # GK event types have empty defaults — reel_targets are assigned dynamically
@@ -57,6 +61,8 @@ EVENT_REEL_MAP: dict[EventType, list[str]] = {
     EventType.TACKLE:             [],
     EventType.PENALTY:            ["highlights", "keeper"],
     EventType.FREE_KICK_SHOT:     ["highlights"],
+    EventType.KICKOFF:            [],
+    EventType.THROW_IN:           [],
 }
 
 # Valid keeper reel type
@@ -205,6 +211,17 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
         label="Free Kick Shot", category="highlights",
         pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
         min_confidence=0.65, is_gk_event=False,
+    ),
+    # ── Structural / restart events ────────────────────────────────────
+    EventType.KICKOFF: EventTypeConfig(
+        label="Kickoff", category="highlights",
+        pre_pad_sec=2.0, post_pad_sec=2.0, max_clip_sec=10.0,
+        min_confidence=0.50, is_gk_event=False,
+    ),
+    EventType.THROW_IN: EventTypeConfig(
+        label="Throw-in", category="highlights",
+        pre_pad_sec=1.0, post_pad_sec=2.0, max_clip_sec=10.0,
+        min_confidence=0.50, is_gk_event=False,
     ),
 }
 

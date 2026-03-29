@@ -47,6 +47,8 @@ _TAG_TO_EVENT: dict[str, EventType] = {
     "goal_kick": EventType.GOAL_KICK,
     "catch": EventType.CATCH,
     "save": EventType.SHOT_STOP_DIVING,
+    "kickoff": EventType.KICKOFF,
+    "throw_in": EventType.THROW_IN,
 }
 
 # Event types that are goalkeeper events
@@ -156,16 +158,6 @@ class ChunkTagger:
                 for te in tagged:
                     if te.event_type == "kickoff":
                         all_kickoffs.append(te)
-                        log.info("chunk_tagger.kickoff_detected",
-                                 timestamp=te.timestamp_abs,
-                                 team=te.team,
-                                 reasoning=te.reasoning)
-                        continue
-                    if te.event_type == "throw_in":
-                        log.debug("chunk_tagger.throw_in_discarded",
-                                  timestamp=te.timestamp_abs,
-                                  team=te.team)
-                        continue
                     if (te.event_type in _TAG_TO_EVENT
                             and te.confidence >= self._min_confidence):
                         event = self._make_event(te, fps)
@@ -376,10 +368,8 @@ class ChunkTagger:
             f"  START: when the box clears (only keeper and shooter remain)\n"
             f"  END: when the shot result is clear (goal, save, or miss)\n"
             f"\n"
-            f"FREE_KICK — The ball is placed on the ground and kicked with no "
-            f"opposing player approaching. Players may form a wall at distance. "
-            f"The ball is always on the GROUND and kicked with the FOOT. "
-            f"NOT a throw-in (ball thrown overhead from the sideline).\n"
+            f"FREE_KICK — Ball placed on the ground, player kicks it from a "
+            f"standstill. NOT a throw-in (thrown overhead from sideline).\n"
             f"  START: when the ball is placed down\n"
             f"  END: when the ball is kicked\n"
             f"\n"
@@ -424,12 +414,17 @@ class ChunkTagger:
             f"  START: when the player holds the ball overhead\n"
             f"  END: when the ball is released\n"
             f"\n"
-            f"KICKOFF — Play restarts from the CENTER CIRCLE (the large circle "
-            f"at the exact midpoint of the field). All players are standing in "
-            f"their own half. Two players stand over the ball at the center "
-            f"spot. This ONLY happens after a goal or at halftime — NOT after "
-            f"any other stoppage. Do NOT confuse with a free kick (which "
-            f"happens anywhere on the field, not at center).\n"
+            f"KICKOFF — The most visually distinctive restart in soccer. "
+            f"You MUST see ALL of these to tag a kickoff:\n"
+            f"  1. The ball is on the CENTER SPOT (exact middle of the field)\n"
+            f"  2. The field is CLEANLY SPLIT — one team on each half, "
+            f"no players crossing the halfway line\n"
+            f"  3. Only 1-2 players stand at the ball; everyone else is "
+            f"far away in their own half\n"
+            f"  4. The field looks organized and still (not chaotic)\n"
+            f"If ANY players are clustered near the ball (like a wall or "
+            f"group), it is a FREE KICK, not a kickoff. If the ball is "
+            f"anywhere other than the exact center spot, it is NOT a kickoff.\n"
             f"  START: when the ball is kicked from center\n"
             f"  END: same as start (single moment)\n"
             f"\n"
@@ -460,8 +455,10 @@ class ChunkTagger:
             f"- GOAL_KICK vs THROW_IN: a goal kick is always KICKED from the "
             f"GROUND inside the six-yard box near the goal. If the ball is "
             f"THROWN (hands overhead, from the sideline), it is a throw_in.\n"
-            f"- A KICKOFF only happens from the center circle after a goal or "
-            f"at halftime — any other restart from midfield is a free kick\n"
+            f"- KICKOFF is RARE (only after goals or at halftime). You must see "
+            f"the field cleanly split — teams on their own halves, ball at "
+            f"center spot, 1-2 players at ball. If players are clustered or "
+            f"the ball is not at center, it is a free kick, NOT a kickoff\n"
             f"- If no events, return: []\n"
         )
 
