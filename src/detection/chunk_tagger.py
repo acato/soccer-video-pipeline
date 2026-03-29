@@ -2,9 +2,9 @@
 Chunk-based video tagger using vLLM-hosted vision model (Qwen3-VL).
 
 Instead of classifying individual trajectory gaps, this approach:
-1. Splits the full video into overlapping 2.5-minute chunks
-2. Extracts each chunk at 2 FPS (source resolution) via FFmpeg
-3. Sends each chunk to vLLM, asking the model to tag ALL events
+1. Splits the full video into overlapping chunks (default 60s, 20s overlap)
+2. Extracts each chunk at 2 FPS, scaled to 1280px width, via FFmpeg
+3. Sends each chunk to vLLM, asking the model to tag events
 4. Deduplicates events from overlapping chunk boundaries
 5. Returns a unified event list
 
@@ -12,9 +12,12 @@ This gives the model full temporal context (build-up → event → aftermath)
 and detects events that trajectory-gap analysis misses (e.g. goals).
 
 VRAM budget (48 GB, Qwen3-VL-32B-FP8, FP8 KV cache):
-    150s × 2 FPS = 300 frames × 256 tok/frame = 76,800 visual tokens
-    + ~1,200 tokens prompt/response = ~78,000 total
-    Fits in 90K max context with --max-model-len 90000 --kv-cache-dtype fp8
+    60s × 2 FPS = 120 frames × ~100 tok/frame (1280px) = ~12,000 visual tokens
+    + ~1,200 tokens prompt/response = ~13,200 total
+    Fits comfortably in --max-model-len 34896 --kv-cache-dtype fp8
+
+Supports a ``goals_only`` mode that uses a focused, shorter prompt
+optimised for goal + kickoff detection (higher recall, fewer FPs).
 """
 from __future__ import annotations
 
@@ -77,7 +80,7 @@ class ChunkTagger:
     vLLM-hosted vision model, collects and deduplicates tagged events.
 
     Requires vLLM server configured with sufficient context:
-        --max-model-len 90000 --kv-cache-dtype fp8
+        --max-model-len 34896 --kv-cache-dtype fp8
     """
 
     def __init__(
@@ -94,6 +97,8 @@ class ChunkTagger:
         working_dir: Optional[str] = None,
         rescan_fps: int = 8,
         rescan_pre_sec: float = 30.0,
+        game_start_sec: float = 0.0,
+        goals_only: bool = False,
     ):
         self._vllm_url = vllm_url.rstrip("/")
         self._model = model
@@ -106,6 +111,8 @@ class ChunkTagger:
         self._min_confidence = min_confidence
         self._rescan_fps = rescan_fps
         self._rescan_pre_sec = rescan_pre_sec
+        self._game_start_sec = game_start_sec
+        self._goals_only = goals_only
 
         # Debug output directory
         if working_dir:
@@ -201,13 +208,17 @@ class ChunkTagger:
     # ----- chunk computation ------------------------------------------------
 
     def _compute_chunks(self, video_duration: float) -> list[tuple[float, float]]:
-        """Compute chunk start/end times with overlap."""
+        """Compute chunk start/end times with overlap.
+
+        Starts from ``game_start_sec`` (with a 30s buffer before) to skip
+        pre-game warmup footage.
+        """
         step = self._chunk_duration - self._chunk_overlap
         if step <= 0:
             step = self._chunk_duration  # no overlap if misconfigured
 
         chunks = []
-        start = 0.0
+        start = max(0.0, self._game_start_sec - 30.0) if self._game_start_sec > 0 else 0.0
         while start < video_duration:
             end = min(start + self._chunk_duration, video_duration)
             # Skip very short trailing chunks (< 10s)
@@ -226,19 +237,23 @@ class ChunkTagger:
     def _extract_chunk(
         self, start: float, end: float, index: int,
     ) -> Optional[Path]:
-        """Extract video chunk at target FPS via FFmpeg."""
+        """Extract video chunk at target FPS via FFmpeg.
+
+        Uses ``-ss`` after ``-i`` for frame-accurate seeking and scales
+        to 1280px width to reduce token consumption in the VLM.
+        """
         duration = end - start
         chunk_path = self._debug_dir / f"chunk_{index:03d}_t{start:.0f}.mp4"
 
         cmd = [
             "ffmpeg", "-y",
-            "-ss", f"{start:.3f}",
             "-i", self._source_file,
+            "-ss", f"{start:.3f}",
             "-t", f"{duration:.3f}",
-            "-vf", f"fps={self._chunk_fps}",
+            "-vf", f"fps={self._chunk_fps},scale=1280:-2",
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
+            "-preset", "fast",
+            "-crf", "23",
             "-an",
             str(chunk_path),
         ]
@@ -272,7 +287,7 @@ class ChunkTagger:
         """
         import httpx
 
-        prompt = self._build_prompt(chunk_start, chunk_end)
+        prompt = self._build_prompt(chunk_start, chunk_end, goals_only=self._goals_only)
 
         video_bytes = chunk_path.read_bytes()
         video_b64 = base64.b64encode(video_bytes).decode()
@@ -326,8 +341,95 @@ class ChunkTagger:
 
     # ----- prompt construction ----------------------------------------------
 
-    def _build_prompt(self, chunk_start: float, chunk_end: float) -> str:
-        """Build tagging prompt with match context."""
+    def _build_prompt(
+        self, chunk_start: float, chunk_end: float,
+        goals_only: bool = False,
+    ) -> str:
+        """Build tagging prompt with match context.
+
+        When *goals_only* is True a much shorter prompt is used that
+        focuses exclusively on goals and kickoffs, improving recall by
+        reducing the classification burden on the model.
+        """
+        if goals_only:
+            return self._build_goals_only_prompt(chunk_start, chunk_end)
+        return self._build_full_prompt(chunk_start, chunk_end)
+
+    # ----- goals-only prompt --------------------------------------------------
+
+    def _build_goals_only_prompt(
+        self, chunk_start: float, chunk_end: float,
+    ) -> str:
+        """Short, focused prompt for goal + kickoff detection only."""
+        mc = self._match_config
+        duration = chunk_end - chunk_start
+        start_m, start_s = divmod(int(chunk_start), 60)
+        end_m, end_s = divmod(int(chunk_end), 60)
+
+        return (
+            f"You are analyzing a {duration:.0f}-second clip from a youth "
+            f"soccer match at {self._chunk_fps} FPS. Fixed sideline camera.\n"
+            f"\n"
+            f"Match: {mc.team.team_name} "
+            f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
+            f"{mc.opponent.team_name} "
+            f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
+            f"Clip: {start_m}:{start_s:02d} – {end_m}:{end_s:02d}.\n"
+            f"\n"
+            f"TASK: Find every GOAL and every KICKOFF in this clip.\n"
+            f"\n"
+            f"First, briefly describe the key moments you see (2-3 sentences): "
+            f"any shots, the ball entering the net, celebrations, or teams "
+            f"lining up at the center circle.\n"
+            f"\n"
+            f"Then report events as JSON.\n"
+            f"\n"
+            f"GOAL — A shot that goes into the net. Report it even if you "
+            f"cannot see the kickoff restart in this clip. Use confidence:\n"
+            f"  0.90+ if you see the ball in the net AND players celebrating\n"
+            f"  0.70-0.85 if you see the ball cross the goal line but "
+            f"celebration is unclear\n"
+            f"  0.50-0.65 if a powerful shot and the ball disappears into "
+            f"the goal area but you are not certain\n"
+            f"  START: when the shot is taken\n"
+            f"  END: when the celebration peaks (do NOT include teams walking "
+            f"to halves or the kickoff)\n"
+            f"\n"
+            f"KICKOFF — Teams line up for a center-circle restart. You MUST "
+            f"see ALL of these:\n"
+            f"  1. Ball on the CENTER SPOT (exact middle of the field)\n"
+            f"  2. Field CLEANLY SPLIT — one team per half, no one crossing "
+            f"the halfway line\n"
+            f"  3. Only 1-2 players at the ball; everyone else far away\n"
+            f"  4. The field looks organized and still\n"
+            f"If players are clustered near the ball (like a wall), it is a "
+            f"free kick, NOT a kickoff.\n"
+            f"  START: when the ball is kicked from center\n"
+            f"  END: same as start (single moment)\n"
+            f"\n"
+            f"Respond with your brief description followed by a JSON array "
+            f"(no markdown):\n"
+            f'[{{"event_type": "goal"|"kickoff",\n'
+            f'  "start_sec": <seconds from start of THIS CLIP (0 = first frame)>,\n'
+            f'  "end_sec": <seconds from start of THIS CLIP>,\n'
+            f'  "confidence": 0.0-1.0,\n'
+            f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
+            f'  "reasoning": "brief description"}}]\n'
+            f"\n"
+            f"Rules:\n"
+            f"- Report goals even WITHOUT seeing a kickoff — the pipeline "
+            f"will confirm via kickoff detection separately\n"
+            f"- A shot that is saved or goes wide is NOT a goal\n"
+            f"- KICKOFF is RARE (only after goals or at halftime)\n"
+            f"- If no goals or kickoffs: []\n"
+        )
+
+    # ----- full all-events prompt ---------------------------------------------
+
+    def _build_full_prompt(
+        self, chunk_start: float, chunk_end: float,
+    ) -> str:
+        """Build all-events tagging prompt with match context."""
         mc = self._match_config
         duration = chunk_end - chunk_start
 
@@ -431,8 +533,8 @@ class ChunkTagger:
             f"Respond ONLY with a JSON array (no markdown, no extra text):\n"
             f'[{{"event_type": "goal"|"penalty"|"free_kick"|"shot"|'
             f'"corner_kick"|"goal_kick"|"catch"|"save"|"throw_in"|"kickoff",\n'
-            f'  "start_sec": <seconds from start of this clip when event begins>,\n'
-            f'  "end_sec": <seconds from start of this clip when event ends>,\n'
+            f'  "start_sec": <seconds from start of THIS CLIP (0 = first frame)>,\n'
+            f'  "end_sec": <seconds from start of THIS CLIP>,\n'
             f'  "confidence": 0.0-1.0,\n'
             f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
             f'  "reasoning": "brief description"}}]\n'
@@ -672,43 +774,69 @@ class ChunkTagger:
         When a kickoff is detected but the goal is invisible at any FPS,
         we trust the kickoff: a goal must have happened before it.
 
-        If a shot_on_target exists within 300s before the kickoff, use its
-        timestamp (the shot was likely the goal the model misclassified).
-        Otherwise fall back to ko_t - 20s.
+        Anchoring strategy (in priority order):
+        1. Last shot_on_target within 120s before the kickoff.
+        2. Last event of any type within 90s (except kickoffs).
+        3. Fallback to ko_t - 30s.
         """
         ko_t = kickoff.timestamp_abs
+        mc = self._match_config
 
-        # Look for the last shot before the kickoff — it may be the goal
+        # 1. Try anchoring to last shot within 120s
         preceding_shot = None
         if events:
             shots = [
                 e for e in events
-                if e.event_type == EventType.SHOT_ON_TARGET
-                and 0 < (ko_t - e.timestamp_start) < 300.0
+                if e.event_type in (EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET)
+                and 0 < (ko_t - e.timestamp_start) < 120.0
             ]
             if shots:
                 preceding_shot = max(shots, key=lambda e: e.timestamp_start)
 
+        # 2. Fallback: last event of any type within 90s
+        preceding_event = None
+        if not preceding_shot and events:
+            candidates = [
+                e for e in events
+                if 0 < (ko_t - e.timestamp_start) < 90.0
+                and e.event_type != EventType.KICKOFF
+            ]
+            if candidates:
+                preceding_event = max(candidates, key=lambda e: e.timestamp_start)
+
         if preceding_shot:
             goal_t = preceding_shot.timestamp_start
             goal_end = preceding_shot.timestamp_end
+            team = preceding_shot.metadata.get("tagger_team", "unknown")
+            confidence = 0.80  # kickoff + shot = strong evidence
             reasoning = (
                 f"Inferred from orphan kickoff at {ko_t:.0f}s — "
                 f"anchored to shot at {goal_t:.0f}s (likely misclassified goal)"
             )
-            team = preceding_shot.metadata.get("tagger_team", "unknown")
+        elif preceding_event:
+            goal_t = preceding_event.timestamp_start
+            goal_end = preceding_event.timestamp_end
+            team = preceding_event.metadata.get("tagger_team", "unknown")
+            confidence = 0.65
+            reasoning = (
+                f"Inferred from orphan kickoff at {ko_t:.0f}s — "
+                f"anchored to {preceding_event.event_type.value} at {goal_t:.0f}s"
+            )
         else:
-            goal_t = ko_t - 20.0
-            goal_end = ko_t - 5.0
+            goal_t = ko_t - 30.0
+            goal_end = ko_t - 10.0
+            team = "unknown"
+            confidence = 0.65
             reasoning = (
                 f"Inferred from orphan kickoff at {ko_t:.0f}s — "
                 f"kickoff confirmed but goal not visible at any FPS"
             )
-            team = "unknown"
 
-        # Attribute to opponent by default (goal conceded = GK event)
-        mc = self._match_config
-        is_gk = True  # assume goal conceded until proven otherwise
+        # Team attribution: if the shot/event was by our team, it's our goal
+        # (not conceded). Otherwise assume conceded (GK event).
+        is_gk = True  # default: goal conceded
+        if team.lower() == mc.team.team_name.lower():
+            is_gk = False  # our team scored
 
         frame_start = max(0, int(goal_t * fps))
         frame_end = max(frame_start, int(goal_end * fps))
@@ -720,14 +848,14 @@ class ChunkTagger:
             event_type=EventType.GOAL,
             timestamp_start=goal_t,
             timestamp_end=goal_end,
-            confidence=0.70,
+            confidence=confidence,
             reel_targets=[],
             is_goalkeeper_event=is_gk,
             frame_start=frame_start,
             frame_end=frame_end,
             metadata={
                 "tagger_event_type": "goal",
-                "tagger_confidence": 0.70,
+                "tagger_confidence": confidence,
                 "tagger_team": team,
                 "tagger_reasoning": reasoning,
                 "tagger_model": self._model,
@@ -1003,13 +1131,13 @@ class ChunkTagger:
         )
         cmd = [
             "ffmpeg", "-y",
-            "-ss", f"{start:.3f}",
             "-i", self._source_file,
+            "-ss", f"{start:.3f}",
             "-t", f"{duration:.3f}",
-            "-vf", f"fps={self._rescan_fps}",
+            "-vf", f"fps={self._rescan_fps},scale=1280:-2",
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
+            "-preset", "fast",
+            "-crf", "23",
             "-an",
             str(chunk_path),
         ]
@@ -1136,7 +1264,8 @@ class ChunkTagger:
         """Remove duplicate events from overlapping chunk boundaries.
 
         For pairs of same-type events within proximity_sec of each other,
-        keeps the one with higher confidence.
+        keeps the one with higher confidence.  Then removes shots that
+        are superseded by a nearby goal (cross-type dedup).
         """
         if not events:
             return []
@@ -1154,7 +1283,31 @@ class ChunkTagger:
             else:
                 deduped.append(e)
 
-        return deduped
+        return self._cross_type_dedup(deduped)
+
+    @staticmethod
+    def _cross_type_dedup(
+        events: list[Event], proximity_sec: float = 15.0,
+    ) -> list[Event]:
+        """Remove shots superseded by a nearby goal.
+
+        When a goal is inferred from a kickoff and anchored to a preceding
+        shot, both the shot and the goal exist at the same timestamp.
+        Keep only the goal.
+        """
+        goal_times = {
+            e.timestamp_start for e in events
+            if e.event_type == EventType.GOAL
+        }
+        if not goal_times:
+            return events
+        return [
+            e for e in events
+            if not (
+                e.event_type in (EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET)
+                and any(abs(e.timestamp_start - g) < proximity_sec for g in goal_times)
+            )
+        ]
 
     # ----- debug logging ----------------------------------------------------
 

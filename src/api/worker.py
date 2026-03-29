@@ -268,6 +268,12 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             store.update_status(job_id, JobStatus.DETECTING, progress=pct)
 
         store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
+        # Detect goals-only mode: all reel specs contain only "goal"
+        reel_specs = job.get_reel_specs()
+        _goals_only = bool(reel_specs) and all(
+            set(s.event_types) <= {"goal"} for s in reel_specs
+        )
+
         tagger = ChunkTagger(
             vllm_url=cfg.VLLM_URL,
             model=cfg.VLLM_MODEL,
@@ -280,7 +286,9 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
             min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
             working_dir=cfg.WORKING_DIR,
             rescan_fps=int(getattr(cfg, "VLLM_RESCAN_FPS", "8")),
-            rescan_pre_sec=float(getattr(cfg, "VLLM_RESCAN_PRE_SEC", "30")),
+            rescan_pre_sec=float(getattr(cfg, "VLLM_RESCAN_PRE_SEC", "60")),
+            game_start_sec=job.game_start_sec,
+            goals_only=_goals_only,
         )
         try:
             tagged_events = tagger.tag_video(

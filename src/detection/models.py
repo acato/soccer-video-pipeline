@@ -105,6 +105,8 @@ EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
     EventType.PENALTY:            0.60,
     EventType.FREE_KICK_SHOT:     0.65,
     EventType.CORNER_KICK:        0.65,
+    EventType.KICKOFF:            0.50,
+    EventType.THROW_IN:           0.50,
 }
 
 

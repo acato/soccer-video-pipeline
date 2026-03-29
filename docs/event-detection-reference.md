@@ -477,16 +477,17 @@ When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTag
 
 Fast goals (breakouts, quick shots) can be invisible at 2 FPS. The tagger detects these via kickoffs:
 
-1. **Pass 1 (2 FPS)**: Tags all events including `kickoff` (center-circle restart)
+1. **Pass 1 (2 FPS)**: Tags all events including `kickoff` (center-circle restart). In goals-only mode, a focused shorter prompt is used that does not require kickoff confirmation for goals (report ball-in-net moments at any confidence; pipeline confirms via kickoff separately).
 2. **Orphan detection**: A kickoff not preceded by a detected goal within 90s, and not halftime (>120s event gap), implies a missed goal
-3. **Pass 2 (8 FPS)**: Extracts the 30s before the orphan kickoff in 15s chunks at 8 FPS, sends to vLLM with a focused "find the goal" prompt
+3. **Pass 2 (8 FPS)**: Extracts the 60s before the orphan kickoff in 15s chunks at 8 FPS, sends to vLLM with a focused "find the goal" prompt
 4. Goal events from the rescan are added to the event list
+5. **Goal inference**: If the rescan still finds nothing, a synthetic goal is created anchored to the last shot within 120s, or falling back to ko_t-30s
 
-Config: `VLLM_RESCAN_FPS` (default 8), `VLLM_RESCAN_PRE_SEC` (default 30).
+Config: `VLLM_RESCAN_FPS` (default 8), `VLLM_RESCAN_PRE_SEC` (default 60).
 
 ### Deduplication
 
-Events from overlapping chunks are deduplicated: same event type within 10s proximity → keep higher confidence.
+Events from overlapping chunks are deduplicated: same event type within 10s proximity → keep higher confidence. Cross-type dedup then removes shots within 15s of a goal (the shot was superseded by the goal).
 
 ## Known Issues
 
