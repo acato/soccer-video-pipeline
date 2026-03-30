@@ -2,8 +2,8 @@
 Chunk-based video tagger using vLLM-hosted vision model (Qwen3-VL).
 
 Instead of classifying individual trajectory gaps, this approach:
-1. Splits the full video into overlapping chunks (default 60s, 20s overlap)
-2. Extracts each chunk at 2 FPS, scaled to 1280px width, via FFmpeg
+1. Splits the full video into overlapping chunks (default 45s, 15s overlap)
+2. Extracts each chunk at 4 FPS, scaled to 1280px width, via FFmpeg
 3. Sends each chunk to vLLM, asking the model to tag events
 4. Deduplicates events from overlapping chunk boundaries
 5. Returns a unified event list
@@ -11,13 +11,17 @@ Instead of classifying individual trajectory gaps, this approach:
 This gives the model full temporal context (build-up → event → aftermath)
 and detects events that trajectory-gap analysis misses (e.g. goals).
 
-VRAM budget (48 GB, Qwen3-VL-32B-FP8, FP8 KV cache):
-    60s × 2 FPS = 120 frames × ~100 tok/frame (1280px) = ~12,000 visual tokens
-    + ~1,200 tokens prompt/response = ~13,200 total
-    Fits comfortably in --max-model-len 34896 --kv-cache-dtype fp8
+Token budget (Qwen3-VL-32B-FP8, --max-model-len 31488):
+    Observed: 120 frames (60s @ 2 FPS) uses ~24% KV cache (~7.6K tokens).
+    Current: 45s × 4 FPS = 180 frames ≈ ~11K tokens (~36% KV).
+    Encoder cache budget: 16,384 visual tokens (hard ceiling).
+    Prompt/response overhead: ~2K tokens.
+    Fits comfortably within 31,488 context and 16,384 encoder cache.
 
-Supports a ``goals_only`` mode that uses a focused, shorter prompt
-optimised for goal + kickoff detection (higher recall, fewer FPs).
+All prompts use negative-prompt inversion: the model must list reasons
+each candidate is NOT a given event type before tagging it.  This
+dramatically reduces hallucinated goals on ambiguous footage (fog, fast
+cuts, distant camera).
 """
 from __future__ import annotations
 
@@ -80,7 +84,7 @@ class ChunkTagger:
     vLLM-hosted vision model, collects and deduplicates tagged events.
 
     Requires vLLM server configured with sufficient context:
-        --max-model-len 34896 --kv-cache-dtype fp8
+        --max-model-len 31488 --kv-cache-dtype fp8
     """
 
     def __init__(
@@ -90,9 +94,9 @@ class ChunkTagger:
         source_file: str,
         match_config,
         job_id: str = "",
-        chunk_duration_sec: float = 150.0,
+        chunk_duration_sec: float = 45.0,
         chunk_overlap_sec: float = 15.0,
-        chunk_fps: int = 2,
+        chunk_fps: int = 4,
         min_confidence: float = 0.5,
         working_dir: Optional[str] = None,
         rescan_fps: int = 8,
@@ -360,7 +364,11 @@ class ChunkTagger:
     def _build_goals_only_prompt(
         self, chunk_start: float, chunk_end: float,
     ) -> str:
-        """Short, focused prompt for goal + kickoff detection only."""
+        """Short, focused prompt for goal + kickoff detection only.
+
+        Uses negative-prompt inversion: the model must explain why each
+        shot-like moment is NOT a goal before it may tag one as a goal.
+        """
         mc = self._match_config
         duration = chunk_end - chunk_start
         start_m, start_s = divmod(int(chunk_start), 60)
@@ -374,31 +382,61 @@ class ChunkTagger:
             f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
             f"{mc.opponent.team_name} "
             f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
-            f"Clip: {start_m}:{start_s:02d} – {end_m}:{end_s:02d}.\n"
+            f"Clip: {start_m}:{start_s:02d} - {end_m}:{end_s:02d}.\n"
             f"\n"
             f"TASK: Find every GOAL and every KICKOFF in this clip.\n"
             f"\n"
-            f"First, briefly describe the key moments you see (2-3 sentences): "
-            f"any shots, the ball entering the net, celebrations, or teams "
-            f"lining up at the center circle.\n"
+            f"=== STEP 1: DESCRIBE WHAT YOU SEE ===\n"
+            f"List every moment where the ball moves toward a goal or a "
+            f"restart formation appears. For each moment, write:\n"
+            f"- The timestamp (seconds from clip start)\n"
+            f"- What actually happens to the BALL (where does it end up?)\n"
+            f"- What the GOALKEEPER does (catches, deflects, watches it go in, "
+            f"or is not visible)\n"
+            f"- What happens AFTER: do players celebrate by running/jumping/"
+            f"hugging? Or does play continue normally?\n"
             f"\n"
-            f"Then report events as JSON.\n"
+            f"=== STEP 2: DISQUALIFY NON-GOALS ===\n"
+            f"For each moment from Step 1, check this list. If ANY apply, "
+            f"it is NOT a goal:\n"
+            f"- The goalkeeper catches or holds the ball\n"
+            f"- The goalkeeper deflects/pushes the ball and play continues\n"
+            f"- The ball goes over the crossbar or wide of the post\n"
+            f"- A defender blocks the ball\n"
+            f"- Play continues without interruption (no restart, no "
+            f"celebration)\n"
+            f"- You CANNOT see the ball actually cross the goal line and "
+            f"enter the net (it just disappears from view, or the camera "
+            f"angle is unclear)\n"
+            f"- The ball is near the goal but you are guessing rather than "
+            f"seeing it in the net\n"
             f"\n"
-            f"GOAL — A shot that goes into the net. Report it even if you "
-            f"cannot see the kickoff restart in this clip. Use confidence:\n"
-            f"  0.90+ if you see the ball in the net AND players celebrating\n"
-            f"  0.70-0.85 if you see the ball cross the goal line but "
-            f"celebration is unclear\n"
-            f"  0.50-0.65 if a powerful shot and the ball disappears into "
-            f"the goal area but you are not certain\n"
+            f"IMPORTANT: On foggy or low-visibility days, the ball often "
+            f"disappears from view near the goal. Disappearing does NOT mean "
+            f"it went in. If you cannot track the ball into the net, it is "
+            f"NOT a goal. A save, a miss over the bar, and a goal can all "
+            f"look identical in fog. You need CONFIRMATION (celebration, "
+            f"restart from center) to distinguish them.\n"
+            f"\n"
+            f"=== STEP 3: TAG ONLY CONFIRMED EVENTS ===\n"
+            f"\n"
+            f"GOAL: Tag ONLY if you can answer YES to at least TWO of:\n"
+            f"  a) You see the ball cross the goal line INTO the net\n"
+            f"  b) Multiple players celebrate (run toward each other, jump, "
+            f"hug, raise arms) — NOT just standing or walking\n"
+            f"  c) Teams walk to their own halves and set up at the center "
+            f"circle for a restart\n"
+            f"  Confidence guide:\n"
+            f"  0.90+: ball in net AND celebration visible\n"
+            f"  0.75-0.85: strong celebration but ball-in-net unclear (fog)\n"
+            f"  Below 0.70: do NOT tag it — insufficient evidence\n"
             f"  START: when the shot is taken\n"
-            f"  END: when the celebration peaks (do NOT include teams walking "
-            f"to halves or the kickoff)\n"
+            f"  END: when celebration peaks (do NOT include walk-back or "
+            f"kickoff)\n"
             f"\n"
-            f"KICKOFF — Teams line up for a center-circle restart. You MUST "
-            f"see ALL of these:\n"
+            f"KICKOFF: You MUST see ALL of these:\n"
             f"  1. Ball on the CENTER SPOT (exact middle of the field)\n"
-            f"  2. Field CLEANLY SPLIT — one team per half, no one crossing "
+            f"  2. Field CLEANLY SPLIT — one team per half, nobody crossing "
             f"the halfway line\n"
             f"  3. Only 1-2 players at the ball; everyone else far away\n"
             f"  4. The field looks organized and still\n"
@@ -407,21 +445,28 @@ class ChunkTagger:
             f"  START: when the ball is kicked from center\n"
             f"  END: same as start (single moment)\n"
             f"\n"
-            f"Respond with your brief description followed by a JSON array "
+            f"Respond with your Step 1-2 analysis, then a JSON array "
             f"(no markdown):\n"
             f'[{{"event_type": "goal"|"kickoff",\n'
             f'  "start_sec": <seconds from start of THIS CLIP (0 = first frame)>,\n'
             f'  "end_sec": <seconds from start of THIS CLIP>,\n'
             f'  "confidence": 0.0-1.0,\n'
             f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
-            f'  "reasoning": "brief description"}}]\n'
+            f'  "reasoning": "what SPECIFIC visual evidence confirmed this '
+            f'(ball in net + celebration, or center-circle formation)"}}]\n'
             f"\n"
             f"Rules:\n"
-            f"- Report goals even WITHOUT seeing a kickoff — the pipeline "
-            f"will confirm via kickoff detection separately\n"
-            f"- A shot that is saved or goes wide is NOT a goal\n"
-            f"- KICKOFF is RARE (only after goals or at halftime)\n"
-            f"- If no goals or kickoffs: []\n"
+            f"- A shot where you THINK the ball might have gone in is NOT a "
+            f"goal. You need to SEE it in the net or see unambiguous "
+            f"celebration.\n"
+            f"- \"The ball disappears toward the goal\" is NOT evidence of "
+            f"a goal. The ball disappears on saves and misses too.\n"
+            f"- \"The goalkeeper dives but fails to save\" is a guess, not "
+            f"an observation, unless you can see the ball behind the keeper "
+            f"in the net.\n"
+            f"- KICKOFF is RARE (only after goals or at halftime).\n"
+            f"- Most clips will have ZERO goals. Return [] confidently when "
+            f"you do not see clear evidence.\n"
         )
 
     # ----- full all-events prompt ---------------------------------------------
@@ -429,7 +474,12 @@ class ChunkTagger:
     def _build_full_prompt(
         self, chunk_start: float, chunk_end: float,
     ) -> str:
-        """Build all-events tagging prompt with match context."""
+        """Build all-events tagging prompt with match context.
+
+        Uses negative-prompt inversion: for each candidate event the model
+        must first list reasons it is NOT that event type, then tag only
+        if no disqualifying reason applies.
+        """
         mc = self._match_config
         duration = chunk_end - chunk_start
 
@@ -446,121 +496,155 @@ class ChunkTagger:
             f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
             f"{mc.opponent.team_name} "
             f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
-            f"This clip covers {start_m}:{start_s:02d} – {end_m}:{end_s:02d} "
+            f"This clip covers {start_m}:{start_s:02d} - {end_m}:{end_s:02d} "
             f"of the match video.\n"
             f"\n"
-            f"Tag EVERY event you see. For each event, report BOTH a start and "
-            f"end timestamp that bound the full sequence.\n"
+            f"=== STEP 1: SCAN AND DESCRIBE ===\n"
+            f"Watch the entire clip. List every moment where the ball changes "
+            f"possession, goes out of play, or moves toward a goal. For each "
+            f"moment, describe ONLY what you can directly observe:\n"
+            f"- Timestamp (seconds from clip start)\n"
+            f"- Where is the ball? (field zone: left/center/right, near which "
+            f"goal?)\n"
+            f"- What happens to the ball? (kicked, thrown, caught, deflected, "
+            f"goes out of bounds, enters net)\n"
+            f"- Body posture of key players (standing still with ball on "
+            f"ground, holding ball overhead, diving, running)\n"
+            f"- What happens immediately AFTER? (play continues, celebration, "
+            f"restart formation, corner setup)\n"
             f"\n"
-            f"EVENT TYPES AND OBSERVATION CHAINS:\n"
+            f"=== STEP 2: CLASSIFY EACH MOMENT ===\n"
+            f"For each moment from Step 1, try to DISQUALIFY it from each "
+            f"event type. Tag it ONLY as the type where no disqualifying "
+            f"reason applies.\n"
             f"\n"
-            f"GOAL — A shot goes into the net. Confirmed by: players celebrate, "
-            f"teams walk to their own halves, kickoff from center circle. The "
-            f"kickoff restart is what proves it was a goal (not a save or miss).\n"
-            f"  START: when the shot is taken\n"
-            f"  END: when the celebration ends (do NOT include teams walking "
-            f"to halves or kickoff)\n"
+            f"EVENT TYPES AND DISQUALIFICATION RULES:\n"
             f"\n"
-            f"PENALTY — The penalty box clears: ALL players except the "
-            f"goalkeeper and one shooter leave the box. The ball is placed on "
-            f"the penalty spot (12 yards from goal, centered). The shooter "
-            f"runs up alone and kicks. The key visual cue: an unusually empty "
-            f"box with only two players — one at the goal line, one at the "
-            f"ball. All other players wait behind the penalty arc.\n"
-            f"  START: when the box clears (only keeper and shooter remain)\n"
-            f"  END: when the shot result is clear (goal, save, or miss)\n"
+            f"GOAL — NOT a goal if ANY of these apply:\n"
+            f"  - The goalkeeper catches or holds the ball\n"
+            f"  - The goalkeeper deflects the ball and play continues or a "
+            f"corner is taken\n"
+            f"  - The ball goes over the crossbar or wide of the post\n"
+            f"  - A defender blocks the ball\n"
+            f"  - Play continues without interruption after the shot\n"
+            f"  - You cannot see the ball cross the goal line into the net "
+            f"(the ball just disappears from view -- this happens on saves "
+            f"and misses too, especially in fog)\n"
+            f"  - No celebration: players do not run toward each other, jump, "
+            f"hug, or raise arms\n"
+            f"  IS a goal ONLY if: (a) ball visibly enters the net OR "
+            f"(b) unambiguous celebration (multiple players running/hugging) "
+            f"AND teams set up at center for kickoff. Need at least (a) or "
+            f"(b). \"Ball disappears toward goal\" alone is NOT enough.\n"
+            f"  Confidence: 0.90+ ball in net + celebration; 0.75-0.85 "
+            f"celebration only (fog obscures ball); below 0.70 do not tag.\n"
+            f"  START: when shot is taken. END: celebration peak.\n"
             f"\n"
-            f"FREE_KICK — Ball placed on the ground, player kicks it from a "
-            f"standstill. NOT a throw-in (thrown overhead from sideline).\n"
-            f"  START: when the ball is placed down\n"
-            f"  END: when the ball is kicked\n"
+            f"PENALTY — NOT a penalty if:\n"
+            f"  - Other players are inside the penalty box (not just keeper "
+            f"and shooter)\n"
+            f"  - The ball is not on the penalty spot (centered, 12 yards "
+            f"from goal)\n"
+            f"  - It looks like a free kick (wall of defenders visible)\n"
+            f"  IS a penalty: box is empty except keeper on the goal line and "
+            f"one shooter at the ball. All others behind the penalty arc.\n"
+            f"  START: box clears. END: shot result is clear.\n"
             f"\n"
-            f"SHOT — The ball, touched last by a member of the attacking team, "
-            f"travels towards the goal and goes out past the back line without "
-            f"the goalkeeper touching it (a miss). If the keeper touches it, "
-            f"tag as SAVE or CATCH instead. If it goes in the net, tag as GOAL.\n"
-            f"  START: when the ball is struck towards goal\n"
-            f"  END: when the ball goes out of play\n"
+            f"SHOT — NOT a shot if:\n"
+            f"  - The goalkeeper catches it (tag CATCH instead)\n"
+            f"  - The goalkeeper deflects it out (tag SAVE instead)\n"
+            f"  - The ball goes into the net (tag GOAL instead)\n"
+            f"  IS a shot: ball struck toward goal, misses entirely (over "
+            f"bar, wide), no keeper touch, goes out of play.\n"
+            f"  START: ball struck. END: ball goes out.\n"
             f"\n"
-            f"CORNER_KICK — The ball is placed on the corner arc of the field. "
-            f"A player kicks it into the penalty area.\n"
-            f"  START: when the ball is placed on the corner\n"
-            f"  END: when the ball leaves the penalty area after being kicked\n"
+            f"SAVE — NOT a save if:\n"
+            f"  - The goalkeeper catches and holds the ball (tag CATCH)\n"
+            f"  - The ball misses the goal entirely without keeper contact "
+            f"(tag SHOT)\n"
+            f"  - The ball goes into the net (tag GOAL)\n"
+            f"  IS a save: shot on target, keeper touches/deflects it, ball "
+            f"goes out of play (usually for a corner).\n"
+            f"  START: shot taken. END: ball goes out.\n"
             f"\n"
-            f"GOAL_KICK — The ball is placed on the ground inside the six-yard "
-            f"box (the small box closest to the goal). The goalkeeper or a "
-            f"defender kicks it while standing still. No opposing player is "
-            f"inside the penalty area. The ball is kicked from the GROUND — "
-            f"NOT thrown. Do NOT confuse with a throw-in (player holding ball "
-            f"overhead at the sideline). A goal kick can ONLY happen at the "
-            f"END of the field near a goal, NEVER from the sideline.\n"
-            f"  START: when the ball is placed in the six-yard box\n"
-            f"  END: when a receiving player touches or controls the ball\n"
+            f"CATCH — NOT a catch if:\n"
+            f"  - The goalkeeper punches or deflects the ball away (tag SAVE "
+            f"or leave untagged)\n"
+            f"  - The ball was not going toward goal (routine back-pass "
+            f"pickup is not a catch)\n"
+            f"  IS a catch: goalkeeper grabs and holds the ball securely "
+            f"after a shot or cross.\n"
+            f"  START: preceding shot/cross. END: keeper holds ball.\n"
             f"\n"
-            f"CATCH — The goalkeeper grabs the ball and holds it securely.\n"
-            f"  START: when the preceding shot or cross is played\n"
-            f"  END: when the goalkeeper secures the ball\n"
+            f"CORNER_KICK — NOT a corner if:\n"
+            f"  - The ball is not on the corner arc\n"
+            f"  - The kick comes from the sideline (that is a free kick)\n"
+            f"  IS a corner: ball placed on the corner arc at a corner flag, "
+            f"kicked into the penalty area.\n"
+            f"  START: ball placed on corner. END: ball leaves penalty area.\n"
             f"\n"
-            f"SAVE — A shot is taken, the goalkeeper touches or deflects the "
-            f"ball, and the ball goes out for a corner kick.\n"
-            f"  START: when the shot is taken\n"
-            f"  END: when the ball goes out for a corner\n"
+            f"GOAL_KICK — NOT a goal kick if:\n"
+            f"  - A player holds the ball overhead with two hands (that is a "
+            f"THROW_IN)\n"
+            f"  - The ball is at the sideline, not at the end of the field "
+            f"(that is a throw-in or free kick)\n"
+            f"  - The ball is not on the ground inside the six-yard box\n"
+            f"  - Opposing players are inside the penalty area\n"
+            f"  IS a goal kick: ball on the ground in the six-yard box "
+            f"(small box nearest the goal), kicked by keeper or defender, "
+            f"no opponents in the penalty area. Only happens at the END of "
+            f"the field, near a goal.\n"
+            f"  START: ball placed. END: receiving player touches ball.\n"
             f"\n"
-            f"THROW_IN — A player stands at the SIDELINE (touchline, the long "
-            f"edge of the field), holds the ball overhead with BOTH HANDS, and "
-            f"throws it onto the field. This is very common and happens many "
-            f"times per match. Key visual cues: player faces the field from "
-            f"the sideline, ball held above/behind the head with two hands, "
-            f"ball is THROWN (not kicked). A throw-in is NOT a goal kick and "
-            f"NOT a free kick — those are always KICKED from the ground.\n"
-            f"  START: when the player holds the ball overhead\n"
-            f"  END: when the ball is released\n"
+            f"FREE_KICK — NOT a free kick if:\n"
+            f"  - The ball is thrown (hands overhead = throw-in)\n"
+            f"  - The ball is on the corner arc (= corner kick)\n"
+            f"  - The ball is in the six-yard box with no opponents in the "
+            f"penalty area (= goal kick)\n"
+            f"  IS a free kick: ball placed on the ground, player kicks "
+            f"from a standstill.\n"
+            f"  START: ball placed. END: ball kicked.\n"
             f"\n"
-            f"KICKOFF — The most visually distinctive restart in soccer. "
-            f"You MUST see ALL of these to tag a kickoff:\n"
-            f"  1. The ball is on the CENTER SPOT (exact middle of the field)\n"
-            f"  2. The field is CLEANLY SPLIT — one team on each half, "
-            f"no players crossing the halfway line\n"
-            f"  3. Only 1-2 players stand at the ball; everyone else is "
-            f"far away in their own half\n"
-            f"  4. The field looks organized and still (not chaotic)\n"
-            f"If ANY players are clustered near the ball (like a wall or "
-            f"group), it is a FREE KICK, not a kickoff. If the ball is "
-            f"anywhere other than the exact center spot, it is NOT a kickoff.\n"
-            f"  START: when the ball is kicked from center\n"
-            f"  END: same as start (single moment)\n"
+            f"THROW_IN — NOT a throw-in if:\n"
+            f"  - The ball is kicked from the ground (= free kick or goal "
+            f"kick)\n"
+            f"  - The player is not at the sideline/touchline\n"
+            f"  IS a throw-in: player at the sideline, ball held overhead "
+            f"with both hands, thrown onto the field. Very common.\n"
+            f"  START: ball held overhead. END: ball released.\n"
             f"\n"
-            f"Respond ONLY with a JSON array (no markdown, no extra text):\n"
+            f"KICKOFF — NOT a kickoff if:\n"
+            f"  - Players are clustered near the ball (= free kick)\n"
+            f"  - The ball is not at the exact center spot\n"
+            f"  - Teams are not cleanly split into their own halves\n"
+            f"  - The field looks chaotic or players are running\n"
+            f"  IS a kickoff: ball at center spot, one team per half, only "
+            f"1-2 players at ball, field organized and still. RARE -- only "
+            f"after goals or at halftime.\n"
+            f"  START: ball kicked. END: same as start.\n"
+            f"\n"
+            f"=== OUTPUT ===\n"
+            f"Write your Step 1 observations, then your Step 2 "
+            f"disqualification reasoning, then a JSON array:\n"
             f'[{{"event_type": "goal"|"penalty"|"free_kick"|"shot"|'
             f'"corner_kick"|"goal_kick"|"catch"|"save"|"throw_in"|"kickoff",\n'
             f'  "start_sec": <seconds from start of THIS CLIP (0 = first frame)>,\n'
             f'  "end_sec": <seconds from start of THIS CLIP>,\n'
             f'  "confidence": 0.0-1.0,\n'
             f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
-            f'  "reasoning": "brief description"}}]\n'
+            f'  "reasoning": "what specific visual evidence you saw, and '
+            f'which disqualifying reasons you checked and ruled out"}}]\n'
             f"\n"
             f"Rules:\n"
             f"- start_sec/end_sec = 0 means the first frame of this clip\n"
-            f"- Only report events you clearly see — do not guess\n"
-            f"- A GOAL must be confirmed by a center-circle kickoff. No kickoff "
-            f"= save or miss, not a goal\n"
-            f"- A SAVE always ends with a corner kick. If the keeper holds the "
-            f"ball, that is a CATCH, not a save\n"
+            f"- Only report events you clearly see -- do not guess\n"
             f"- If a shot results in a goal, catch, or save, tag the specific "
-            f"outcome — do not also tag it as SHOT\n"
-            f'- "team" = the team performing the action (scoring team for goals, '
-            f"goalkeeper's team for saves/catches, kicking team for corners/"
-            f"goal kicks/free kicks)\n"
-            f"- If a player holds the ball overhead with both hands at the "
-            f"sideline (touchline), that is a THROW_IN — tag it as throw_in, "
-            f"NOT as goal_kick or free_kick. Throw-ins are very common.\n"
-            f"- GOAL_KICK vs THROW_IN: a goal kick is always KICKED from the "
-            f"GROUND inside the six-yard box near the goal. If the ball is "
-            f"THROWN (hands overhead, from the sideline), it is a throw_in.\n"
-            f"- KICKOFF is RARE (only after goals or at halftime). You must see "
-            f"the field cleanly split — teams on their own halves, ball at "
-            f"center spot, 1-2 players at ball. If players are clustered or "
-            f"the ball is not at center, it is a free kick, NOT a kickoff\n"
+            f"outcome only (do not also tag as shot)\n"
+            f'- "team" = the team performing the action (scoring team for '
+            f"goals, goalkeeper's team for saves/catches, kicking team for "
+            f"corners/goal kicks/free kicks)\n"
+            f"- Most clips contain mostly throw-ins and routine play. Do NOT "
+            f"over-tag. If in doubt, skip it.\n"
             f"- If no events, return: []\n"
         )
 
@@ -1023,7 +1107,11 @@ class ChunkTagger:
         gap_start: float,
         gap_end: float,
     ) -> str:
-        """Build a focused prompt for scanning event gaps."""
+        """Build a focused prompt for scanning event gaps.
+
+        Uses negative-prompt inversion: the model must explain why each
+        candidate is NOT a goal/penalty before tagging.
+        """
         mc = self._match_config
         duration = chunk_end - chunk_start
         gap_duration = gap_end - gap_start
@@ -1039,30 +1127,47 @@ class ChunkTagger:
             f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
             f"{mc.opponent.team_name} "
             f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
-            f"This clip covers {start_m}:{start_s:02d} – {end_m}:{end_s:02d}.\n"
+            f"This clip covers {start_m}:{start_s:02d} - {end_m}:{end_s:02d}.\n"
             f"\n"
             f"CONTEXT: There is a {gap_duration:.0f}-second gap with no detected "
             f"events during active play. This gap may contain a missed goal or "
-            f"penalty kick. Look carefully for:\n"
+            f"penalty kick.\n"
             f"\n"
-            f"1. PENALTY: A single player standing over the ball at the penalty "
-            f"   spot (~12 yards from goal), with only the goalkeeper defending. "
-            f"   All other players stand outside the penalty area. The player "
-            f"   runs up and shoots.\n"
-            f"2. GOAL: A shot that goes into the net, followed by celebration. "
-            f"   Could be from open play, a penalty kick, or a free kick.\n"
-            f"3. KICKOFF: Teams lined up in their halves, ball kicked from the "
-            f"   center circle (confirms a goal was scored before this).\n"
+            f"=== STEP 1: DESCRIBE ===\n"
+            f"List every shot-like moment or restart formation you see. For "
+            f"each one, describe:\n"
+            f"- Timestamp\n"
+            f"- What happens to the ball (where does it end up?)\n"
+            f"- What the goalkeeper does\n"
+            f"- What happens after (celebration? play continues? restart?)\n"
             f"\n"
-            f"Respond ONLY with a JSON array:\n"
+            f"=== STEP 2: DISQUALIFY ===\n"
+            f"For each moment, check these disqualifying reasons:\n"
+            f"- Keeper catches or deflects the ball = NOT a goal\n"
+            f"- Ball goes over the bar or wide = NOT a goal\n"
+            f"- Play continues without interruption = NOT a goal\n"
+            f"- Ball disappears from view without clear net entry = NOT "
+            f"a goal (fog/distance makes saves look like goals)\n"
+            f"- No visible celebration = probably NOT a goal\n"
+            f"\n"
+            f"PENALTY must show: empty box (only keeper + shooter), ball on "
+            f"penalty spot. If other players are in the box or there is a "
+            f"wall of defenders, it is NOT a penalty.\n"
+            f"\n"
+            f"=== STEP 3: TAG ===\n"
+            f"Tag ONLY moments where no disqualifying reason applies.\n"
+            f"\n"
+            f"Write your analysis, then a JSON array:\n"
             f'[{{"event_type": "goal"|"penalty",\n'
             f'  "start_sec": <seconds from start of this clip>,\n'
             f'  "end_sec": <seconds from start of this clip>,\n'
             f'  "confidence": 0.0-1.0,\n'
             f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
-            f'  "reasoning": "brief description"}}]\n'
+            f'  "reasoning": "specific visual evidence and which '
+            f'disqualifying reasons were checked"}}]\n'
             f"\n"
-            f"If you see nothing significant, return: []\n"
+            f"Most clips in a gap contain routine play, not goals. "
+            f"Return [] if no confirmed goal or penalty.\n"
         )
 
     def _rescan_for_goal(
@@ -1219,7 +1324,13 @@ class ChunkTagger:
     def _build_rescan_prompt(
         self, chunk_start: float, chunk_end: float, kickoff_t: float,
     ) -> str:
-        """Build a focused goal-finding prompt for high-FPS rescan."""
+        """Build a focused goal-finding prompt for high-FPS rescan.
+
+        This prompt runs AFTER a kickoff was confirmed, so a goal almost
+        certainly happened.  We still use negative-prompt inversion to
+        ensure the model pinpoints the actual goal moment rather than
+        tagging any random shot.
+        """
         mc = self._match_config
         duration = chunk_end - chunk_start
 
@@ -1235,25 +1346,44 @@ class ChunkTagger:
             f"(outfield: {mc.team.outfield_color}, GK: {mc.team.gk_color}) vs "
             f"{mc.opponent.team_name} "
             f"(outfield: {mc.opponent.outfield_color}, GK: {mc.opponent.gk_color}).\n"
-            f"This clip covers {start_m}:{start_s:02d} – {end_m}:{end_s:02d}.\n"
+            f"This clip covers {start_m}:{start_s:02d} - {end_m}:{end_s:02d}.\n"
             f"\n"
-            f"CONTEXT: A kickoff from the center circle was detected at "
-            f"{ko_m}:{ko_s:02d}, which means a goal was scored shortly before. "
-            f"Find the goal in this clip.\n"
+            f"CONTEXT: A kickoff from the center circle was confirmed at "
+            f"{ko_m}:{ko_s:02d}. A goal was scored before that kickoff. "
+            f"Find the exact moment of the goal in this clip.\n"
             f"\n"
-            f"Look for: a fast attack or breakout, a shot on goal, the ball "
-            f"going into the net, and the goalkeeper failing to stop it. The "
-            f"goal may happen very quickly (1-2 seconds from shot to net).\n"
+            f"=== STEP 1: LIST ALL SHOTS ===\n"
+            f"Describe every moment where the ball moves toward a goal. "
+            f"For each, state:\n"
+            f"- Timestamp\n"
+            f"- What the ball does (enters net, saved, goes wide, goes over)\n"
+            f"- What the goalkeeper does\n"
+            f"- What happens after (celebration, play continues, corner)\n"
             f"\n"
-            f"Respond ONLY with a JSON array:\n"
+            f"=== STEP 2: FIND THE GOAL ===\n"
+            f"Only ONE of these shots is the actual goal. It is the one "
+            f"where:\n"
+            f"- The ball enters the net, OR\n"
+            f"- Players celebrate (run, hug, jump) immediately after, OR\n"
+            f"- Play stops and does not restart with a goal kick or corner "
+            f"(because the restart is the kickoff at center)\n"
+            f"\n"
+            f"Disqualify shots where:\n"
+            f"- The keeper saves it and play continues or a corner follows\n"
+            f"- The ball goes over or wide and a goal kick follows\n"
+            f"- Play continues without interruption\n"
+            f"\n"
+            f"Write your analysis, then a JSON array with at most ONE goal:\n"
             f'[{{"event_type": "goal",\n'
-            f'  "start_sec": <seconds from start of this clip when the shot is taken>,\n'
-            f'  "end_sec": <seconds from start of this clip when celebration starts>,\n'
+            f'  "start_sec": <seconds from start of this clip when shot is taken>,\n'
+            f'  "end_sec": <seconds when celebration starts or play stops>,\n'
             f'  "confidence": 0.0-1.0,\n'
             f'  "team": "{mc.team.team_name}"|"{mc.opponent.team_name}"|"unknown",\n'
-            f'  "reasoning": "brief description of what you see"}}]\n'
+            f'  "reasoning": "which shot, what happened to the ball, what '
+            f'disqualified the other shots"}}]\n'
             f"\n"
-            f"If you do not see a goal in this clip, return: []\n"
+            f"If you see no clear goal moment in this clip, return: []\n"
+            f"The goal may be in an adjacent clip -- do not force a tag.\n"
         )
 
     # ----- deduplication ----------------------------------------------------

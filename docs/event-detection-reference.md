@@ -449,7 +449,7 @@ Self-hosted via vLLM — no per-request API cost. Requires GPU server running th
 
 ## Chunk Tagger (vLLM Vision Model)
 
-When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTagger` (`src/detection/chunk_tagger.py`) instead of YOLO-based detection. The tagger splits the video into overlapping chunks, sends each to Qwen3-VL via vLLM, and the model tags events using observation chains.
+When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTagger` (`src/detection/chunk_tagger.py`) instead of YOLO-based detection. The tagger splits the video into overlapping chunks (default 45s at 4 FPS, 15s overlap), sends each to Qwen3-VL via vLLM, and the model tags events using negative-prompt inversion (must list reasons each candidate is NOT a given event type before tagging).
 
 ### Tagged Event Types
 
@@ -466,24 +466,26 @@ When `VLLM_ENABLED=true` and `USE_NULL_DETECTOR=true`, the worker uses `ChunkTag
 
 ### Key Rules in Prompt
 
-- GOAL requires confirmation by center-circle kickoff (no kickoff = not a goal)
+- All prompts use **negative-prompt inversion**: for each candidate event, the model lists reasons it is NOT that event type, then tags only if no disqualifying reason applies
+- GOAL requires at least TWO of: (a) ball visibly in net, (b) celebration, (c) center-circle setup. "Ball disappears toward goal" alone is never enough.
 - SAVE always ends with a corner kick; if keeper holds the ball = CATCH
 - SHOT is only tagged when the outcome is a miss (not goal/save/catch)
 - Throw-ins are NOT goal kicks — a throw-in is a player holding the ball overhead at the sideline
 - KICKOFF only happens from the exact center circle after a goal or at halftime — not after any other stoppage
 - "team" field = team performing the action (scoring team, GK's team, kicking team)
+- Special fog/low-visibility rule: ball disappearing near the goal does NOT equal a goal; saves, misses, and goals all look identical in poor visibility
 
 ### Kickoff-Based Goal Recovery (Two-Pass)
 
-Fast goals (breakouts, quick shots) can be invisible at 2 FPS. The tagger detects these via kickoffs:
+Fast goals (breakouts, quick shots) can be invisible even at 4 FPS. The tagger detects these via kickoffs:
 
-1. **Pass 1 (2 FPS)**: Tags all events including `kickoff` (center-circle restart). In goals-only mode, a focused shorter prompt is used that does not require kickoff confirmation for goals (report ball-in-net moments at any confidence; pipeline confirms via kickoff separately).
+1. **Pass 1 (4 FPS, 45s chunks)**: Tags all events including `kickoff` (center-circle restart). All prompts use negative-prompt inversion. Goals-only mode uses a focused prompt that requires at least TWO of: ball in net, celebration, center-circle setup.
 2. **Orphan detection**: A kickoff not preceded by a detected goal within 90s, and not halftime (>120s event gap), implies a missed goal
-3. **Pass 2 (8 FPS)**: Extracts the 60s before the orphan kickoff in 15s chunks at 8 FPS, sends to vLLM with a focused "find the goal" prompt
+3. **Pass 2 (8 FPS)**: Extracts the 60s before the orphan kickoff in 15s chunks at 8 FPS, sends to vLLM with a focused "find the goal" prompt that also uses disqualification reasoning
 4. Goal events from the rescan are added to the event list
 5. **Goal inference**: If the rescan still finds nothing, a synthetic goal is created anchored to the last shot within 120s, or falling back to ko_t-30s
 
-Config: `VLLM_RESCAN_FPS` (default 8), `VLLM_RESCAN_PRE_SEC` (default 60).
+Config: `VLLM_CHUNK_DURATION_SEC` (default 45), `VLLM_CHUNK_FPS` (default 4), `VLLM_CHUNK_OVERLAP_SEC` (default 15), `VLLM_RESCAN_FPS` (default 8), `VLLM_RESCAN_PRE_SEC` (default 60).
 
 ### Deduplication
 

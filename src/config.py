@@ -125,14 +125,14 @@ VLLM_CLIP_POST_SEC: float = _float("VLLM_CLIP_POST_SEC", 20.0)
 VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
 """Minimum confidence to keep a classified event."""
 
-VLLM_CHUNK_DURATION_SEC: float = _float("VLLM_CHUNK_DURATION_SEC", 150.0)
-"""Duration of each video chunk sent to vLLM (seconds). 150s = 2.5 min."""
+VLLM_CHUNK_DURATION_SEC: float = _float("VLLM_CHUNK_DURATION_SEC", 45.0)
+"""Duration of each video chunk sent to vLLM (seconds). 45s at 4 FPS = 180 frames ≈ 11K tokens."""
 
-VLLM_CHUNK_OVERLAP_SEC: float = _float("VLLM_CHUNK_OVERLAP_SEC", 20.0)
+VLLM_CHUNK_OVERLAP_SEC: float = _float("VLLM_CHUNK_OVERLAP_SEC", 15.0)
 """Overlap between consecutive chunks (seconds) to catch boundary events."""
 
-VLLM_CHUNK_FPS: int = _int("VLLM_CHUNK_FPS", 2)
-"""FPS for extracted chunks. 2 FPS at 1280px ≈ 12K tokens/chunk (fits 34K context)."""
+VLLM_CHUNK_FPS: int = _int("VLLM_CHUNK_FPS", 4)
+"""FPS for extracted chunks. 4 FPS at 1280px ≈ 60 tok/frame ≈ 11K visual tokens (fits 31K context)."""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -242,9 +242,9 @@ class _Config:
             "VLLM_CLIP_PRE_SEC": ("VLLM_CLIP_PRE_SEC", "10.0"),
             "VLLM_CLIP_POST_SEC": ("VLLM_CLIP_POST_SEC", "20.0"),
             "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
-            "VLLM_CHUNK_DURATION_SEC": ("VLLM_CHUNK_DURATION_SEC", "150.0"),
-            "VLLM_CHUNK_OVERLAP_SEC": ("VLLM_CHUNK_OVERLAP_SEC", "20.0"),
-            "VLLM_CHUNK_FPS": ("VLLM_CHUNK_FPS", "2"),
+            "VLLM_CHUNK_DURATION_SEC": ("VLLM_CHUNK_DURATION_SEC", "45.0"),
+            "VLLM_CHUNK_OVERLAP_SEC": ("VLLM_CHUNK_OVERLAP_SEC", "15.0"),
+            "VLLM_CHUNK_FPS": ("VLLM_CHUNK_FPS", "4"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
