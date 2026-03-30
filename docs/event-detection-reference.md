@@ -57,7 +57,106 @@ The worker pipeline applies quality filters once (spatial filter + sim gate for 
 
 Legacy `reel_types: ["keeper", "highlights"]` is still accepted and auto-converted to the corresponding `ReelSpec` presets.
 
-## Event Detection Summary
+## Current Detection Architecture: Motion-First Pipeline
+
+**Status**: Active (replaced audio-first and YOLO-heuristic pipelines)
+
+The pipeline uses a three-phase motion-first architecture optimised for VEO-style sideline cameras where audio is unreliable and COCO YOLO cannot detect the ball at 50m+ distance.
+
+### Phase 1: Motion Scan (Primary Trigger)
+
+Dense frame-differencing at 0.5s intervals across the full match. Finds high-activity spikes as candidate events.
+
+- **Sample interval**: 0.5s (every 15 frames at 30 FPS)
+- **Resolution**: 320×180 grayscale (downscaled for speed)
+- **Threshold**: Mean + 1.5σ (adaptive per-match)
+- **Spike detection**: Contiguous above-threshold segments
+- **Merge window**: 8s (spikes within 8s merged, keep highest-confidence peak)
+- **Confidence**: Log-scale `0.3 + 0.35 × log₂(peak/threshold) + duration_bonus` where duration_bonus = min(spike_dur/10, 0.15), capped at 0.85 before bonus. Prevents saturation at 1.0.
+- **Clip window**: 5s pre / 15s post (extended to capture celebrations)
+
+Source: `src/detection/visual_candidate.py` — `VisualCandidateGenerator.motion_scan()`
+
+### Phase 2: Audio Boost (Supplementary)
+
+Audio detection runs independently, then boosts co-located motion candidates. Audio never gates candidates — it only increases confidence.
+
+- **Co-location window**: ±5s
+- **Whistle boost**: +0.15 confidence
+- **Energy surge boost**: +0.10 confidence
+- **Whistle detection**: bandpass 2-4 kHz, min 0.2s duration
+- **Surge detection**: RMS energy > mean + 3.5σ above rolling mean
+
+Source: `src/detection/visual_candidate.py` — `VisualCandidateGenerator.boost_with_audio()`
+
+### Phase 3: VLM Classification (Two-Pass)
+
+Each motion candidate is classified by a vision-language model using a two-pass architecture:
+
+**Pass 1 (Observe)**: Send 24 frames (2 FPS × 12s centred on clip) + open-ended prompt: "Describe what you see." The model reports ball position, player actions, celebrations, restarts, etc.
+
+**Pass 2 (Classify)**: Feed the observation text (no images) + classification prompt. The model selects from: goal, save, shot, corner_kick, goal_kick, free_kick, penalty, throw_in, kickoff, none.
+
+Falls back to single-pass (images + classify prompt) if two-pass fails.
+
+**Key parameters**:
+- Frame extraction: 2 FPS, 768px width, JPEG quality 5
+- Max frames: 24 (12s window)
+- Max tokens: 500 (observe), 300 (classify)
+- Temperature: 0 (deterministic)
+- VLM candidate cap: 60 (time-distributed sampling — divides video into equal bins, picks best per bin; audio-boosted candidates get priority within their bin)
+- Min confidence: 0.5 to confirm
+
+**Strict goal rules**: The classify prompt requires at least ONE of: (1) player celebration, (2) kickoff setup at center circle, (3) ball CLEARLY inside the net — to prevent "ball near goal line" false positives from the sideline camera angle.
+
+Source: `src/detection/vlm_verifier.py` — `VLMVerifier`
+
+### Phase 3b: Goal Inference (Post-VLM)
+
+After the main VLM classification, a goal inference pass improves goal detection using temporal shot→kickoff patterns.
+
+**Step 1 — Kickoff rescan**: For each confirmed shot/save, look for unclassified motion candidates 30-180s later. If no motion candidate exists in the window (kickoffs are low-motion events), extract frames directly from the video at fixed offsets (+60s, +90s, +120s). Send candidates to VLM with a focused kickoff-specific prompt.
+
+**Step 2 — Shot→kickoff upgrade**: If a kickoff is confirmed after a shot → upgrade the shot to a GOAL (inferred). This catches goals that the VLM saw as shots because the ball-in-net was ambiguous from the sideline angle.
+
+**Step 3 — Goal dedup**: Merge goals within 240s (4 min) of each other, keeping the higher-confidence one. The sideline camera often produces multiple "ball in net" motion spikes for a single goal.
+
+**Step 4 — Weak evidence downgrade**: Goals where the VLM reasoning contains no strong evidence ("inside the net", "in the net", "into the net") and no celebration keywords are downgraded to shots.
+
+- **Kickoff prompt**: Binary question ("is this a center-circle kickoff?") — faster and more reliable than full classification
+- **Direct probes**: Frame extraction at +60/90/120s bypasses motion scan gaps (kickoffs don't generate motion spikes)
+- **Parameters**: `_KICKOFF_RESCAN_MIN_GAP=30s`, `_KICKOFF_RESCAN_MAX_GAP=180s`, `_GOAL_DEDUP_WINDOW=240s`
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._goal_inference()`
+
+### Diagnostic Dumps
+
+Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
+- `motion_candidates.jsonl` — all motion spikes
+- `audio_candidates.jsonl` — all audio cues
+- `final_candidates.jsonl` — after audio boost
+- `vlm_verdicts.jsonl` — VLM classification results
+- `kickoff_rescan.jsonl` — goal inference kickoff rescan results
+
+### Configuration
+
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `VLLM_ENABLED` | `false` | Enable vLLM backend for VLM classification |
+| `VLLM_URL` | `http://10.10.2.222:8000` | vLLM server URL |
+| `VLLM_MODEL` | `Qwen/Qwen3-VL-32B-Instruct-FP8` | Model name |
+| `VLLM_MIN_CONFIDENCE` | `0.5` | Minimum VLM confidence |
+| `AUDIO_ENABLED` | `true` | Enable audio boost phase |
+| `AUDIO_SURGE_STDDEV` | `3.5` | Audio surge threshold (σ) |
+| `MIN_EVENT_CONFIDENCE` | `0.50` | Global minimum event confidence |
+
+---
+
+## Legacy: YOLO-Heuristic Detection (Archived)
+
+> The following section documents the original YOLO+ByteTrack heuristic detection system. It is **no longer active** — the motion-first pipeline above replaced it. Retained for reference.
+
+### Event Detection Summary (Legacy)
 
 | # | Event Type | Detector | Key Conditions | Confidence | Category | Threshold |
 |---|-----------|----------|---------------|------------|----------|-----------|

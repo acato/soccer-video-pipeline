@@ -87,52 +87,58 @@ DETECTION_FRAME_STEP: int = _int("DETECTION_FRAME_STEP", 3)
 """Process every Nth frame during detection pass (3 = 10fps effective at 30fps source)."""
 
 # ---------------------------------------------------------------------------
-# VLM (Vision Language Model) Classification
+# Audio Detection (Phase 1)
+# ---------------------------------------------------------------------------
+AUDIO_ENABLED: bool = _bool("AUDIO_ENABLED", True)
+"""Enable audio-based whistle/energy detection. Fails open if no audio stream."""
+
+AUDIO_BANDPASS_LOW_HZ: int = _int("AUDIO_BANDPASS_LOW_HZ", 2000)
+"""Low end of whistle bandpass filter (Hz)."""
+
+AUDIO_BANDPASS_HIGH_HZ: int = _int("AUDIO_BANDPASS_HIGH_HZ", 4000)
+"""High end of whistle bandpass filter (Hz)."""
+
+AUDIO_MIN_WHISTLE_SEC: float = _float("AUDIO_MIN_WHISTLE_SEC", 0.2)
+"""Minimum whistle duration to count as a real whistle (seconds)."""
+
+AUDIO_SURGE_STDDEV: float = _float("AUDIO_SURGE_STDDEV", 3.5)
+"""Energy surge threshold in standard deviations above rolling mean."""
+
+# ---------------------------------------------------------------------------
+# Visual Candidate Generation (Phase 2)
+# ---------------------------------------------------------------------------
+VISUAL_SCAN_INTERVAL_SEC: float = _float("VISUAL_SCAN_INTERVAL_SEC", 15.0)
+"""Spot-check interval for full-scan fallback when no audio (seconds)."""
+
+# ---------------------------------------------------------------------------
+# VLM Verification (Phase 3)
 # ---------------------------------------------------------------------------
 VLM_ENABLED: bool = _bool("VLM_ENABLED", False)
-"""Use Claude VLM to verify GK save events post-detection."""
+"""Use Claude API as VLM verification backend."""
 
 ANTHROPIC_API_KEY: str = _opt("ANTHROPIC_API_KEY", "")
 """API key for Anthropic Claude. Required when VLM_ENABLED=true."""
 
 VLM_MODEL: str = _opt("VLM_MODEL", "claude-sonnet-4-20250514")
-"""Claude model to use for VLM classification."""
+"""Claude model to use for VLM verification."""
 
 VLM_FRAME_WIDTH: int = _int("VLM_FRAME_WIDTH", 1280)
 """Resize width for extracted VLM frames (smaller = cheaper API calls)."""
 
 VLM_MIN_CONFIDENCE: float = _float("VLM_MIN_CONFIDENCE", 0.6)
-"""Minimum VLM confidence to keep an event."""
+"""Minimum VLM confidence to confirm an event."""
 
-# ---------------------------------------------------------------------------
-# vLLM Classification (dead-ball restart events)
-# ---------------------------------------------------------------------------
 VLLM_ENABLED: bool = _bool("VLLM_ENABLED", False)
-"""Use vLLM-hosted vision model to classify dead-ball restarts (goal kicks, corner kicks)."""
+"""Use vLLM-hosted vision model (Qwen3-VL) as VLM verification backend."""
 
 VLLM_URL: str = _opt("VLLM_URL", "http://10.10.2.222:8000")
 """vLLM server URL (OpenAI-compatible API)."""
 
-VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct")
+VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8")
 """Model name as registered in vLLM."""
-
-VLLM_CLIP_PRE_SEC: float = _float("VLLM_CLIP_PRE_SEC", 10.0)
-"""Seconds before gap to include in clip."""
-
-VLLM_CLIP_POST_SEC: float = _float("VLLM_CLIP_POST_SEC", 20.0)
-"""Seconds after gap to include in clip."""
 
 VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
 """Minimum confidence to keep a classified event."""
-
-VLLM_CHUNK_DURATION_SEC: float = _float("VLLM_CHUNK_DURATION_SEC", 45.0)
-"""Duration of each video chunk sent to vLLM (seconds). 45s at 4 FPS = 180 frames ≈ 11K tokens."""
-
-VLLM_CHUNK_OVERLAP_SEC: float = _float("VLLM_CHUNK_OVERLAP_SEC", 15.0)
-"""Overlap between consecutive chunks (seconds) to catch boundary events."""
-
-VLLM_CHUNK_FPS: int = _int("VLLM_CHUNK_FPS", 4)
-"""FPS for extracted chunks. 4 FPS at 1280px ≈ 60 tok/frame ≈ 11K visual tokens (fits 31K context)."""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -231,6 +237,15 @@ class _Config:
             "WATCH_STABLE_TIME_SEC": ("WATCH_STABLE_TIME_SEC", "30.0"),
             "PREVENT_SLEEP": ("PREVENT_SLEEP", "true"),
             "USE_BALL_TOUCH_DETECTOR": ("USE_BALL_TOUCH_DETECTOR", "false"),
+            # Audio detection (Phase 1)
+            "AUDIO_ENABLED": ("AUDIO_ENABLED", "true"),
+            "AUDIO_BANDPASS_LOW_HZ": ("AUDIO_BANDPASS_LOW_HZ", "2000"),
+            "AUDIO_BANDPASS_HIGH_HZ": ("AUDIO_BANDPASS_HIGH_HZ", "4000"),
+            "AUDIO_MIN_WHISTLE_SEC": ("AUDIO_MIN_WHISTLE_SEC", "0.2"),
+            "AUDIO_SURGE_STDDEV": ("AUDIO_SURGE_STDDEV", "3.5"),
+            # Visual candidate generation (Phase 2)
+            "VISUAL_SCAN_INTERVAL_SEC": ("VISUAL_SCAN_INTERVAL_SEC", "15.0"),
+            # VLM verification (Phase 3)
             "VLM_ENABLED": ("VLM_ENABLED", "false"),
             "ANTHROPIC_API_KEY": ("ANTHROPIC_API_KEY", ""),
             "VLM_MODEL": ("VLM_MODEL", "claude-sonnet-4-20250514"),
@@ -238,13 +253,8 @@ class _Config:
             "VLM_MIN_CONFIDENCE": ("VLM_MIN_CONFIDENCE", "0.6"),
             "VLLM_ENABLED": ("VLLM_ENABLED", "false"),
             "VLLM_URL": ("VLLM_URL", "http://10.10.2.222:8000"),
-            "VLLM_MODEL": ("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct"),
-            "VLLM_CLIP_PRE_SEC": ("VLLM_CLIP_PRE_SEC", "10.0"),
-            "VLLM_CLIP_POST_SEC": ("VLLM_CLIP_POST_SEC", "20.0"),
+            "VLLM_MODEL": ("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
             "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
-            "VLLM_CHUNK_DURATION_SEC": ("VLLM_CHUNK_DURATION_SEC", "45.0"),
-            "VLLM_CHUNK_OVERLAP_SEC": ("VLLM_CHUNK_OVERLAP_SEC", "15.0"),
-            "VLLM_CHUNK_FPS": ("VLLM_CHUNK_FPS", "4"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

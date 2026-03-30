@@ -1,5 +1,6 @@
 """Unit tests for src/api/metrics.py"""
 import pytest
+fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 from fastapi import FastAPI
 

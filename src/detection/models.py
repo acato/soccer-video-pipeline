@@ -228,6 +228,54 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Jersey color palette — used by UI and match config
+# ---------------------------------------------------------------------------
+
+JERSEY_COLOR_PALETTE: dict[str, tuple[float, float, float]] = {
+    # Achromatic — HSV (H: 0-180, S: 0-1, V: 0-1)
+    "white":        (0.0,   0.05, 0.95),
+    "silver":       (0.0,   0.05, 0.65),
+    "gray":         (0.0,   0.06, 0.45),
+    "black":        (0.0,   0.08, 0.10),
+    # Reds
+    "red":          (0.0,   0.85, 0.70),
+    "dark_red":     (0.0,   0.85, 0.40),
+    "maroon":       (0.0,   0.80, 0.28),
+    "burgundy":     (170.0, 0.72, 0.30),
+    # Oranges / yellows
+    "orange":       (12.0,  0.90, 0.85),
+    "neon_orange":  (10.0,  0.95, 0.95),
+    "yellow":       (28.0,  0.85, 0.90),
+    "neon_yellow":  (35.0,  0.95, 0.95),
+    # Greens
+    "green":        (60.0,  0.80, 0.55),
+    "dark_green":   (60.0,  0.85, 0.28),
+    "neon_green":   (55.0,  0.95, 0.95),
+    "teal":         (88.0,  0.80, 0.55),
+    # Blues
+    "sky_blue":     (103.0, 0.48, 0.85),
+    "light_blue":   (107.0, 0.58, 0.82),
+    "blue":         (112.0, 0.82, 0.65),
+    "dark_blue":    (115.0, 0.90, 0.32),
+    "navy":         (116.0, 0.92, 0.20),
+    # Other
+    "purple":       (135.0, 0.65, 0.50),
+    "pink":         (157.0, 0.45, 0.80),
+    "hot_pink":     (153.0, 0.80, 0.82),
+    "neon_pink":    (153.0, 0.90, 0.95),
+}
+
+
+def resolve_jersey_color(name: str) -> tuple[float, float, float]:
+    """Return the HSV tuple for a named jersey color."""
+    key = name.lower().replace(" ", "_").replace("-", "_")
+    if key not in JERSEY_COLOR_PALETTE:
+        valid = ", ".join(sorted(JERSEY_COLOR_PALETTE))
+        raise ValueError(f"Unknown jersey color {name!r}. Valid options: {valid}")
+    return JERSEY_COLOR_PALETTE[key]
+
+
 class BoundingBox(BaseModel):
     """Normalized bounding box (0.0–1.0 relative to frame dimensions)."""
     x: float

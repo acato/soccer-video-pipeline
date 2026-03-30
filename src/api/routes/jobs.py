@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 # Import at module level so tests can patch src.api.routes.jobs.process_match_task
 from src.api.worker import process_match_task
-from src.detection.jersey_classifier import JERSEY_COLOR_PALETTE
+from src.detection.models import JERSEY_COLOR_PALETTE
 from src.ingestion.intake import extract_metadata
 from src.ingestion.models import MatchConfig, ReelSpec, reel_types_to_specs
 

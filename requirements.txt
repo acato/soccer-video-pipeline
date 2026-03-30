@@ -26,6 +26,10 @@ flower>=2.0.1
 # VLM classification (Claude API)
 anthropic>=0.42.0           # Claude API client for VLM save verification
 
+# Audio analysis (Phase 1 — whistle/energy detection)
+librosa>=0.10.0
+soundfile>=0.12.0
+
 # Utilities
 watchdog>=4.0.0             # NAS directory watching
 tenacity>=8.3.0             # Retry logic

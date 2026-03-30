@@ -139,6 +139,7 @@ class TestPauseCancelResumeEndpoints:
 
     @pytest.fixture
     def client(self, tmp_path: Path, monkeypatch):
+        pytest.importorskip("fastapi")
         monkeypatch.setenv("WORKING_DIR", str(tmp_path / "working"))
         monkeypatch.setenv("NAS_MOUNT_PATH", str(tmp_path / "nas"))
         monkeypatch.setenv("NAS_OUTPUT_PATH", str(tmp_path / "out"))
@@ -353,7 +354,7 @@ class TestPartialReelOnInterrupt:
     segment + assemble a reel from whatever events were already detected."""
 
     def _run_with_interrupt(self, tmp_path, interrupt_type, events=None, clips=None):
-        """Run _run_pipeline with runner.run() raising PipelinePaused or PipelineCancelled."""
+        """Run _run_pipeline with DetectionPipeline.run() raising PipelinePaused or PipelineCancelled."""
         from src.api.worker import PipelineCancelled, PipelinePaused, _run_pipeline
         from src.ingestion.job import JobStore
 
@@ -373,50 +374,46 @@ class TestPartialReelOnInterrupt:
         cfg.USE_GPU = "false"
         cfg.USE_NULL_DETECTOR = "false"
         cfg.YOLO_INFERENCE_SIZE = "1280"
-        cfg.DETECTION_FRAME_STEP = "3"
-        cfg.CHUNK_DURATION_SEC = "30"
-        cfg.CHUNK_OVERLAP_SEC = "2.0"
         cfg.MIN_EVENT_CONFIDENCE = "0.65"
         cfg.OUTPUT_CODEC = "copy"
         cfg.OUTPUT_CRF = "18"
         cfg.NAS_OUTPUT_PATH = str(tmp_path / "output")
         cfg.MAX_NAS_RETRY = "3"
-        cfg.REEL_PLUGINS = ""
-        cfg.USE_BALL_TOUCH_DETECTOR = "false"
+        cfg.VLM_ENABLED = "false"
+        cfg.VLLM_ENABLED = "false"
+        cfg.VLLM_URL = "http://localhost:8000"
+        cfg.VLLM_MODEL = "test-model"
+        cfg.VLLM_MIN_CONFIDENCE = "0.5"
+        cfg.VLM_MODEL = "test-model"
+        cfg.ANTHROPIC_API_KEY = ""
+        cfg.AUDIO_ENABLED = "true"
+        cfg.AUDIO_SURGE_STDDEV = "3.5"
         (tmp_path / "working").mkdir(parents=True, exist_ok=True)
 
         exc_cls = PipelinePaused if interrupt_type == "paused" else PipelineCancelled
 
         _P = {
-            "PlayerDetector": "src.detection.player_detector.PlayerDetector",
-            "GoalkeeperDetector": "src.detection.goalkeeper_detector.GoalkeeperDetector",
-            "PipelineRunner": "src.detection.event_classifier.PipelineRunner",
+            "DetectionPipeline": "src.detection.pipeline.DetectionPipeline",
             "EventLog": "src.detection.event_log.EventLog",
             "compute_clips_v2": "src.segmentation.clipper.compute_clips_v2",
             "postprocess_clips": "src.segmentation.deduplicator.postprocess_clips",
-            "filter_wrong_side": "src.segmentation.spatial_filter.filter_wrong_side_events",
-            "passes_sim_gate": "src.segmentation.spatial_filter.passes_sim_gate",
             "ReelComposer": "src.assembly.composer.ReelComposer",
             "write_reel_to_nas": "src.assembly.output.write_reel_to_nas",
             "get_output_path": "src.assembly.output.get_output_path",
             "write_job_manifest": "src.assembly.output.write_job_manifest",
         }
 
-        with patch(_P["PlayerDetector"]), \
-             patch(_P["GoalkeeperDetector"]), \
-             patch(_P["PipelineRunner"]) as m_runner, \
+        with patch(_P["DetectionPipeline"]) as m_pipeline, \
              patch(_P["EventLog"]) as m_evlog, \
              patch(_P["compute_clips_v2"]) as m_clips, \
              patch(_P["postprocess_clips"]) as m_post, \
-             patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur, **kw: sel), \
-             patch(_P["passes_sim_gate"], return_value=True), \
              patch(_P["ReelComposer"]) as m_composer, \
              patch(_P["write_reel_to_nas"]) as m_nas, \
              patch(_P["get_output_path"], create=True), \
              patch(_P["write_job_manifest"], create=True):
 
-            # Make runner.run() raise the interrupt exception
-            m_runner.return_value.run.side_effect = exc_cls("interrupted")
+            # Make pipeline.run() raise the interrupt exception
+            m_pipeline.return_value.run.side_effect = exc_cls("interrupted")
             m_evlog.return_value.read_all.return_value = events or []
             m_clips.return_value = clips or []
             m_post.return_value = clips or []

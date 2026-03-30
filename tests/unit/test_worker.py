@@ -58,19 +58,23 @@ def _make_string_config(tmp_path):
     cfg.MAX_NAS_RETRY = "3"
     cfg.REEL_PLUGINS = ""
     cfg.VLM_ENABLED = "false"
+    cfg.VLLM_ENABLED = "false"
+    cfg.VLLM_URL = "http://10.10.2.222:8000"
+    cfg.VLLM_MODEL = "Qwen/Qwen3-VL-32B-Instruct-FP8"
+    cfg.VLLM_MIN_CONFIDENCE = "0.5"
+    cfg.VLM_MODEL = "claude-sonnet-4-20250514"
+    cfg.ANTHROPIC_API_KEY = ""
+    cfg.AUDIO_ENABLED = "true"
+    cfg.AUDIO_SURGE_STDDEV = "3.5"
     return cfg
 
 
-# Patch targets at source modules where _run_pipeline imports them from
+# Patch targets at modules where _run_pipeline imports them
 _P = {
-    "PlayerDetector":       "src.detection.player_detector.PlayerDetector",
-    "GoalkeeperDetector":   "src.detection.goalkeeper_detector.GoalkeeperDetector",
-    "PipelineRunner":       "src.detection.event_classifier.PipelineRunner",
+    "DetectionPipeline":    "src.detection.pipeline.DetectionPipeline",
     "EventLog":             "src.detection.event_log.EventLog",
     "compute_clips_v2":     "src.segmentation.clipper.compute_clips_v2",
     "postprocess_clips":    "src.segmentation.deduplicator.postprocess_clips",
-    "filter_wrong_side":    "src.segmentation.spatial_filter.filter_wrong_side_events",
-    "passes_sim_gate":      "src.segmentation.spatial_filter.passes_sim_gate",
     "ReelComposer":         "src.assembly.composer.ReelComposer",
     "write_reel_to_nas":    "src.assembly.output.write_reel_to_nas",
     "get_output_path":      "src.assembly.output.get_output_path",
@@ -97,20 +101,16 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
     (tmp_path / "working").mkdir(parents=True, exist_ok=True)
 
     mocks = {}
-    with patch(_P["PlayerDetector"]) as m_pd, \
-         patch(_P["GoalkeeperDetector"]) as m_gk, \
-         patch(_P["PipelineRunner"]) as m_runner, \
+    with patch(_P["DetectionPipeline"]) as m_pipeline, \
          patch(_P["EventLog"]) as m_evlog, \
          patch(_P["compute_clips_v2"]) as m_clips, \
          patch(_P["postprocess_clips"]) as m_post, \
-         patch(_P["filter_wrong_side"], side_effect=lambda sel, all_e, dur, **kw: sel) as m_fws, \
-         patch(_P["passes_sim_gate"], return_value=True) as m_sim, \
          patch(_P["ReelComposer"]) as m_composer, \
          patch(_P["write_reel_to_nas"]) as m_nas, \
          patch(_P["get_output_path"], create=True) as m_out, \
          patch(_P["write_job_manifest"], create=True) as m_manifest:
 
-        m_runner.return_value.run.return_value = 0 if not events else len(events)
+        m_pipeline.return_value.run.return_value = events or []
         m_evlog.return_value.read_all.return_value = events or []
         m_clips.return_value = clips or []
         m_post.return_value = clips or []
@@ -118,9 +118,7 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
         m_nas.return_value = "/output/reel.mp4"
 
         mocks = {
-            "PlayerDetector": m_pd,
-            "GoalkeeperDetector": m_gk,
-            "PipelineRunner": m_runner,
+            "DetectionPipeline": m_pipeline,
             "EventLog": m_evlog,
             "compute_clips_v2": m_clips,
             "postprocess_clips": m_post,
@@ -137,43 +135,25 @@ def _run_pipeline_with_mocks(tmp_path, job=None, cfg=None, events=None, clips=No
 
 @pytest.mark.unit
 class TestRunPipelineTypeCasting:
-    """Verify _run_pipeline properly casts string config values to numeric types."""
+    """Verify _run_pipeline properly casts string config values to DetectionPipeline."""
 
-    def test_player_detector_receives_int_inference_size(self, tmp_path):
+    def test_pipeline_receives_float_min_confidence(self, tmp_path):
         mocks = _run_pipeline_with_mocks(tmp_path)
-        pd_call = mocks["PlayerDetector"].call_args
-        assert isinstance(pd_call.kwargs["inference_size"], int)
-        assert pd_call.kwargs["inference_size"] == 1280
+        dp_call = mocks["DetectionPipeline"].call_args
+        assert isinstance(dp_call.kwargs["min_event_confidence"], float)
+        assert dp_call.kwargs["min_event_confidence"] == 0.65
 
-    def test_player_detector_receives_int_frame_step(self, tmp_path):
+    def test_pipeline_receives_bool_use_gpu(self, tmp_path):
         mocks = _run_pipeline_with_mocks(tmp_path)
-        pd_call = mocks["PlayerDetector"].call_args
-        assert isinstance(pd_call.kwargs["frame_step"], int)
-        assert pd_call.kwargs["frame_step"] == 3
+        dp_call = mocks["DetectionPipeline"].call_args
+        assert isinstance(dp_call.kwargs["use_gpu"], bool)
+        assert dp_call.kwargs["use_gpu"] is False
 
-    def test_player_detector_receives_bool_use_gpu(self, tmp_path):
+    def test_pipeline_receives_int_inference_size(self, tmp_path):
         mocks = _run_pipeline_with_mocks(tmp_path)
-        pd_call = mocks["PlayerDetector"].call_args
-        assert isinstance(pd_call.kwargs["use_gpu"], bool)
-        assert pd_call.kwargs["use_gpu"] is False
-
-    def test_pipeline_runner_receives_int_chunk_sec(self, tmp_path):
-        mocks = _run_pipeline_with_mocks(tmp_path)
-        pr_call = mocks["PipelineRunner"].call_args
-        assert isinstance(pr_call.kwargs["chunk_sec"], int)
-        assert pr_call.kwargs["chunk_sec"] == 30
-
-    def test_pipeline_runner_receives_float_overlap(self, tmp_path):
-        mocks = _run_pipeline_with_mocks(tmp_path)
-        pr_call = mocks["PipelineRunner"].call_args
-        assert isinstance(pr_call.kwargs["overlap_sec"], float)
-        assert pr_call.kwargs["overlap_sec"] == 2.0
-
-    def test_pipeline_runner_receives_float_min_confidence(self, tmp_path):
-        mocks = _run_pipeline_with_mocks(tmp_path)
-        pr_call = mocks["PipelineRunner"].call_args
-        assert isinstance(pr_call.kwargs["min_confidence"], float)
-        assert pr_call.kwargs["min_confidence"] == 0.65
+        dp_call = mocks["DetectionPipeline"].call_args
+        assert isinstance(dp_call.kwargs["yolo_inference_size"], int)
+        assert dp_call.kwargs["yolo_inference_size"] == 1280
 
     def test_compute_clips_v2_called_with_events(self, tmp_path):
         from src.detection.models import Event, EventType
@@ -268,8 +248,8 @@ class TestRunPipelineUseGpuCasting:
         cfg = _make_string_config(tmp_path)
         cfg.USE_GPU = value
         mocks = _run_pipeline_with_mocks(tmp_path, cfg=cfg)
-        pd_call = mocks["PlayerDetector"].call_args
-        assert pd_call.kwargs["use_gpu"] is expected
+        dp_call = mocks["DetectionPipeline"].call_args
+        assert dp_call.kwargs["use_gpu"] is expected
 
 
 @pytest.mark.unit

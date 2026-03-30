@@ -8,8 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from src.detection.jersey_classifier import JERSEY_COLOR_PALETTE
-from src.detection.models import EVENT_TYPE_CONFIG, EventType
+from src.detection.models import EVENT_TYPE_CONFIG, EventType, JERSEY_COLOR_PALETTE
 
 router = APIRouter()
 

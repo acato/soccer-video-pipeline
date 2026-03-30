@@ -136,16 +136,12 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     """Execute all pipeline stages for a job. Called by the Celery task."""
     from src.assembly.composer import ReelComposer
     from src.assembly.output import write_reel_to_nas, get_output_path, write_job_manifest
-    from src.detection.base import NullDetector
-    from src.detection.event_classifier import PipelineRunner
     from src.detection.event_log import EventLog
-    from src.detection.goalkeeper_detector import GoalkeeperDetector
-    from src.detection.models import EventType, is_gk_event_type
-    from src.detection.player_detector import PlayerDetector
+    from src.detection.models import EventType, Event
+    from src.detection.pipeline import DetectionPipeline
     from src.ingestion.models import Job, JobStatus
     from src.segmentation.clipper import compute_clips_v2
     from src.segmentation.deduplicator import postprocess_clips
-    from src.segmentation.spatial_filter import filter_wrong_side_events, passes_sim_gate
 
     job = store.get(job_id)
     vf = job.video_file
@@ -170,144 +166,71 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     # then set the final status to PAUSED or CANCELLED instead of COMPLETE.
     interrupted: str | None = None  # "paused" | "cancelled" | None
 
+    # ── Audio-first detection pipeline ────────────────────────────────────
+    vllm_url = cfg.VLLM_URL if str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes") else None
+    anthropic_key = cfg.ANTHROPIC_API_KEY if str(cfg.VLM_ENABLED).lower() in ("1", "true", "yes") else None
     null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
-    vllm_enabled = str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes")
 
-    # When vLLM chunk tagger is enabled with null detector, skip YOLO entirely.
-    # The chunk tagger is the sole event source.
-    if null_mode and vllm_enabled:
-        log.info("worker.skip_yolo", job_id=job_id,
-                 reason="USE_NULL_DETECTOR + VLLM_ENABLED: chunk tagger is sole detector")
-    else:
-        if null_mode:
-            log.info("worker.null_detector_enabled", job_id=job_id)
-            player_detector = NullDetector(job_id=job_id, source_file=vf.path)
-        else:
-            player_detector = PlayerDetector(
-                job_id=job_id,
-                source_file=vf.path,
-                model_path=cfg.YOLO_MODEL_PATH,
-                use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
-                inference_size=int(cfg.YOLO_INFERENCE_SIZE),
-                frame_step=int(cfg.DETECTION_FRAME_STEP),
-                working_dir=cfg.WORKING_DIR,
-            )
-        gk_detector = GoalkeeperDetector(job_id=job_id, source_file=vf.path, match_config=job.match_config)
+    pipeline = DetectionPipeline(
+        source_file=vf.path,
+        video_duration=vf.duration_sec,
+        fps=vf.fps,
+        job_id=job_id,
+        match_config=job.match_config,
+        game_start_sec=job.game_start_sec,
+        # Audio
+        audio_enabled=str(getattr(cfg, 'AUDIO_ENABLED', 'true')).lower() in ("1", "true", "yes"),
+        surge_stddev_threshold=float(getattr(cfg, 'AUDIO_SURGE_STDDEV', '3.5')),
+        # Visual — skip YOLO in null mode
+        yolo_model_path=None if null_mode else cfg.YOLO_MODEL_PATH,
+        use_gpu=str(cfg.USE_GPU).lower() in ("1", "true", "yes"),
+        yolo_inference_size=int(cfg.YOLO_INFERENCE_SIZE),
+        # VLM verification
+        vllm_url=vllm_url,
+        vllm_model=cfg.VLLM_MODEL,
+        anthropic_api_key=anthropic_key,
+        anthropic_model=cfg.VLM_MODEL,
+        vlm_min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
+        vlm_enabled=vllm_url is not None or bool(anthropic_key),
+        # General
+        working_dir=str(working),
+        min_event_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
+    )
 
-        # Only clear event log for fresh runs — preserve events on resume
-        resume_from_chunk = 0
-        if job.last_processed_chunk >= 0:
-            resume_from_chunk = job.last_processed_chunk + 1
-            log.info("worker.resuming", job_id=job_id, from_chunk=resume_from_chunk)
+    def on_detect_progress(pct: float):
+        store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 85.0)
 
-        # Optionally use ball-first touch detector instead of GK-first path
-        ball_touch_detector = None
-        use_ball_touch = str(cfg.USE_BALL_TOUCH_DETECTOR).lower() in ("1", "true", "yes")
-        if use_ball_touch and job.match_config:
-            from src.detection.ball_touch_detector import BallTouchDetector
-            ball_touch_detector = BallTouchDetector(
-                job_id=job_id,
-                source_file=vf.path,
-                match_config=job.match_config,
-            )
-            log.info("worker.ball_touch_detector_enabled", job_id=job_id)
+    def cancel_check() -> bool:
+        j = store.get(job_id)
+        if j and j.cancel_requested:
+            return True
+        if j and j.pause_requested:
+            return True
+        return False
 
-        runner = PipelineRunner(
-            job_id=job_id,
-            video_file=vf,
-            player_detector=player_detector,
-            gk_detector=gk_detector,
-            event_log=event_log,
-            chunk_sec=int(cfg.CHUNK_DURATION_SEC),
-            overlap_sec=float(cfg.CHUNK_OVERLAP_SEC),
-            min_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
-            ball_touch_detector=ball_touch_detector,
-            game_start_sec=job.game_start_sec,
-            resume_from_chunk=resume_from_chunk,
+    try:
+        detected_events = pipeline.run(
+            progress_callback=on_detect_progress,
+            cancel_check=cancel_check,
         )
+        for ev in detected_events:
+            event_log.append(ev)
+        log.info("pipeline.detection_complete",
+                 job_id=job_id, total_events=len(detected_events))
+    except PipelinePaused:
+        interrupted = "paused"
+        log.info("pipeline.paused_partial", job_id=job_id)
+    except PipelineCancelled:
+        interrupted = "cancelled"
+        log.info("pipeline.cancelled_partial", job_id=job_id)
 
-        def on_detect_progress(pct: float, chunk_idx: int = -1):
-            job = store.get(job_id)
-            if job and job.cancel_requested:
-                raise PipelineCancelled(f"Job {job_id} cancelled by user")
-            if job and job.pause_requested:
-                raise PipelinePaused(f"Job {job_id} paused by user")
-            store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 0.50)
-            # Save chunk checkpoint for resume support
-            if chunk_idx >= 0:
-                j = store.get(job_id)
-                if j is not None:
-                    data = j.model_dump()
-                    data["last_processed_chunk"] = chunk_idx
-                    store.save(Job(**data))
-
-        try:
-            total_events = runner.run(progress_callback=on_detect_progress)
-        except PipelinePaused:
-            interrupted = "paused"
-            log.info("pipeline.paused_partial", job_id=job_id)
-        except PipelineCancelled:
+    # Check if pause/cancel was requested during detection
+    if not interrupted:
+        j = store.get(job_id)
+        if j and j.cancel_requested:
             interrupted = "cancelled"
-            log.info("pipeline.cancelled_partial", job_id=job_id)
-
-        if not interrupted:
-            log.info("pipeline.detection_complete", job_id=job_id, total_events=total_events)
-
-    # ── vLLM chunk-based video tagging (optional) ──────────────────────────
-    vllm_enabled = str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes")
-    if vllm_enabled and job.match_config:
-        from src.detection.chunk_tagger import ChunkTagger
-
-        def on_vllm_progress(completed: int, total: int):
-            job = store.get(job_id)
-            if job and job.cancel_requested:
-                raise PipelineCancelled(f"Job {job_id} cancelled by user")
-            if job and job.pause_requested:
-                raise PipelinePaused(f"Job {job_id} paused by user")
-            pct = 5.0 + (completed / total) * 85.0  # 5% → 90%
-            store.update_status(job_id, JobStatus.DETECTING, progress=pct)
-
-        store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
-        # Detect goals-only mode: all reel specs contain only "goal"
-        reel_specs = job.get_reel_specs()
-        _goals_only = bool(reel_specs) and all(
-            set(s.event_types) <= {"goal"} for s in reel_specs
-        )
-
-        tagger = ChunkTagger(
-            vllm_url=cfg.VLLM_URL,
-            model=cfg.VLLM_MODEL,
-            source_file=vf.path,
-            match_config=job.match_config,
-            job_id=job_id,
-            chunk_duration_sec=float(cfg.VLLM_CHUNK_DURATION_SEC),
-            chunk_overlap_sec=float(cfg.VLLM_CHUNK_OVERLAP_SEC),
-            chunk_fps=int(cfg.VLLM_CHUNK_FPS),
-            min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
-            working_dir=cfg.WORKING_DIR,
-            rescan_fps=int(getattr(cfg, "VLLM_RESCAN_FPS", "8")),
-            rescan_pre_sec=float(getattr(cfg, "VLLM_RESCAN_PRE_SEC", "60")),
-            game_start_sec=job.game_start_sec,
-            goals_only=_goals_only,
-        )
-        try:
-            tagged_events = tagger.tag_video(
-                video_duration=vf.duration_sec,
-                fps=vf.fps,
-                progress_callback=on_vllm_progress,
-            )
-        except PipelinePaused:
+        elif j and j.pause_requested:
             interrupted = "paused"
-            tagged_events = []
-            log.info("pipeline.paused_partial", job_id=job_id, stage="chunk_tagger")
-        except PipelineCancelled:
-            interrupted = "cancelled"
-            tagged_events = []
-            log.info("pipeline.cancelled_partial", job_id=job_id, stage="chunk_tagger")
-        for te in tagged_events:
-            event_log.append(te)
-        log.info("pipeline.chunk_tagger_complete",
-                 job_id=job_id, events=len(tagged_events))
 
     # ── Tag-only mode: write event list as text and skip reel assembly ────
     if job.tag_only:
@@ -342,46 +265,6 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     store.update_status(job_id, JobStatus.SEGMENTING, progress=90.0)
     all_events = event_log.read_all()
     event_conf_map = {e.event_id: e.confidence for e in all_events}
-
-    # Filter GK events: VLM classification (if enabled) or spatial filter + sim gate
-    # Events from chunk tagger are exempt — the vLLM model IS the quality gate.
-    # GOAL_KICK and CORNER_KICK are also exempt (legacy restart classifier).
-    _VLM_EXEMPT_TYPES = {EventType.GOAL_KICK, EventType.CORNER_KICK}
-
-    def _is_tagger_event(e: Event) -> bool:
-        return "tagger_model" in e.metadata
-
-    gk_events = [e for e in all_events if e.is_goalkeeper_event
-                 and e.event_type not in _VLM_EXEMPT_TYPES
-                 and not _is_tagger_event(e)]
-    vlm_exempt_gk = [e for e in all_events if e.is_goalkeeper_event
-                     and (e.event_type in _VLM_EXEMPT_TYPES or _is_tagger_event(e))]
-    non_gk_events = [e for e in all_events if not e.is_goalkeeper_event]
-    gk_side = job.match_config.gk_first_half_side if job.match_config else None
-
-    vlm_enabled = str(cfg.VLM_ENABLED).lower() in ("1", "true", "yes")
-    if vlm_enabled and gk_events:
-        from src.detection.vlm_classifier import VLMClassifier
-        vlm = VLMClassifier(
-            api_key=cfg.ANTHROPIC_API_KEY,
-            model=cfg.VLM_MODEL,
-            source_file=vf.path,
-            match_config=job.match_config,
-            frame_width=int(cfg.VLM_FRAME_WIDTH),
-            min_confidence=float(cfg.VLM_MIN_CONFIDENCE),
-        )
-        filtered_gk = vlm.filter_events(gk_events)
-        log.info("pipeline.vlm_filter", before=len(gk_events), after=len(filtered_gk))
-    else:
-        # Existing path: spatial filter + sim gate
-        filtered_gk = filter_wrong_side_events(gk_events, all_events, vf.duration_sec, gk_first_half_side=gk_side)
-        filtered_gk = [e for e in filtered_gk if passes_sim_gate(e)]
-
-    if vlm_exempt_gk:
-        log.info("pipeline.vlm_exempt_gk", count=len(vlm_exempt_gk),
-                 types=[e.event_type.value for e in vlm_exempt_gk[:5]])
-
-    all_events = filtered_gk + vlm_exempt_gk + non_gk_events
 
     # Get reel specs from job (handles legacy reel_types → ReelSpec conversion)
     reel_specs = job.get_reel_specs()
