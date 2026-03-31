@@ -5,6 +5,10 @@ set -euo pipefail
 
 echo "=== Tearing down ==="
 make down 2>/dev/null || true
+# Extra kill pass — pkill can miss processes on macOS
+pgrep -f "celery.*soccer" | xargs kill -9 2>/dev/null || true
+pgrep -f "uvicorn.*src.api" | xargs kill -9 2>/dev/null || true
+sleep 2
 
 echo "=== Clearing state ==="
 # Clear old job files

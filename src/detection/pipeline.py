@@ -281,6 +281,10 @@ class DetectionPipeline:
                     for v in verdicts
                 ])
 
+                # Phase 3a.5: Save reclassification — goal_kicks
+                # with save evidence → SHOT_STOP_DIVING
+                verdicts = self._save_reclassification(verdicts)
+
                 # Phase 3b: Goal inference — kickoff rescan (82% → 87%)
                 if progress_callback:
                     progress_callback(0.82)
@@ -330,6 +334,68 @@ class DetectionPipeline:
         return events
 
     # ------------------------------------------------------------------
+    # Internal — save reclassification (Phase 3a.5)
+    # ------------------------------------------------------------------
+
+    # Keywords in VLM reasoning that indicate a save occurred
+    _SAVE_KEYWORDS = [
+        "save", "saved", "stopped", "blocked by the keeper",
+        "blocked by the goalkeeper", "parr", "catch", "punched away",
+        "tipped over", "tipped away", "pushed away", "kept out",
+        "denied", "goalkeeper.*block", "keeper.*block",
+    ]
+
+    def _save_reclassification(
+        self, verdicts: list[VLMVerdict],
+    ) -> list[VLMVerdict]:
+        """Reclassify goal_kick verdicts as saves when reasoning indicates one.
+
+        The VLM often sees shot → save → goal kick restart and classifies the
+        whole sequence as 'goal_kick' because the restart is the most visible
+        action.  When the reasoning text mentions a save, the *real* event is
+        the save, not the goal kick.
+        """
+        import re
+
+        modified = list(verdicts)
+        reclassified = 0
+
+        for i, v in enumerate(modified):
+            if v.result != VerificationResult.CONFIRMED:
+                continue
+            if v.event_type != EventType.GOAL_KICK:
+                continue
+
+            reasoning_lower = v.reasoning.lower()
+            has_save = any(
+                re.search(kw, reasoning_lower) for kw in self._SAVE_KEYWORDS
+            )
+            if not has_save:
+                continue
+
+            modified[i] = VLMVerdict(
+                candidate=v.candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.SHOT_STOP_DIVING,
+                confidence=v.confidence,
+                reasoning=v.reasoning,
+                model_used=v.model_used,
+            )
+            reclassified += 1
+            t = v.candidate.timestamp
+            log.info("save_reclass.upgrade",
+                     time=f"{int(t//60):02d}:{t%60:05.2f}",
+                     reasoning_snippet=v.reasoning[:80])
+
+        log.info("save_reclass.complete",
+                 total_goal_kicks=sum(
+                     1 for v in verdicts
+                     if v.event_type == EventType.GOAL_KICK),
+                 reclassified=reclassified)
+
+        return modified
+
+    # ------------------------------------------------------------------
     # Internal — goal inference (Phase 3b)
     # ------------------------------------------------------------------
 
@@ -343,34 +409,35 @@ class DetectionPipeline:
         verdicts: list[VLMVerdict],
         all_candidates: list[EventCandidate],
     ) -> list[VLMVerdict]:
-        """Post-VLM goal inference using temporal shot→kickoff patterns.
+        """Post-VLM goal inference using temporal kickoff patterns.
 
-        1. For each confirmed shot/save, rescan for a kickoff 30-180s later.
-           If found → upgrade the shot to a goal.
-        2. Deduplicate goals within 3 min of each other (sideline camera
-           often produces consecutive "ball in net" spikes for one goal).
-        3. Downgrade goals with weak evidence (ball disappeared, no net/
-           celebration confirmation).
+        1. For each confirmed shot/save AND each VLM-classified goal, rescan
+           for a kickoff 30-180s later.
+        2. Upgrade shots/saves with confirmed kickoff → goal.
+        3. Downgrade VLM goals WITHOUT confirmed kickoff → shot.
+        4. Deduplicate goals within 4 min of each other.
         """
         confirmed = [v for v in verdicts
                      if v.result == VerificationResult.CONFIRMED]
 
         shot_types = {EventType.SHOT_ON_TARGET, EventType.SHOT_STOP_DIVING}
         shots = [v for v in confirmed if v.event_type in shot_types]
-        goals = [v for v in confirmed if v.event_type == EventType.GOAL]
+        vlm_goals = [v for v in confirmed if v.event_type == EventType.GOAL]
         kickoffs = [v for v in confirmed if v.event_type == EventType.KICKOFF]
 
         vlm_times = {v.candidate.timestamp for v in verdicts}
 
         # ── Step 1: Find candidates to rescan for kickoffs ────────────
-        rescan_map: dict[float, VLMVerdict] = {}  # candidate_ts → shot verdict
+        # Rescan after BOTH shots and VLM goals — the VLM hallucinates
+        # celebrations, so we need kickoff evidence to confirm goals.
+        events_needing_kickoff = shots + vlm_goals
+        rescan_map: dict[float, VLMVerdict] = {}  # candidate_ts → verdict
         rescan_candidates: list[EventCandidate] = []
+        events_without_rescan: list[VLMVerdict] = []
 
-        shots_without_rescan: list[VLMVerdict] = []
-
-        for shot in shots:
-            t = shot.candidate.timestamp
-            # Already have a kickoff after this shot?
+        for ev in events_needing_kickoff:
+            t = ev.candidate.timestamp
+            # Already have a kickoff after this event?
             has_ko = any(
                 self._KICKOFF_RESCAN_MIN_GAP
                 < ko.candidate.timestamp - t
@@ -389,19 +456,18 @@ class DetectionPipeline:
                 if gap > self._KICKOFF_RESCAN_MAX_GAP:
                     break
                 if cand.timestamp not in vlm_times:
-                    rescan_map[cand.timestamp] = shot
+                    rescan_map[cand.timestamp] = ev
                     rescan_candidates.append(cand)
                     found = True
                     break
 
             if not found:
-                shots_without_rescan.append(shot)
+                events_without_rescan.append(ev)
 
-        # For shots with no motion candidate in the window, create
+        # For events with no motion candidate in the window, create
         # synthetic probe candidates at fixed offsets (direct extraction)
-
-        for shot in shots_without_rescan:
-            t = shot.candidate.timestamp
+        for ev in events_without_rescan:
+            t = ev.candidate.timestamp
             for offset in self._KICKOFF_DIRECT_PROBES:
                 probe_t = t + offset
                 if probe_t > self._duration:
@@ -414,20 +480,21 @@ class DetectionPipeline:
                     clip_start=max(0, probe_t - 5),
                     clip_end=min(self._duration, probe_t + 15),
                 )
-                rescan_map[probe_t] = shot
+                rescan_map[probe_t] = ev
                 rescan_candidates.append(probe)
 
-        if shots_without_rescan:
+        if events_without_rescan:
             log.info("goal_inference.direct_probes",
-                     shots=len(shots_without_rescan),
-                     probes=sum(1 for s in shots_without_rescan
+                     events=len(events_without_rescan),
+                     probes=sum(1 for _ in events_without_rescan
                                 for _ in self._KICKOFF_DIRECT_PROBES))
 
         # ── Step 2: Rescan candidates via focused kickoff prompt ──────
         new_kickoffs: list[VLMVerdict] = []
         if rescan_candidates:
             log.info("goal_inference.kickoff_rescan",
-                     shots=len(shots), rescanning=len(rescan_candidates))
+                     events=len(events_needing_kickoff),
+                     rescanning=len(rescan_candidates))
 
             rescan_verdicts = self._vlm_verifier.verify_kickoff(
                 rescan_candidates,
@@ -440,10 +507,10 @@ class DetectionPipeline:
                  "event_type": rv.event_type.value if rv.event_type else None,
                  "confidence": round(rv.confidence, 3),
                  "reasoning": rv.reasoning,
-                 "for_shot_at": (rescan_map[rv.candidate.timestamp]
-                                 .candidate.timestamp
-                                 if rv.candidate.timestamp in rescan_map
-                                 else None),
+                 "for_event_at": (rescan_map[rv.candidate.timestamp]
+                                  .candidate.timestamp
+                                  if rv.candidate.timestamp in rescan_map
+                                  else None),
                  "mm_ss": f"{int(rv.candidate.timestamp//60):02d}:"
                           f"{rv.candidate.timestamp%60:05.2f}"}
                 for rv in rescan_verdicts
@@ -461,38 +528,79 @@ class DetectionPipeline:
 
         all_kickoffs = kickoffs + new_kickoffs
 
-        # ── Step 3: Upgrade shots that have a kickoff after them ──────
+        # Build set of timestamps that have a confirmed kickoff after them
+        kickoff_confirmed: set[float] = set()
+        for ev in events_needing_kickoff:
+            t = ev.candidate.timestamp
+            if any(
+                self._KICKOFF_RESCAN_MIN_GAP
+                < ko.candidate.timestamp - t
+                < self._KICKOFF_RESCAN_MAX_GAP
+                for ko in all_kickoffs
+            ):
+                kickoff_confirmed.add(t)
+
+        # ── Step 3: Upgrade shots/saves with kickoff → goal ───────────
         modified = list(verdicts)
         upgrades = 0
 
         for shot in shots:
             t = shot.candidate.timestamp
-            for ko in all_kickoffs:
-                gap = ko.candidate.timestamp - t
-                if self._KICKOFF_RESCAN_MIN_GAP < gap < self._KICKOFF_RESCAN_MAX_GAP:
-                    idx = modified.index(shot)
-                    modified[idx] = VLMVerdict(
-                        candidate=shot.candidate,
-                        result=VerificationResult.CONFIRMED,
-                        event_type=EventType.GOAL,
-                        confidence=min(shot.confidence + 0.1, 1.0),
-                        reasoning=(
-                            f"INFERRED GOAL: {shot.event_type.value} "
-                            f"followed by kickoff {gap:.0f}s later. "
-                            f"Original: {shot.reasoning}"
-                        ),
-                        model_used=shot.model_used,
-                    )
-                    mm = int(t // 60)
-                    ss = t % 60
-                    log.info("goal_inference.upgrade",
-                             time=f"{mm:02d}:{ss:05.2f}",
-                             kickoff_gap=round(gap),
-                             original=shot.event_type.value)
-                    upgrades += 1
-                    break
+            if t not in kickoff_confirmed:
+                continue
+            # Find the matching kickoff for logging
+            best_ko = min(
+                (ko for ko in all_kickoffs
+                 if self._KICKOFF_RESCAN_MIN_GAP
+                 < ko.candidate.timestamp - t
+                 < self._KICKOFF_RESCAN_MAX_GAP),
+                key=lambda ko: ko.candidate.timestamp - t,
+            )
+            gap = best_ko.candidate.timestamp - t
+            idx = modified.index(shot)
+            modified[idx] = VLMVerdict(
+                candidate=shot.candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.GOAL,
+                confidence=min(shot.confidence + 0.1, 1.0),
+                reasoning=(
+                    f"INFERRED GOAL: {shot.event_type.value} "
+                    f"followed by kickoff {gap:.0f}s later. "
+                    f"Original: {shot.reasoning}"
+                ),
+                model_used=shot.model_used,
+            )
+            mm = int(t // 60)
+            ss = t % 60
+            log.info("goal_inference.upgrade",
+                     time=f"{mm:02d}:{ss:05.2f}",
+                     kickoff_gap=round(gap),
+                     original=shot.event_type.value)
+            upgrades += 1
 
-        # ── Step 4: Deduplicate goals within 3 min window ─────────────
+        # ── Step 3b: Downgrade VLM goals WITHOUT kickoff → shot ───────
+        # The VLM hallucinates celebrations; kickoff is the only reliable
+        # confirmation we have for goals.
+        goal_downgrades = 0
+        for goal in vlm_goals:
+            t = goal.candidate.timestamp
+            if t in kickoff_confirmed:
+                continue  # Kickoff confirmed — keep as goal
+            idx = modified.index(goal)
+            modified[idx] = VLMVerdict(
+                candidate=goal.candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.SHOT_ON_TARGET,
+                confidence=goal.confidence * 0.7,
+                reasoning=f"DOWNGRADED: no kickoff confirmation. "
+                          f"Original: {goal.reasoning}",
+                model_used=goal.model_used,
+            )
+            goal_downgrades += 1
+            log.info("goal_inference.downgrade_no_kickoff",
+                     time=f"{int(t//60):02d}:{t%60:05.2f}")
+
+        # ── Step 4: Deduplicate goals within 4 min window ─────────────
         all_goals = sorted(
             [v for v in modified
              if v.result == VerificationResult.CONFIRMED
@@ -533,45 +641,10 @@ class DetectionPipeline:
                     )
                     break
 
-        # ── Step 5: Downgrade goals with weak evidence ────────────────
-        _STRONG_EVIDENCE = ["inside the net", "in the net", "into the net"]
-        _CELEBRATION = ["celebrat", "arms raised", "group hug"]
-        downgrades = 0
-
-        for v in list(modified):
-            if (v.result != VerificationResult.CONFIRMED
-                    or v.event_type != EventType.GOAL):
-                continue
-            reasoning_lower = v.reasoning.lower()
-            has_net = any(kw in reasoning_lower for kw in _STRONG_EVIDENCE)
-            has_celebration = any(kw in reasoning_lower for kw in _CELEBRATION)
-            has_kickoff_after = any(
-                self._KICKOFF_RESCAN_MIN_GAP
-                < ko.candidate.timestamp - v.candidate.timestamp
-                < self._KICKOFF_RESCAN_MAX_GAP
-                for ko in all_kickoffs
-            )
-            # Weak = no net evidence AND no celebration AND no kickoff
-            if not has_net and not has_celebration and not has_kickoff_after:
-                idx = modified.index(v)
-                modified[idx] = VLMVerdict(
-                    candidate=v.candidate,
-                    result=VerificationResult.CONFIRMED,
-                    event_type=EventType.SHOT_ON_TARGET,
-                    confidence=v.confidence * 0.7,
-                    reasoning=f"DOWNGRADED: weak goal evidence. "
-                              f"Original: {v.reasoning}",
-                    model_used=v.model_used,
-                )
-                downgrades += 1
-                t = v.candidate.timestamp
-                log.info("goal_inference.downgrade",
-                         time=f"{int(t//60):02d}:{t%60:05.2f}")
-
         log.info("goal_inference.complete",
-                 upgrades=upgrades,
+                 shot_upgrades=upgrades,
+                 goal_downgrades=goal_downgrades,
                  deduped=len(goals_to_remove),
-                 downgrades=downgrades,
                  final_goals=sum(
                      1 for v in modified
                      if v.result == VerificationResult.CONFIRMED

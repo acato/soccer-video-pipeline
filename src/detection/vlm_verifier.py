@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
@@ -112,21 +113,29 @@ CAMERA LIMITATIONS — at this distance:
 - You CAN see player positions, formations, celebrations, and restart patterns
 
 CLASSIFICATION STRATEGY — what happens AFTER the action is the best signal:
-- Goal kick restart (ball placed in 6-yard box) → the preceding action was a SAVE or a miss
-- Corner kick restart (player at corner flag) → the preceding action was a deflection/save
-- Kickoff restart (players at center circle) → a GOAL was scored
-- Throw-in restart (player holding ball at sideline) → ball went out of play
-- Play continues normally → nothing significant happened
+- Goal kick restart (ball placed in 6-yard box) → classify as "save" (shot was stopped)
+- Corner kick restart (player at corner flag) → classify as "save" (GK deflected it)
+- Kickoff restart (players at center circle) → classify as "goal" (a goal was scored)
+- Throw-in restart (player holding ball at sideline) → classify as "throw_in"
+- Play continues normally → "none"
+
+CRITICAL RULE — "save" vs "goal_kick":
+- If you see a SHOT toward goal followed by a GOAL KICK restart, always classify as "save". \
+The save is what matters, the goal kick is just the restart that follows.
+- Only classify as "goal_kick" when there is NO preceding shot — e.g. a wayward cross or \
+backpass that drifts over the goal line with no shot attempt.
 
 Classify the MAIN event. Choose ONE:
 - "goal": GOAL — ONLY if you see celebration (arms raised, group hugs, sliding) \
 OR kickoff restart at center circle. "Ball near goal" alone is NEVER enough.
-- "save": SAVE — ball moved toward goal, then goalkeeper has the ball or goal kick follows. \
-The GK does NOT need to be visibly touching the ball — if a shot is followed by a goal kick, it was a save.
+- "save": SAVE — shot toward goal, then a goal kick restart follows. \
+The GK does NOT need to be visibly touching the ball — if a shot is followed by a goal kick, \
+it was a save. This is the MOST COMMON event in a match.
 - "shot": SHOT — ball kicked toward goal but missed (wide/over bar). No goal kick follows — \
 instead a throw-in, corner, or play continues.
 - "corner_kick": ball placed at CORNER FLAG arc, kicked into the penalty box.
-- "goal_kick": ball placed in 6-YARD BOX near goal, kicked upfield by GK or defender.
+- "goal_kick": ONLY when NO shot preceded it — a long ball or cross drifted out over the \
+goal line. If a shot was taken first, classify as "save" instead.
 - "free_kick": ball placed on ground mid-field, kicked from a stoppage after a foul.
 - "penalty": ONE player facing goalkeeper from the penalty spot, all others outside the box.
 - "throw_in": player holding ball OVERHEAD at the sideline, throws it in.
@@ -295,6 +304,12 @@ class VLMVerifier:
         else:
             self._work = Path("/tmp/soccer-pipeline")
         self._work.mkdir(parents=True, exist_ok=True)
+
+        # Resolve ffmpeg path once — Celery workers sometimes lose PATH
+        self._ffmpeg = (
+            shutil.which("ffmpeg")
+            or "/opt/homebrew/bin/ffmpeg"
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -498,7 +513,7 @@ class VLMVerifier:
 
         pattern = str(out_dir / "frame_%05d.jpg")
         cmd = [
-            "ffmpeg", "-y",
+            self._ffmpeg, "-y",
             "-ss", f"{start_sec:.3f}",
             "-i", str(source_file),
             "-t", f"{clip_duration:.3f}",

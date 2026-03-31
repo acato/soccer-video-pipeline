@@ -352,7 +352,7 @@ if [ "$MODE" = "mps" ]; then
     # Start API in background
     echo "Starting API server..."
     nohup $PYTHON -m uvicorn src.api.app:create_app --factory \
-        --host 0.0.0.0 --port 8080 \
+        --host 127.0.0.1 --port 8080 \
         > "$WORKING_DIR/api.log" 2>&1 &
     API_PID=$!
     echo "  API PID: $API_PID (log: $WORKING_DIR/api.log)"

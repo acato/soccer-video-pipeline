@@ -138,20 +138,30 @@ The prompt is calibrated for sideline camera limitations:
 
 Source: `src/detection/vlm_verifier.py` — `VLMVerifier`
 
+### Phase 3a.5: Save Reclassification (Post-VLM)
+
+The VLM often sees a shot → save → goal kick sequence and classifies it as "goal_kick" (the visible restart) rather than "save" (the meaningful action). This phase fixes that by scanning VLM reasoning text.
+
+**Rule**: If a VLM verdict is `goal_kick` AND the reasoning mentions save-related keywords (save, stopped, blocked, parried, caught, pushed away, tipped, denied, kept out), reclassify to `SHOT_STOP_DIVING`.
+
+**Why**: In initial runs, ALL goal_kick verdicts mentioned saves in their reasoning, but 0 saves were produced. This phase recovered ~40+ saves from misclassified goal kicks.
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._save_reclassification()`
+
 ### Phase 3b: Goal Inference (Post-VLM)
 
-After the main VLM classification, a goal inference pass improves goal detection using temporal shot→kickoff patterns.
+After the main VLM classification, a goal inference pass uses temporal kickoff patterns to both **confirm real goals** and **filter false positive goals**.
 
-**Step 1 — Kickoff rescan**: For each confirmed shot/save, look for unclassified motion candidates 30-180s later. If no motion candidate exists in the window (kickoffs are low-motion events), extract frames directly from the video at fixed offsets (+60s, +90s, +120s). Send candidates to VLM with a focused kickoff-specific prompt.
+**Step 1 — Kickoff rescan**: For each confirmed shot/save AND each VLM-classified goal, look for unclassified motion candidates 30-180s later. If no motion candidate exists in the window, extract frames directly at fixed offsets (+60s, +90s, +120s). Send to VLM with a focused kickoff-specific prompt.
 
-**Step 2 — Shot→kickoff upgrade**: If a kickoff is confirmed after a shot → upgrade the shot to a GOAL (inferred). This catches goals that the VLM saw as shots because the ball-in-net was ambiguous from the sideline angle.
+**Step 2 — Shot→goal upgrade**: If a kickoff is confirmed after a shot/save → upgrade to GOAL.
 
-**Step 3 — Goal dedup**: Merge goals within 240s (4 min) of each other, keeping the higher-confidence one. The sideline camera often produces multiple "ball in net" motion spikes for a single goal.
+**Step 3 — VLM goal→shot downgrade**: VLM-classified goals WITHOUT a confirmed kickoff 30-180s later are downgraded to `SHOT_ON_TARGET`. The VLM frequently hallucinates celebrations and "ball in net" from sideline footage; kickoff is the only reliable goal confirmation signal.
 
-**Step 4 — Weak evidence downgrade**: Goals where the VLM reasoning contains no strong evidence ("inside the net", "in the net", "into the net") and no celebration keywords are downgraded to shots.
+**Step 4 — Goal dedup**: Merge goals within 240s (4 min), keeping higher confidence.
 
-- **Kickoff prompt**: Binary question ("is this a center-circle kickoff?") — faster and more reliable than full classification
-- **Direct probes**: Frame extraction at +60/90/120s bypasses motion scan gaps (kickoffs don't generate motion spikes)
+- **Kickoff prompt**: Binary question ("is this a center-circle kickoff?")
+- **Direct probes**: Frame extraction at +60/90/120s bypasses motion scan gaps
 - **Parameters**: `_KICKOFF_RESCAN_MIN_GAP=30s`, `_KICKOFF_RESCAN_MAX_GAP=180s`, `_GOAL_DEDUP_WINDOW=240s`
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._goal_inference()`

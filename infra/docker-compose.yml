@@ -26,7 +26,7 @@ services:
       - WORKING_DIR=/tmp/soccer-pipeline
       - TEAM_CONFIG_PATH=/app/.team-config.json
     ports:
-      - "0.0.0.0:8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       - nas_source:/mnt/nas/source:ro
       - nas_output:/mnt/nas/output
