@@ -280,7 +280,7 @@ class VisualCandidateGenerator:
 
         log.info("visual_candidate.motion_scan",
                  samples=len(motion_scores), spikes=len(results),
-                 threshold=round(threshold, 5))
+                 global_threshold=round(global_threshold, 5))
         return results
 
     def boost_with_audio(
