@@ -6,6 +6,8 @@ Phase ordering:
   2. Audio detection — optional booster for co-located motion candidates
   3. VLM classification — two-pass verify + classify via Qwen3-VL / Claude
   3b. Goal inference — kickoff rescan to upgrade shots, dedup nearby goals
+  3c. Set-piece inference — corner/goal-kick rescan after shots
+  3d. Corner scan — independent corner detection at uncovered candidates
 
 Produces Event objects compatible with the existing segmentation/assembly
 pipeline.
@@ -261,10 +263,25 @@ class DetectionPipeline:
                     for v in verdicts
                 ])
 
-                # Phase 3b: Goal inference — kickoff rescan (85% → 90%)
+                # Phase 3b: Goal inference — kickoff rescan (82% → 87%)
                 if progress_callback:
-                    progress_callback(0.85)
+                    progress_callback(0.82)
                 verdicts = self._goal_inference(
+                    verdicts, all_motion_candidates,
+                )
+
+                # Phase 3c: Set-piece inference — corner/goal-kick
+                # rescan after shots (87% → 90%)
+                if progress_callback:
+                    progress_callback(0.87)
+                verdicts = self._set_piece_inference(
+                    verdicts, all_motion_candidates,
+                )
+
+                # Phase 3d: Independent corner scan (90% → 95%)
+                if progress_callback:
+                    progress_callback(0.90)
+                verdicts = self._corner_scan(
                     verdicts, all_motion_candidates,
                 )
 
@@ -279,9 +296,9 @@ class DetectionPipeline:
             events = self._candidates_to_events(candidates)
 
         if progress_callback:
-            progress_callback(0.90)
+            progress_callback(0.95)
 
-        # ── Post-processing (90% → 100%) ──────────────────────────────
+        # ── Post-processing (95% → 100%) ──────────────────────────────
         events = self._deduplicate(events)
         events.sort(key=lambda e: e.timestamp_start)
 
@@ -542,6 +559,287 @@ class DetectionPipeline:
                      if v.result == VerificationResult.CONFIRMED
                      and v.event_type == EventType.GOAL))
 
+        return modified
+
+    # ------------------------------------------------------------------
+    # Internal — set-piece inference (Phase 3c)
+    # ------------------------------------------------------------------
+
+    _SET_PIECE_MIN_GAP = 10.0     # Set piece ≥10s after shot
+    _SET_PIECE_MAX_GAP = 90.0     # ... and ≤90s after shot
+    _SET_PIECE_PROBES = [20, 35, 50]  # Direct probe offsets
+
+    def _set_piece_inference(
+        self,
+        verdicts: list[VLMVerdict],
+        all_candidates: list[EventCandidate],
+    ) -> list[VLMVerdict]:
+        """Post-VLM set-piece detection: rescan after shots for corners/goal kicks.
+
+        Shots and saves often precede corners or goal kicks, but the
+        restart candidate may not reach VLM (dropped by time-distributed
+        sampling). This pass rescans for set pieces 10-90s after each shot.
+        """
+        confirmed = [v for v in verdicts
+                     if v.result == VerificationResult.CONFIRMED]
+
+        shot_types = {
+            EventType.SHOT_ON_TARGET, EventType.SHOT_STOP_DIVING,
+            EventType.SHOT_OFF_TARGET,
+        }
+        shots = [v for v in confirmed if v.event_type in shot_types]
+
+        if not shots:
+            log.info("set_piece_inference.no_shots")
+            return verdicts
+
+        vlm_times = {v.candidate.timestamp for v in verdicts}
+
+        # Find rescan candidates after each shot
+        rescan_map: dict[float, VLMVerdict] = {}
+        rescan_candidates: list[EventCandidate] = []
+        shots_without_rescan: list[VLMVerdict] = []
+
+        for shot in shots:
+            t = shot.candidate.timestamp
+            found = False
+            for cand in sorted(all_candidates, key=lambda c: c.timestamp):
+                gap = cand.timestamp - t
+                if gap < self._SET_PIECE_MIN_GAP:
+                    continue
+                if gap > self._SET_PIECE_MAX_GAP:
+                    break
+                if cand.timestamp not in vlm_times:
+                    rescan_map[cand.timestamp] = shot
+                    rescan_candidates.append(cand)
+                    found = True
+                    break
+
+            if not found:
+                shots_without_rescan.append(shot)
+
+        # Direct probes for shots without motion candidates
+        from src.detection.visual_candidate import VisualContext
+        for shot in shots_without_rescan:
+            t = shot.candidate.timestamp
+            for offset in self._SET_PIECE_PROBES:
+                probe_t = t + offset
+                if probe_t > self._duration:
+                    continue
+                probe = EventCandidate(
+                    timestamp=probe_t,
+                    source=CandidateSource.SPOT_CHECK,
+                    confidence=0.5,
+                    context=VisualContext(),
+                    clip_start=max(0, probe_t - 5),
+                    clip_end=min(self._duration, probe_t + 15),
+                )
+                rescan_map[probe_t] = shot
+                rescan_candidates.append(probe)
+
+        if not rescan_candidates:
+            log.info("set_piece_inference.no_candidates")
+            return verdicts
+
+        log.info("set_piece_inference.rescanning",
+                 shots=len(shots),
+                 candidates=len(rescan_candidates),
+                 direct_probes=sum(
+                     len(self._SET_PIECE_PROBES)
+                     for _ in shots_without_rescan))
+
+        # Send to VLM with focused set-piece prompt
+        sp_verdicts = self._vlm_verifier.verify_set_piece(
+            rescan_candidates,
+            match_config=self._match_config,
+        )
+
+        # Dump diagnostics
+        self._dump_diagnostics("set_piece_rescan", [
+            {"timestamp": rv.candidate.timestamp,
+             "result": rv.result.value,
+             "event_type": rv.event_type.value if rv.event_type else None,
+             "confidence": round(rv.confidence, 3),
+             "reasoning": rv.reasoning,
+             "for_shot_at": (rescan_map[rv.candidate.timestamp]
+                             .candidate.timestamp
+                             if rv.candidate.timestamp in rescan_map
+                             else None),
+             "mm_ss": f"{int(rv.candidate.timestamp//60):02d}:"
+                      f"{rv.candidate.timestamp%60:05.2f}"}
+            for rv in sp_verdicts
+        ])
+
+        # Collect confirmed set pieces
+        new_events = [
+            rv for rv in sp_verdicts
+            if rv.result == VerificationResult.CONFIRMED
+            and rv.event_type is not None
+        ]
+
+        if new_events:
+            from collections import Counter
+            types = Counter(e.event_type.value for e in new_events)
+            log.info("set_piece_inference.found",
+                     count=len(new_events), types=dict(types))
+        else:
+            log.info("set_piece_inference.none_found")
+
+        # Add new set-piece verdicts to the verdict list
+        modified = list(verdicts) + new_events
+        return modified
+
+    # ------------------------------------------------------------------
+    # Internal — independent corner scan (Phase 3d)
+    # ------------------------------------------------------------------
+
+    _CORNER_DEDUP_WINDOW = 45.0    # Skip if corner already found within 45s
+    _CORNER_GAP_THRESHOLD = 150.0  # Probe gaps between verdicts >2.5 min
+    _CORNER_GAP_INTERVAL = 60.0    # Probe every 60s inside large gaps
+    _CORNER_MAX_SCANS = 20         # Hard cap on corner scan VLM calls
+
+    def _corner_scan(
+        self,
+        verdicts: list[VLMVerdict],
+        all_candidates: list[EventCandidate],
+    ) -> list[VLMVerdict]:
+        """Independent corner detection via gap probes and targeted rescans.
+
+        Corners are visually distinctive but sparse.  The set-piece rescan
+        (Phase 3c) only triggers after shots/saves and uses fixed offsets
+        that may miss the actual corner moment.
+
+        This phase uses two strategies:
+        1. **Gap probes** — in time gaps >2.5 min between VLM verdicts,
+           create direct frame probes every 60s.  Catches corners in
+           stretches of play where no motion spike was sampled.
+        2. **Throw-in re-check** — throw-ins near the goal area can be
+           misclassified corners.  Re-probe these with a corner-focused
+           prompt.
+        """
+        confirmed = [v for v in verdicts
+                     if v.result == VerificationResult.CONFIRMED]
+
+        # Already-found corner timestamps — avoid re-scanning nearby
+        existing_corners = {
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.CORNER_KICK
+        }
+
+        # All timestamps already sent to VLM
+        vlm_times = {v.candidate.timestamp for v in verdicts}
+
+        scan_candidates: list[EventCandidate] = []
+        scan_seen: set[float] = set()
+
+        # ── Strategy 1: direct probes in large gaps ───────────────────
+        from src.detection.visual_candidate import VisualContext
+        sorted_times = sorted(vlm_times)
+        gap_probes = 0
+
+        for i in range(len(sorted_times) - 1):
+            gap_start = sorted_times[i]
+            gap_end = sorted_times[i + 1]
+            gap = gap_end - gap_start
+
+            if gap < self._CORNER_GAP_THRESHOLD:
+                continue
+
+            # Skip halftime gap (>10 min between events)
+            if gap > 600:
+                continue
+
+            # Probe every _CORNER_GAP_INTERVAL seconds inside the gap
+            probe_t = gap_start + self._CORNER_GAP_INTERVAL
+            while probe_t < gap_end - 10:
+                if probe_t in scan_seen:
+                    probe_t += self._CORNER_GAP_INTERVAL
+                    continue
+                if any(abs(probe_t - ct) < self._CORNER_DEDUP_WINDOW
+                       for ct in existing_corners):
+                    probe_t += self._CORNER_GAP_INTERVAL
+                    continue
+                probe = EventCandidate(
+                    timestamp=probe_t,
+                    source=CandidateSource.SPOT_CHECK,
+                    confidence=0.5,
+                    context=VisualContext(),
+                    clip_start=max(0, probe_t - 5),
+                    clip_end=min(self._duration, probe_t + 15),
+                )
+                scan_candidates.append(probe)
+                scan_seen.add(probe_t)
+                gap_probes += 1
+                probe_t += self._CORNER_GAP_INTERVAL
+
+        # ── Strategy 2: re-probe throw-ins with corner prompt ─────────
+        # Throw-ins near the goal line can be misclassified corners.
+        throw_in_reprobes = 0
+        throw_ins = [v for v in confirmed
+                     if v.event_type == EventType.THROW_IN]
+        for ti in throw_ins:
+            t = ti.candidate.timestamp
+            if t in scan_seen:
+                continue
+            if any(abs(t - ct) < self._CORNER_DEDUP_WINDOW
+                   for ct in existing_corners):
+                continue
+            scan_candidates.append(ti.candidate)
+            scan_seen.add(t)
+            throw_in_reprobes += 1
+
+        if not scan_candidates:
+            log.info("corner_scan.no_candidates")
+            return verdicts
+
+        # Hard cap to avoid excessive VLM calls
+        if len(scan_candidates) > self._CORNER_MAX_SCANS:
+            scan_candidates.sort(key=lambda c: c.timestamp)
+            scan_candidates = scan_candidates[:self._CORNER_MAX_SCANS]
+
+        # Sort by time for orderly processing
+        scan_candidates.sort(key=lambda c: c.timestamp)
+
+        log.info("corner_scan.scanning",
+                 gap_probes=gap_probes,
+                 throw_in_reprobes=throw_in_reprobes,
+                 total=len(scan_candidates))
+
+        # Send focused corner prompt
+        corner_verdicts = self._vlm_verifier.verify_corner(
+            scan_candidates,
+            match_config=self._match_config,
+        )
+
+        # Dump diagnostics
+        self._dump_diagnostics("corner_scan", [
+            {"timestamp": rv.candidate.timestamp,
+             "result": rv.result.value,
+             "event_type": rv.event_type.value if rv.event_type else None,
+             "confidence": round(rv.confidence, 3),
+             "reasoning": rv.reasoning,
+             "mm_ss": f"{int(rv.candidate.timestamp//60):02d}:"
+                      f"{rv.candidate.timestamp%60:05.2f}"}
+            for rv in corner_verdicts
+        ])
+
+        # Collect confirmed corners
+        new_corners = [
+            rv for rv in corner_verdicts
+            if rv.result == VerificationResult.CONFIRMED
+            and rv.event_type == EventType.CORNER_KICK
+        ]
+
+        if new_corners:
+            log.info("corner_scan.found",
+                     count=len(new_corners),
+                     times=[f"{int(c.candidate.timestamp//60):02d}:"
+                            f"{c.candidate.timestamp%60:05.2f}"
+                            for c in new_corners])
+        else:
+            log.info("corner_scan.none_found")
+
+        modified = list(verdicts) + new_corners
         return modified
 
     # ------------------------------------------------------------------

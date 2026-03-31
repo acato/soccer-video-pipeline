@@ -129,6 +129,38 @@ After the main VLM classification, a goal inference pass improves goal detection
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._goal_inference()`
 
+### Phase 3c: Set-Piece Inference (Post-VLM)
+
+After shots/saves, rescan for restarts (corners, goal kicks, throw-ins) that the main VLM pass missed.
+
+**Trigger**: Each confirmed shot or save (SHOT_ON_TARGET, SHOT_STOP_DIVING, SHOT_OFF_TARGET).
+
+**Step 1 — Candidate search**: For each shot/save, find the first unsampled motion candidate 10-90s later. If none found, extract frames directly at +20s, +35s, +50s.
+
+**Step 2 — Focused prompt**: Send a 4-way classification prompt: "corner_kick / goal_kick / throw_in / none". Faster and more focused than the general two-pass prompt.
+
+**Step 3 — Confirm**: Confirmed set pieces are added to the verdict list as new events.
+
+- **Parameters**: `_SET_PIECE_MIN_GAP=10s`, `_SET_PIECE_MAX_GAP=90s`, `_SET_PIECE_PROBES=[20, 35, 50]`
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._set_piece_inference()`
+
+### Phase 3d: Independent Corner Scan (Post-VLM)
+
+Corners are visually distinctive but the general VLM prompt often misses corner-specific cues (player at corner arc, ball at corner flag). This phase independently scans for corners at candidates that the main VLM pass classified as "none" (no event detected).
+
+**Why separate from Phase 3c**: The set-piece rescan only triggers after detected shots/saves. Many corners don't follow a detected shot — they follow unclassified events, clearances, or deflections. This phase catches those.
+
+**Step 1 — Candidate selection**: Take all VLM "none" verdicts. For each, also gather nearby unsampled motion candidates within ±20s. Skip candidates within 45s of an already-detected corner.
+
+**Step 2 — Focused prompt**: Send a binary "is this a corner kick?" prompt with detailed corner visual cues (player at corner arc, players in penalty area, high cross into box).
+
+**Step 3 — Confirm**: Confirmed corners are added to the verdict list.
+
+- **Parameters**: `_CORNER_SCAN_WINDOW=20s`, `_CORNER_DEDUP_WINDOW=45s`
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._corner_scan()`
+
 ### Diagnostic Dumps
 
 Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
@@ -137,6 +169,8 @@ Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
 - `final_candidates.jsonl` — after audio boost
 - `vlm_verdicts.jsonl` — VLM classification results
 - `kickoff_rescan.jsonl` — goal inference kickoff rescan results
+- `set_piece_rescan.jsonl` — set-piece inference results
+- `corner_scan.jsonl` — independent corner scan results
 
 ### Configuration
 

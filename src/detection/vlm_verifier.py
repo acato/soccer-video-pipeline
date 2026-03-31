@@ -129,6 +129,64 @@ Respond with EXACTLY this JSON (no other text):
 {{"event": "<type>", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
 
 
+_SET_PIECE_CHECK_PROMPT = """\
+You are analyzing frames from a soccer match recorded by a sideline camera.
+{match_context}
+
+These frames are sampled at 2 FPS from a {clip_duration:.0f}-second clip.
+
+A shot or save just happened. What restart follows? Choose ONE:
+
+CORNER KICK:
+- Ball placed at the corner arc (near the corner flag at the edge of the field)
+- One player standing by the corner flag, about to kick
+- Many players gathered in or near the penalty area, waiting for the cross
+- Ball kicked into the box (high, curving delivery)
+
+GOAL KICK:
+- Ball placed on the ground inside the six-yard box (small rectangle near the goal)
+- Goalkeeper or defender standing over the ball, about to kick it
+- Opposing players far from the goal, outside the penalty area
+- Ball kicked long upfield or short to a defender
+
+THROW-IN:
+- Player holding the ball overhead at the sideline
+- Both feet on/behind the touchline (side of the field)
+- Ball thrown into play
+
+NONE:
+- Play continues without a restart
+- Cannot determine the restart type
+- Players are actively running/contesting
+
+Respond with EXACTLY this JSON (no other text):
+{{"restart": "corner_kick" or "goal_kick" or "throw_in" or "none", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
+_CORNER_CHECK_PROMPT = """\
+You are analyzing frames from a soccer match recorded by a sideline camera.
+{match_context}
+
+These frames are sampled at 2 FPS from a {clip_duration:.0f}-second clip.
+
+Is a CORNER KICK being taken in these frames?
+
+Signs of a corner kick:
+- A player standing at or near the CORNER FLAG / CORNER ARC at the edge of the field
+- The ball placed on the ground at the corner arc
+- Multiple players from both teams gathered inside or around the PENALTY AREA, waiting for the cross
+- The ball is kicked high into the box (curving/lofted delivery)
+- The corner flag is clearly visible near the player taking the kick
+
+This is NOT a corner kick if:
+- Players are running/contesting the ball in open play
+- The ball is in the middle of the field or near the sideline (not corner)
+- A player is taking a goal kick (ball in the six-yard box, not corner)
+- A player is taking a throw-in (holding ball overhead at the sideline)
+- A free kick from a central or wide position (not at the corner arc)
+
+Respond with EXACTLY this JSON (no other text):
+{{"is_corner": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
 _KICKOFF_CHECK_PROMPT = """\
 You are analyzing frames from a soccer match recorded by a sideline camera.
 {match_context}
@@ -767,6 +825,238 @@ class VLMVerifier:
                      reasoning=verdict.reasoning[:100])
 
         return verdicts
+
+    def verify_set_piece(
+        self,
+        candidates: list[EventCandidate],
+        *,
+        match_config: Optional[MatchConfig] = None,
+        source_file: Optional[str | Path] = None,
+    ) -> list[VLMVerdict]:
+        """Focused set-piece check after shots — corner, goal kick, or throw-in.
+
+        Used by set-piece inference to detect restarts after shots/saves.
+        """
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            return [self._passthrough(c) for c in candidates]
+
+        ctx = _match_context(match_config)
+        verdicts: list[VLMVerdict] = []
+
+        for candidate in candidates:
+            mm = int(candidate.timestamp // 60)
+            ss = candidate.timestamp % 60
+            log.info("vlm_verifier.set_piece_check",
+                     time=f"{mm:02d}:{ss:05.2f}")
+
+            frames = self._extract_clip_frames(
+                src, candidate.clip_start, candidate.clip_end,
+            )
+            if not frames:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            clip_duration = candidate.clip_end - candidate.clip_start
+            prompt = _SET_PIECE_CHECK_PROMPT.format(
+                match_context=ctx,
+                clip_duration=clip_duration,
+            )
+
+            response = None
+            model_used = "none"
+            if self._vllm_url:
+                response = self._call_vllm(prompt, frames)
+                model_used = self._vllm_model
+            if response is None and self._anthropic_key:
+                response = self._call_claude(prompt, frames)
+                model_used = self._anthropic_model
+
+            if response is None:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            verdict = self._parse_set_piece_response(
+                response, candidate, model_used,
+            )
+            verdicts.append(verdict)
+
+            log.info("vlm_verifier.set_piece_result",
+                     time=f"{mm:02d}:{ss:05.2f}",
+                     restart=verdict.event_type.value if verdict.event_type else "none",
+                     reasoning=verdict.reasoning[:100])
+
+        return verdicts
+
+    _SET_PIECE_TYPE_MAP = {
+        "corner_kick": EventType.CORNER_KICK,
+        "goal_kick": EventType.GOAL_KICK,
+        "throw_in": EventType.THROW_IN,
+    }
+
+    def _parse_set_piece_response(
+        self,
+        response: str,
+        candidate: EventCandidate,
+        model_used: str,
+    ) -> VLMVerdict:
+        """Parse set-piece check response."""
+        try:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+            if "<think>" in text:
+                import re
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            if not text.startswith("{"):
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+        except (json.JSONDecodeError, IndexError):
+            return self._passthrough(candidate)
+
+        restart = data.get("restart", "none")
+        confidence = float(data.get("confidence", 0.5))
+        reasoning = data.get("reasoning", "")
+
+        event_type = self._SET_PIECE_TYPE_MAP.get(restart)
+        if event_type and confidence >= self._min_conf:
+            return VLMVerdict(
+                candidate=candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=event_type,
+                confidence=confidence,
+                reasoning=reasoning,
+                model_used=model_used,
+            )
+        return VLMVerdict(
+            candidate=candidate,
+            result=VerificationResult.REJECTED,
+            event_type=None,
+            confidence=confidence,
+            reasoning=reasoning,
+            model_used=model_used,
+        )
+
+    def verify_corner(
+        self,
+        candidates: list[EventCandidate],
+        *,
+        match_config: Optional[MatchConfig] = None,
+        source_file: Optional[str | Path] = None,
+    ) -> list[VLMVerdict]:
+        """Focused corner kick check — binary question.
+
+        Used by the independent corner scan to detect corner kicks
+        at motion candidates that the main VLM pass missed.
+        """
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            return [self._passthrough(c) for c in candidates]
+
+        ctx = _match_context(match_config)
+        verdicts: list[VLMVerdict] = []
+
+        for candidate in candidates:
+            mm = int(candidate.timestamp // 60)
+            ss = candidate.timestamp % 60
+            log.info("vlm_verifier.corner_check",
+                     time=f"{mm:02d}:{ss:05.2f}")
+
+            frames = self._extract_clip_frames(
+                src, candidate.clip_start, candidate.clip_end,
+            )
+            if not frames:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            clip_duration = candidate.clip_end - candidate.clip_start
+            prompt = _CORNER_CHECK_PROMPT.format(
+                match_context=ctx,
+                clip_duration=clip_duration,
+            )
+
+            response = None
+            model_used = "none"
+            if self._vllm_url:
+                response = self._call_vllm(prompt, frames)
+                model_used = self._vllm_model
+            if response is None and self._anthropic_key:
+                response = self._call_claude(prompt, frames)
+                model_used = self._anthropic_model
+
+            if response is None:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            verdict = self._parse_corner_response(
+                response, candidate, model_used,
+            )
+            verdicts.append(verdict)
+
+            log.info("vlm_verifier.corner_result",
+                     time=f"{mm:02d}:{ss:05.2f}",
+                     is_corner=verdict.event_type == EventType.CORNER_KICK,
+                     reasoning=verdict.reasoning[:100])
+
+        return verdicts
+
+    def _parse_corner_response(
+        self,
+        response: str,
+        candidate: EventCandidate,
+        model_used: str,
+    ) -> VLMVerdict:
+        """Parse corner check response."""
+        try:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+            if "<think>" in text:
+                import re
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            if not text.startswith("{"):
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+        except (json.JSONDecodeError, IndexError):
+            return self._passthrough(candidate)
+
+        is_corner = data.get("is_corner", False)
+        confidence = float(data.get("confidence", 0.5))
+        reasoning = data.get("reasoning", "")
+
+        if is_corner and confidence >= self._min_conf:
+            return VLMVerdict(
+                candidate=candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.CORNER_KICK,
+                confidence=confidence,
+                reasoning=reasoning,
+                model_used=model_used,
+            )
+        return VLMVerdict(
+            candidate=candidate,
+            result=VerificationResult.REJECTED,
+            event_type=None,
+            confidence=confidence,
+            reasoning=reasoning,
+            model_used=model_used,
+        )
 
     def _parse_kickoff_response(
         self,
