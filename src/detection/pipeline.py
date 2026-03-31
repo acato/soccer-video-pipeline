@@ -31,12 +31,13 @@ from typing import Callable, Optional
 
 import structlog
 
-from src.detection.audio_detector import AudioDetector
+from src.detection.audio_detector import AudioCandidate, AudioCueType, AudioDetector
 from src.detection.models import Event, EventType
 from src.detection.visual_candidate import (
     CandidateSource,
     EventCandidate,
     VisualCandidateGenerator,
+    VisualContext,
 )
 from src.detection.vlm_verifier import (
     VLMVerdict,
@@ -225,12 +226,29 @@ class DetectionPipeline:
         if cancel_check and cancel_check():
             return events
 
+        # ── Phase 2b: Match structure + filtering ─────────────────────
+        match_struct = self._detect_match_structure(candidates, audio_candidates)
+        candidates = self._filter_by_match_structure(candidates, match_struct)
+
+        # ── Phase 2c: Audio gap fill — promote orphan audio cues ──────
+        candidates = self._audio_gap_fill(candidates, audio_candidates, match_struct)
+
+        # ── Phase 2d: Spot-check probes in temporal gaps ──────────────
+        candidates = self._spot_check_probes(candidates, match_struct)
+
+        self._dump_diagnostics("filtered_candidates", [
+            {"timestamp": c.timestamp, "source": c.source.value,
+             "confidence": round(c.confidence, 3),
+             "mm_ss": f"{int(c.timestamp//60):02d}:{c.timestamp%60:05.2f}"}
+            for c in candidates
+        ])
+
         # ── Phase 3: VLM classification (55% → 90%) ───────────────────
         # Keep full candidate list for goal inference rescan
         all_motion_candidates = list(candidates)
 
         # Cap candidates sent to VLM — distribute evenly across time
-        _VLM_MAX_CANDIDATES = 60
+        _VLM_MAX_CANDIDATES = 120
         if len(candidates) > _VLM_MAX_CANDIDATES:
             candidates = self._time_distributed_sample(
                 candidates, _VLM_MAX_CANDIDATES,
@@ -381,7 +399,7 @@ class DetectionPipeline:
 
         # For shots with no motion candidate in the window, create
         # synthetic probe candidates at fixed offsets (direct extraction)
-        from src.detection.visual_candidate import VisualContext
+
         for shot in shots_without_rescan:
             t = shot.candidate.timestamp
             for offset in self._KICKOFF_DIRECT_PROBES:
@@ -619,7 +637,7 @@ class DetectionPipeline:
                 shots_without_rescan.append(shot)
 
         # Direct probes for shots without motion candidates
-        from src.detection.visual_candidate import VisualContext
+
         for shot in shots_without_rescan:
             t = shot.candidate.timestamp
             for offset in self._SET_PIECE_PROBES:
@@ -733,7 +751,7 @@ class DetectionPipeline:
         scan_seen: set[float] = set()
 
         # ── Strategy 1: direct probes in large gaps ───────────────────
-        from src.detection.visual_candidate import VisualContext
+
         sorted_times = sorted(vlm_times)
         gap_probes = 0
 
@@ -841,6 +859,224 @@ class DetectionPipeline:
 
         modified = list(verdicts) + new_corners
         return modified
+
+    # ------------------------------------------------------------------
+    # Internal — match structure detection (Phase 2b)
+    # ------------------------------------------------------------------
+
+    _HALFTIME_GAP_MIN = 300.0   # Min gap (5 min) to qualify as halftime
+    _MATCH_HALF_MAX = 3300.0    # Max half duration (55 min) for match end estimate
+    _SPOT_CHECK_GAP = 180.0     # Insert probe in gaps >3 min
+    _SPOT_CHECK_MAX = 15        # Cap spot-check probes per match
+    _AUDIO_GAP_WINDOW = 8.0     # Audio orphan if no motion within ±8s
+
+    def _detect_match_structure(
+        self,
+        candidates: list[EventCandidate],
+        audio_candidates: list[AudioCandidate],
+    ) -> dict:
+        """Detect halftime break and estimate match boundaries.
+
+        Returns dict with keys:
+          game_start: estimated start of play (seconds)
+          halftime_start: start of halftime gap (or None)
+          halftime_end: end of halftime gap (or None)
+          match_end: estimated end of play (seconds)
+        """
+        if not candidates:
+            return {
+                "game_start": 0.0,
+                "halftime_start": None,
+                "halftime_end": None,
+                "match_end": self._duration,
+            }
+
+        sorted_ts = sorted(c.timestamp for c in candidates)
+
+        # Find largest gap ≥5 min between consecutive candidates
+        best_gap = 0.0
+        best_gap_start = 0.0
+        best_gap_end = 0.0
+        for i in range(len(sorted_ts) - 1):
+            gap = sorted_ts[i + 1] - sorted_ts[i]
+            if gap > best_gap:
+                best_gap = gap
+                best_gap_start = sorted_ts[i]
+                best_gap_end = sorted_ts[i + 1]
+
+        halftime_start = None
+        halftime_end = None
+        if best_gap >= self._HALFTIME_GAP_MIN:
+            halftime_start = best_gap_start
+            halftime_end = best_gap_end
+
+        # Estimate game start: first cluster of activity
+        game_start = max(0.0, sorted_ts[0] - 30)
+
+        # Estimate match end: halftime_end + 55 min, or game_start + 100 min
+        if halftime_end is not None:
+            match_end = halftime_end + self._MATCH_HALF_MAX
+        else:
+            match_end = game_start + 6000.0  # 100 min fallback
+
+        match_end = min(match_end, self._duration)
+
+        log.info("pipeline.match_structure",
+                 game_start=f"{game_start/60:.1f}min",
+                 halftime=f"{halftime_start/60:.1f}-{halftime_end/60:.1f}min"
+                          if halftime_start else "not_detected",
+                 halftime_gap=f"{best_gap/60:.1f}min",
+                 match_end=f"{match_end/60:.1f}min")
+
+        return {
+            "game_start": game_start,
+            "halftime_start": halftime_start,
+            "halftime_end": halftime_end,
+            "match_end": match_end,
+        }
+
+    def _filter_by_match_structure(
+        self,
+        candidates: list[EventCandidate],
+        match_struct: dict,
+    ) -> list[EventCandidate]:
+        """Remove candidates outside match boundaries and during halftime."""
+        game_start = match_struct["game_start"]
+        match_end = match_struct["match_end"]
+        ht_start = match_struct.get("halftime_start")
+        ht_end = match_struct.get("halftime_end")
+
+        filtered = []
+        for c in candidates:
+            if c.timestamp < game_start or c.timestamp > match_end:
+                continue
+            if ht_start and ht_end and ht_start < c.timestamp < ht_end:
+                continue
+            filtered.append(c)
+
+        dropped = len(candidates) - len(filtered)
+        if dropped:
+            log.info("pipeline.match_filter",
+                     before=len(candidates), after=len(filtered),
+                     dropped=dropped)
+        return filtered
+
+    # ------------------------------------------------------------------
+    # Internal — audio gap fill (Phase 2c)
+    # ------------------------------------------------------------------
+
+    def _audio_gap_fill(
+        self,
+        candidates: list[EventCandidate],
+        audio_candidates: list[AudioCandidate],
+        match_struct: dict,
+    ) -> list[EventCandidate]:
+        """Promote orphan audio cues (not near any motion candidate) to candidates.
+
+        Fills gaps where motion scan missed events but audio detected
+        whistles or crowd surges.
+        """
+        if not audio_candidates:
+            return candidates
+
+        match_end = match_struct["match_end"]
+        game_start = match_struct["game_start"]
+        motion_ts = {c.timestamp for c in candidates}
+
+        new_candidates: list[EventCandidate] = []
+        for ac in audio_candidates:
+            if ac.timestamp < game_start or ac.timestamp > match_end:
+                continue
+            # Only promote whistles and whistle+surge (not pure surges — too noisy)
+            if ac.cue_type == AudioCueType.ENERGY_SURGE:
+                continue
+            # Check if any motion candidate is within the window
+            is_orphan = all(
+                abs(ac.timestamp - mt) > self._AUDIO_GAP_WINDOW
+                for mt in motion_ts
+            )
+            if not is_orphan:
+                continue
+
+            clip_start = max(0, ac.timestamp - 5.0)
+            clip_end = min(self._duration, ac.timestamp + 15.0)
+            new_candidates.append(EventCandidate(
+                timestamp=ac.timestamp,
+                source=CandidateSource.AUDIO_WHISTLE
+                       if ac.cue_type == AudioCueType.WHISTLE
+                       else CandidateSource.AUDIO_BOTH,
+                confidence=0.45,  # Lower than motion — needs VLM to confirm
+                context=VisualContext(audio_boost=True),
+                audio_cue=ac,
+                clip_start=clip_start,
+                clip_end=clip_end,
+            ))
+
+        if new_candidates:
+            log.info("pipeline.audio_gap_fill",
+                     orphan_audio=len(new_candidates),
+                     times=[f"{int(c.timestamp//60):02d}:{c.timestamp%60:05.2f}"
+                            for c in new_candidates])
+
+        return candidates + new_candidates
+
+    # ------------------------------------------------------------------
+    # Internal — spot-check probes (Phase 2d)
+    # ------------------------------------------------------------------
+
+    def _spot_check_probes(
+        self,
+        candidates: list[EventCandidate],
+        match_struct: dict,
+    ) -> list[EventCandidate]:
+        """Insert VLM probes in temporal gaps >3 min between candidates.
+
+        Insurance against motion+audio blind spots.
+        """
+        if not candidates:
+            return candidates
+
+        match_end = match_struct["match_end"]
+        ht_start = match_struct.get("halftime_start")
+        ht_end = match_struct.get("halftime_end")
+
+        sorted_ts = sorted(c.timestamp for c in candidates)
+        probes: list[EventCandidate] = []
+
+        for i in range(len(sorted_ts) - 1):
+            gap_start = sorted_ts[i]
+            gap_end = sorted_ts[i + 1]
+            gap = gap_end - gap_start
+
+            if gap < self._SPOT_CHECK_GAP:
+                continue
+            # Skip halftime gap
+            if ht_start and ht_end and gap_start < ht_end and gap_end > ht_start:
+                continue
+
+            mid = (gap_start + gap_end) / 2
+            if mid > match_end:
+                continue
+
+            probes.append(EventCandidate(
+                timestamp=mid,
+                source=CandidateSource.SPOT_CHECK,
+                confidence=0.35,
+                context=VisualContext(),
+                clip_start=max(0, mid - 5.0),
+                clip_end=min(self._duration, mid + 15.0),
+            ))
+
+            if len(probes) >= self._SPOT_CHECK_MAX:
+                break
+
+        if probes:
+            log.info("pipeline.spot_check_probes",
+                     count=len(probes),
+                     times=[f"{int(p.timestamp//60):02d}:{p.timestamp%60:05.2f}"
+                            for p in probes])
+
+        return candidates + probes
 
     # ------------------------------------------------------------------
     # Internal — diagnostics
@@ -1031,26 +1267,85 @@ class DetectionPipeline:
     # Internal — deduplication
     # ------------------------------------------------------------------
 
+    # Priority for cross-type dedup: higher priority wins
+    _EVENT_PRIORITY: dict[EventType, int] = {
+        EventType.GOAL: 100,
+        EventType.PENALTY: 95,
+        EventType.SHOT_STOP_DIVING: 90,
+        EventType.SHOT_STOP_STANDING: 90,
+        EventType.CATCH: 85,
+        EventType.PUNCH: 85,
+        EventType.ONE_ON_ONE: 85,
+        EventType.SHOT_ON_TARGET: 70,
+        EventType.SHOT_OFF_TARGET: 65,
+        EventType.NEAR_MISS: 60,
+        EventType.CORNER_KICK: 55,
+        EventType.GOAL_KICK: 50,
+        EventType.FREE_KICK_SHOT: 50,
+        EventType.THROW_IN: 30,
+        EventType.KICKOFF: 20,
+    }
+
+    # Related event groups — cross-type dedup applies within groups
+    _RELATED_GROUPS: list[set[EventType]] = [
+        {EventType.GOAL, EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
+         EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
+         EventType.CATCH, EventType.PUNCH, EventType.ONE_ON_ONE,
+         EventType.NEAR_MISS, EventType.PENALTY, EventType.FREE_KICK_SHOT},
+        {EventType.CORNER_KICK, EventType.THROW_IN, EventType.GOAL_KICK},
+    ]
+
     def _deduplicate(
-        self, events: list[Event], window_sec: float = 10.0,
+        self, events: list[Event], window_sec: float = 15.0,
     ) -> list[Event]:
-        """Remove near-duplicate events within *window_sec* of each other."""
+        """Remove near-duplicate events — same-type and cross-type.
+
+        Same-type: merge within *window_sec*, keep higher confidence.
+        Cross-type: within *window_sec* and same related group, keep
+        higher-priority event type.
+        """
         if not events:
             return []
 
         sorted_events = sorted(events, key=lambda e: e.timestamp_start)
-        deduped: list[Event] = [sorted_events[0]]
 
+        # Pass 1: same-type dedup
+        same_deduped: list[Event] = [sorted_events[0]]
         for e in sorted_events[1:]:
-            prev = deduped[-1]
+            prev = same_deduped[-1]
             if (
                 e.event_type == prev.event_type
                 and abs(e.timestamp_start - prev.timestamp_start) < window_sec
             ):
-                # Keep higher-confidence one
                 if e.confidence > prev.confidence:
-                    deduped[-1] = e
+                    same_deduped[-1] = e
             else:
-                deduped.append(e)
+                same_deduped.append(e)
 
-        return deduped
+        # Pass 2: cross-type dedup within related groups
+        result: list[Event] = [same_deduped[0]]
+        for e in same_deduped[1:]:
+            prev = result[-1]
+            if abs(e.timestamp_start - prev.timestamp_start) < window_sec:
+                # Check if they're in the same related group
+                same_group = any(
+                    e.event_type in grp and prev.event_type in grp
+                    for grp in self._RELATED_GROUPS
+                )
+                if same_group:
+                    # Keep the higher-priority event type
+                    e_pri = self._EVENT_PRIORITY.get(e.event_type, 0)
+                    p_pri = self._EVENT_PRIORITY.get(prev.event_type, 0)
+                    if e_pri > p_pri:
+                        result[-1] = e
+                    # else keep prev (higher or equal priority)
+                    continue
+            result.append(e)
+
+        if len(sorted_events) != len(result):
+            log.info("pipeline.dedup",
+                     before=len(sorted_events), after=len(result),
+                     same_type_removed=len(sorted_events) - len(same_deduped),
+                     cross_type_removed=len(same_deduped) - len(result))
+
+        return result

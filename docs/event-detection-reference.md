@@ -65,15 +65,15 @@ The pipeline uses a three-phase motion-first architecture optimised for VEO-styl
 
 ### Phase 1: Motion Scan (Primary Trigger)
 
-Dense frame-differencing at 0.5s intervals across the full match. Finds high-activity spikes as candidate events.
+Dense frame-differencing at 0.5s intervals with **adaptive sliding-window threshold**.
 
 - **Sample interval**: 0.5s (every 15 frames at 30 FPS)
 - **Resolution**: 320×180 grayscale (downscaled for speed)
-- **Threshold**: Mean + 1.5σ (adaptive per-match)
-- **Spike detection**: Contiguous above-threshold segments
+- **Threshold**: 10-minute sliding window, local mean + 1.0σ, floor at 80% of global mean
+- **Spike detection**: Contiguous above-threshold segments (using per-sample adaptive threshold)
 - **Merge window**: 8s (spikes within 8s merged, keep highest-confidence peak)
-- **Confidence**: Log-scale `0.3 + 0.35 × log₂(peak/threshold) + duration_bonus` where duration_bonus = min(spike_dur/10, 0.15), capped at 0.85 before bonus. Prevents saturation at 1.0.
-- **Clip window**: 5s pre / 15s post (extended to capture celebrations)
+- **Confidence**: Log-scale `0.3 + 0.35 × log₂(peak/threshold) + duration_bonus` where duration_bonus = min(spike_dur/10, 0.15), capped at 0.85 before bonus.
+- **Clip window**: 5s pre / 15s post
 
 Source: `src/detection/visual_candidate.py` — `VisualCandidateGenerator.motion_scan()`
 
@@ -89,25 +89,52 @@ Audio detection runs independently, then boosts co-located motion candidates. Au
 
 Source: `src/detection/visual_candidate.py` — `VisualCandidateGenerator.boost_with_audio()`
 
-### Phase 3: VLM Classification (Two-Pass)
+### Phase 2b: Match Structure Detection
 
-Each motion candidate is classified by a vision-language model using a two-pass architecture:
+Detects halftime break (largest gap >5 min between candidates) and estimates match boundaries. Filters out pre-game, halftime, and post-match noise candidates.
 
-**Pass 1 (Observe)**: Send 24 frames (2 FPS × 12s centred on clip) + open-ended prompt: "Describe what you see." The model reports ball position, player actions, celebrations, restarts, etc.
+- **Halftime gap minimum**: 5 minutes
+- **Match end estimate**: halftime_end + 55 min (or game_start + 100 min fallback)
 
-**Pass 2 (Classify)**: Feed the observation text (no images) + classification prompt. The model selects from: goal, save, shot, corner_kick, goal_kick, free_kick, penalty, throw_in, kickoff, none.
+Source: `src/detection/pipeline.py` — `DetectionPipeline._detect_match_structure()`
 
-Falls back to single-pass (images + classify prompt) if two-pass fails.
+### Phase 2c: Audio Gap Fill
+
+Promotes orphan audio cues (whistles not near any motion candidate) to standalone candidates. Fills gaps where motion scan missed events but audio detected whistles.
+
+- **Orphan window**: ±8s (audio cue with no motion candidate within 8s)
+- **Only whistles**: energy surges excluded (too noisy standalone)
+- **Confidence**: 0.45 (lower than motion — needs VLM to confirm)
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._audio_gap_fill()`
+
+### Phase 2d: Spot-Check Probes
+
+Inserts VLM probes in temporal gaps >3 min between candidates. Insurance against motion+audio blind spots.
+
+- **Gap threshold**: 3 minutes
+- **Max probes**: 15 per match
+- **Halftime excluded**
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._spot_check_probes()`
+
+### Phase 3: VLM Classification (Single-Pass)
+
+Each candidate is classified by a vision-language model using a single-pass prompt with images.
+
+The prompt is calibrated for sideline camera limitations:
+- Explicitly notes the camera cannot see GK hand contact at 50m distance
+- Emphasises post-event restart patterns as the primary classifier (goal kick after = save, kickoff after = goal)
+- Provides visual cues for each event type
 
 **Key parameters**:
 - Frame extraction: 2 FPS, 768px width, JPEG quality 5
 - Max frames: 24 (12s window)
-- Max tokens: 500 (observe), 300 (classify)
-- Temperature: 0 (deterministic)
-- VLM candidate cap: 60 (time-distributed sampling — divides video into equal bins, picks best per bin; audio-boosted candidates get priority within their bin)
+- Max tokens: 500, Temperature: 0 (deterministic)
+- VLM candidate cap: 120 (time-distributed sampling with overflow fill)
 - Min confidence: 0.5 to confirm
 
-**Strict goal rules**: The classify prompt requires at least ONE of: (1) player celebration, (2) kickoff setup at center circle, (3) ball CLEARLY inside the net — to prevent "ball near goal line" false positives from the sideline camera angle.
+**Strict goal rules**: Classify as "goal" ONLY if celebration visible OR kickoff restart at center circle. "Ball near goal" alone is never enough.
 
 Source: `src/detection/vlm_verifier.py` — `VLMVerifier`
 
@@ -164,13 +191,14 @@ Source: `src/detection/pipeline.py` — `DetectionPipeline._corner_scan()`
 ### Diagnostic Dumps
 
 Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
-- `motion_candidates.jsonl` — all motion spikes
-- `audio_candidates.jsonl` — all audio cues
-- `final_candidates.jsonl` — after audio boost
-- `vlm_verdicts.jsonl` — VLM classification results
-- `kickoff_rescan.jsonl` — goal inference kickoff rescan results
-- `set_piece_rescan.jsonl` — set-piece inference results
-- `corner_scan.jsonl` — independent corner scan results
+- `motion_candidates.jsonl` — all motion spikes (Phase 1)
+- `audio_candidates.jsonl` — all audio cues (Phase 2)
+- `final_candidates.jsonl` — after audio boost (Phase 2)
+- `filtered_candidates.jsonl` — after match structure filter + audio gap fill + spot-checks (Phase 2b-2d)
+- `vlm_verdicts.jsonl` — VLM classification results (Phase 3)
+- `kickoff_rescan.jsonl` — goal inference kickoff rescan results (Phase 3b)
+- `set_piece_rescan.jsonl` — set-piece inference results (Phase 3c)
+- `corner_scan.jsonl` — independent corner scan results (Phase 3d)
 
 ### Configuration
 

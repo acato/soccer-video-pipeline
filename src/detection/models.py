@@ -88,23 +88,23 @@ def is_gk_event_type(event_type: EventType) -> bool:
 
 # Per-event minimum confidence thresholds (override MIN_EVENT_CONFIDENCE global)
 EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
-    EventType.GOAL:               0.50,   # Lowered — vLLM kickoff detection is the quality gate
-    EventType.SHOT_STOP_DIVING:   0.75,
-    EventType.SHOT_STOP_STANDING: 0.70,
-    EventType.ONE_ON_ONE:         0.75,
-    EventType.PUNCH:              0.65,
-    EventType.CATCH:              0.70,
-    EventType.GOAL_KICK:          0.65,
-    EventType.DISTRIBUTION_SHORT: 0.65,
-    EventType.DISTRIBUTION_LONG:  0.68,
-    EventType.SHOT_ON_TARGET:     0.70,
-    EventType.SHOT_OFF_TARGET:    0.65,
-    EventType.NEAR_MISS:          0.70,
+    EventType.GOAL:               0.50,   # Lowered — kickoff detection is the quality gate
+    EventType.SHOT_STOP_DIVING:   0.55,   # Lowered — sideline camera makes saves ambiguous
+    EventType.SHOT_STOP_STANDING: 0.55,   # Lowered — same reason
+    EventType.ONE_ON_ONE:         0.65,
+    EventType.PUNCH:              0.60,
+    EventType.CATCH:              0.60,
+    EventType.GOAL_KICK:          0.50,   # Lowered — visually distinctive, high recall needed
+    EventType.DISTRIBUTION_SHORT: 0.60,
+    EventType.DISTRIBUTION_LONG:  0.60,
+    EventType.SHOT_ON_TARGET:     0.55,   # Lowered — shot detection feeds save/goal inference
+    EventType.SHOT_OFF_TARGET:    0.55,
+    EventType.NEAR_MISS:          0.60,
     EventType.DRIBBLE_SEQUENCE:   0.65,
     EventType.TACKLE:             0.65,
-    EventType.PENALTY:            0.60,
-    EventType.FREE_KICK_SHOT:     0.65,
-    EventType.CORNER_KICK:        0.65,
+    EventType.PENALTY:            0.50,
+    EventType.FREE_KICK_SHOT:     0.55,
+    EventType.CORNER_KICK:        0.50,   # Lowered — distinctive but VLM uncertain at distance
     EventType.KICKOFF:            0.50,
     EventType.THROW_IN:           0.50,
 }

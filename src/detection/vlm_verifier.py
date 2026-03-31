@@ -102,28 +102,36 @@ Respond with EXACTLY this JSON (no other text):
 {{"event": "<type>", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
 
 _CLASSIFY_SINGLE_PASS_PROMPT = """\
-You are analyzing frames from a soccer match recorded by a sideline camera.
+You are analyzing {num_frames} frames sampled at 2 FPS from a {clip_duration:.0f}-second clip \
+of a soccer match recorded by a SIDELINE CAMERA at ~50 metres from the field.
 {match_context}
 
-IMPORTANT: These frames are sampled at 2 FPS from a {clip_duration:.0f}-second clip.
+CAMERA LIMITATIONS — at this distance:
+- You CANNOT see whether the goalkeeper's hands touched the ball
+- You CANNOT see the ball cross the goal line with certainty
+- You CAN see player positions, formations, celebrations, and restart patterns
 
-Classify the main event in this clip. Choose the SINGLE best match:
-- "goal": ball CLEARLY in the net AND celebration or kickoff restart visible (see rules below)
-- "save": goalkeeper stops/catches/parries a shot, ball does NOT enter the net
-- "shot": shot toward goal that missed (wide/over) — no GK touch, no goal
-- "corner_kick": ball placed at corner arc, kicked into the box
-- "goal_kick": GK/defender kicks from six-yard box after ball over goal line
-- "free_kick": ball placed on ground, kicked from a stoppage
-- "penalty": penalty kick from the spot — one shooter vs goalkeeper
-- "throw_in": player throws ball in from sideline
-- "kickoff": kick-off from center circle
-- "none": normal play, nothing significant
+CLASSIFICATION STRATEGY — what happens AFTER the action is the best signal:
+- Goal kick restart (ball placed in 6-yard box) → the preceding action was a SAVE or a miss
+- Corner kick restart (player at corner flag) → the preceding action was a deflection/save
+- Kickoff restart (players at center circle) → a GOAL was scored
+- Throw-in restart (player holding ball at sideline) → ball went out of play
+- Play continues normally → nothing significant happened
 
-STRICT GOAL RULES — classify as "goal" ONLY if you see at least ONE of:
-1. Players CELEBRATING (arms raised, group hugs, sliding, running to sideline)
-2. Teams walking to center circle for KICKOFF restart
-3. Ball CLEARLY inside the net (not just near the goal line)
-"Ball near goal line" alone is NEVER a goal — it could be a save or a miss.
+Classify the MAIN event. Choose ONE:
+- "goal": GOAL — ONLY if you see celebration (arms raised, group hugs, sliding) \
+OR kickoff restart at center circle. "Ball near goal" alone is NEVER enough.
+- "save": SAVE — ball moved toward goal, then goalkeeper has the ball or goal kick follows. \
+The GK does NOT need to be visibly touching the ball — if a shot is followed by a goal kick, it was a save.
+- "shot": SHOT — ball kicked toward goal but missed (wide/over bar). No goal kick follows — \
+instead a throw-in, corner, or play continues.
+- "corner_kick": ball placed at CORNER FLAG arc, kicked into the penalty box.
+- "goal_kick": ball placed in 6-YARD BOX near goal, kicked upfield by GK or defender.
+- "free_kick": ball placed on ground mid-field, kicked from a stoppage after a foul.
+- "penalty": ONE player facing goalkeeper from the penalty spot, all others outside the box.
+- "throw_in": player holding ball OVERHEAD at the sideline, throws it in.
+- "kickoff": kick-off from CENTER CIRCLE — two players over the ball at the center spot.
+- "none": normal play, nothing significant, or cannot determine.
 
 Respond with EXACTLY this JSON (no other text):
 {{"event": "<type>", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
@@ -262,7 +270,7 @@ class VLMVerifier:
     _CLIP_FPS = 2         # 2 FPS — longer clips need fewer frames per second
     _CLIP_WIDTH = 768     # Frame width (768px ≈ 200 tok/frame)
     _MAX_FRAMES = 24      # 12 seconds × 2 FPS = 24 frames
-    _TWO_PASS = True      # Enable two-pass by default
+    _TWO_PASS = False     # Single-pass: 2x candidates at same GPU cost
 
     def __init__(
         self,
@@ -382,10 +390,11 @@ class VLMVerifier:
             log.warning("vlm_verifier.two_pass_failed, falling back",
                         timestamp=candidate.timestamp)
 
-        # Single-pass fallback
+        # Single-pass fallback (or primary when _TWO_PASS is False)
         prompt = _CLASSIFY_SINGLE_PASS_PROMPT.format(
             match_context=ctx,
             clip_duration=clip_duration,
+            num_frames=len(frames),
         )
         return self._single_pass_classify(candidate, frames, prompt)
 

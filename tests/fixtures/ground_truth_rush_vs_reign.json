@@ -1,0 +1,268 @@
+{
+  "match": {
+    "date": "2026-02-07",
+    "title": "08 GA (U19) vs Washington Rush U19 (W)",
+    "team": {
+      "name": "Seattle Reign 2007/08 GA (U19)",
+      "short_name": "Reign",
+      "outfield_color": "white",
+      "gk_color": "teal/green",
+      "gk_name": "Elena Catorcini",
+      "gk_number": 1
+    },
+    "opponent": {
+      "name": "Washington Rush U19 (W)",
+      "short_name": "Rush",
+      "outfield_color": "blue",
+      "gk_color": "purple/lilac"
+    },
+    "video_file": "2026-02-07 - Rush - GA2008.mp4",
+    "video_duration_min": 114,
+    "half_1_duration_ms": 2700000,
+    "half_2_duration_ms": 2700000,
+    "source": "Team analytics JSON exported from match tracking system",
+    "note": "Timestamps are match minutes (mm:ss.cc) from period start, continuous across halves. Video has ~7 min pre-game offset."
+  },
+  "goals": {
+    "total": 4,
+    "events": [
+      {"time": "06:22.44", "time_ms": 382440, "half": 1, "team": "Reign", "player": "Muriel McCann", "shirt": 30, "in_box": true},
+      {"time": "10:46.27", "time_ms": 646270, "half": 1, "team": "Reign", "player": "Sophia Guese", "shirt": 9, "in_box": true},
+      {"time": "50:37.39", "time_ms": 3037390, "half": 2, "team": "Rush", "player": "Player 10", "shirt": 10, "in_box": true},
+      {"time": "54:22.99", "time_ms": 3262990, "half": 2, "team": "Reign", "player": "Lilah Pruner", "shirt": 12, "in_box": true, "note": "Penalty"}
+    ]
+  },
+  "saves": {
+    "total": 17,
+    "elena_saves": {
+      "total": 11,
+      "catches": 7,
+      "parries": 4,
+      "events": [
+        {"time": "01:56.28", "time_ms": 116280, "half": 1, "type": "catch", "vs_player": "Player 19", "vs_shirt": 19},
+        {"time": "14:28.64", "time_ms": 868640, "half": 1, "type": "parry", "vs_player": "Player 10", "vs_shirt": 10},
+        {"time": "16:55.36", "time_ms": 1015360, "half": 1, "type": "catch", "vs_player": "Player 10", "vs_shirt": 10},
+        {"time": "17:55.48", "time_ms": 1075480, "half": 1, "type": "catch", "vs_player": "Player 10", "vs_shirt": 10},
+        {"time": "30:42.78", "time_ms": 1842780, "half": 1, "type": "parry", "vs_player": "Player 10", "vs_shirt": 10},
+        {"time": "41:35.05", "time_ms": 2495050, "half": 1, "type": "catch", "vs_player": "Player 19", "vs_shirt": 19},
+        {"time": "42:21.24", "time_ms": 2541240, "half": 1, "type": "catch", "vs_player": "Player 9", "vs_shirt": 9},
+        {"time": "45:39.82", "time_ms": 2739820, "half": 2, "type": "parry", "vs_player": "Player 9", "vs_shirt": 9},
+        {"time": "46:30.75", "time_ms": 2790750, "half": 2, "type": "parry", "vs_player": "Player 3", "vs_shirt": 3},
+        {"time": "48:40.75", "time_ms": 2920750, "half": 2, "type": "catch", "vs_player": "Player 8", "vs_shirt": 8},
+        {"time": "58:37.03", "time_ms": 3517030, "half": 2, "type": "catch", "vs_player": "Player 10", "vs_shirt": 10}
+      ]
+    },
+    "opponent_gk_saves": {
+      "total": 6,
+      "catches": 5,
+      "parries": 1,
+      "events": [
+        {"time": "24:37.12", "time_ms": 1477120, "half": 1, "type": "catch", "vs_player": "Blakeley Bourke", "vs_shirt": 17},
+        {"time": "33:13.34", "time_ms": 1993340, "half": 1, "type": "parry", "vs_player": "Adriana Torres", "vs_shirt": 8},
+        {"time": "34:33.34", "time_ms": 2073340, "half": 1, "type": "catch", "vs_player": "Laila Navaja", "vs_shirt": 18},
+        {"time": "44:35.73", "time_ms": 2675730, "half": 1, "type": "catch", "vs_player": "Fine Vossler", "vs_shirt": 31},
+        {"time": "49:41.54", "time_ms": 2981540, "half": 2, "type": "catch", "vs_player": "Adriana Torres", "vs_shirt": 8},
+        {"time": "84:21.91", "time_ms": 5061910, "half": 2, "type": "catch", "vs_player": "Fine Vossler", "vs_shirt": 31}
+      ]
+    }
+  },
+  "shots_on_target": {
+    "total": 16,
+    "events": [
+      {"time": "01:55.21", "time_ms": 115210, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "16:54.28", "time_ms": 1014280, "half": 1, "team": "Rush", "player": "Player 10", "shirt": 10},
+      {"time": "17:54.11", "time_ms": 1074110, "half": 1, "team": "Rush", "player": "Player 10", "shirt": 10, "note": "From free kick"},
+      {"time": "24:36.21", "time_ms": 1476210, "half": 1, "team": "Reign", "player": "Blakeley Bourke", "shirt": 17},
+      {"time": "30:42.44", "time_ms": 1842440, "half": 1, "team": "Rush", "player": "Player 10", "shirt": 10},
+      {"time": "33:13.11", "time_ms": 1993110, "half": 1, "team": "Reign", "player": "Adriana Torres", "shirt": 8},
+      {"time": "34:31.98", "time_ms": 2071980, "half": 1, "team": "Reign", "player": "Laila Navaja", "shirt": 18},
+      {"time": "41:33.98", "time_ms": 2493980, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "42:20.21", "time_ms": 2540210, "half": 1, "team": "Rush", "player": "Player 9", "shirt": 9},
+      {"time": "44:34.54", "time_ms": 2674540, "half": 1, "team": "Reign", "player": "Fine Vossler", "shirt": 31},
+      {"time": "45:38.67", "time_ms": 2738670, "half": 2, "team": "Rush", "player": "Player 9", "shirt": 9},
+      {"time": "46:30.27", "time_ms": 2790270, "half": 2, "team": "Rush", "player": "Player 3", "shirt": 3},
+      {"time": "48:39.55", "time_ms": 2919550, "half": 2, "team": "Rush", "player": "Player 8", "shirt": 8},
+      {"time": "49:40.92", "time_ms": 2980920, "half": 2, "team": "Reign", "player": "Adriana Torres", "shirt": 8},
+      {"time": "58:35.93", "time_ms": 3515930, "half": 2, "team": "Rush", "player": "Player 10", "shirt": 10},
+      {"time": "84:21.52", "time_ms": 5061520, "half": 2, "team": "Reign", "player": "Fine Vossler", "shirt": 31}
+    ]
+  },
+  "shots_off_target": {
+    "total": 13,
+    "events": [
+      {"time": "12:16.64", "time_ms": 736640, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "14:27.08", "time_ms": 867080, "half": 1, "team": "Rush", "player": "Player 10", "shirt": 10},
+      {"time": "16:27.58", "time_ms": 987580, "half": 1, "team": "Rush", "player": "Player 3", "shirt": 3},
+      {"time": "19:26.64", "time_ms": 1166640, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "31:13.04", "time_ms": 1873040, "half": 1, "team": "Rush", "player": "Player 9", "shirt": 9},
+      {"time": "32:43.46", "time_ms": 1963460, "half": 1, "team": "Reign", "player": "Muriel McCann", "shirt": 30},
+      {"time": "45:25.38", "time_ms": 2725380, "half": 1, "team": "Rush", "player": "Player 8", "shirt": 8},
+      {"time": "45:46.12", "time_ms": 2746120, "half": 2, "team": "Rush", "player": "Player 8", "shirt": 8},
+      {"time": "46:59.14", "time_ms": 2819140, "half": 2, "team": "Rush", "player": "Player 11", "shirt": 11},
+      {"time": "73:37.85", "time_ms": 4417850, "half": 2, "team": "Reign", "player": "Ellie Miller", "shirt": 2},
+      {"time": "74:43.95", "time_ms": 4483950, "half": 2, "team": "Reign", "player": "Fine Vossler", "shirt": 31},
+      {"time": "87:34.65", "time_ms": 5254650, "half": 2, "team": "Reign", "player": "Emory Villacorta", "shirt": 19},
+      {"time": "92:28.16", "time_ms": 5548160, "half": 2, "team": "Rush", "player": "Player 9", "shirt": 9}
+    ]
+  },
+  "blocked_shots": {
+    "total": 12,
+    "events": [
+      {"time": "02:21.61", "time_ms": 141610, "half": 1, "team": "Rush", "player": "Player 10", "shirt": 10},
+      {"time": "08:18.16", "time_ms": 498160, "half": 1, "team": "Reign", "player": "Sutton Kelsey", "shirt": 71},
+      {"time": "10:44.78", "time_ms": 644780, "half": 1, "team": "Reign", "player": "Emory Villacorta", "shirt": 19},
+      {"time": "15:40.24", "time_ms": 940240, "half": 1, "team": "Reign", "player": "Emory Villacorta", "shirt": 19},
+      {"time": "21:02.61", "time_ms": 1262610, "half": 1, "team": "Reign", "player": "Adriana Torres", "shirt": 8},
+      {"time": "21:05.23", "time_ms": 1265230, "half": 1, "team": "Reign", "player": "Lilah Pruner", "shirt": 12},
+      {"time": "22:20.94", "time_ms": 1340940, "half": 1, "team": "Rush", "player": "Player 3", "shirt": 3},
+      {"time": "34:29.74", "time_ms": 2069740, "half": 1, "team": "Reign", "player": "Fine Vossler", "shirt": 31},
+      {"time": "42:03.91", "time_ms": 2523910, "half": 1, "team": "Reign", "player": "Fine Vossler", "shirt": 31},
+      {"time": "53:32.35", "time_ms": 3212350, "half": 2, "team": "Reign", "player": "Adriana Torres", "shirt": 8},
+      {"time": "76:14.39", "time_ms": 4574390, "half": 2, "team": "Reign", "player": "Emory Villacorta", "shirt": 19},
+      {"time": "88:43.79", "time_ms": 5323790, "half": 2, "team": "Reign", "player": "Raeside Pidwerbeski", "shirt": 13}
+    ]
+  },
+  "corners": {
+    "total": 9,
+    "events": [
+      {"time": "15:22.54", "time_ms": 922540, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "31:09.84", "time_ms": 1869840, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "32:41.84", "time_ms": 1961840, "half": 1, "team": "Reign", "player": "Blakeley Bourke", "shirt": 17},
+      {"time": "33:44.58", "time_ms": 2024580, "half": 1, "team": "Reign", "player": "Blakeley Bourke", "shirt": 17},
+      {"time": "40:38.61", "time_ms": 2438610, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "46:01.28", "time_ms": 2761280, "half": 1, "team": "Rush", "player": "Player 19", "shirt": 19, "note": "45+2 stoppage time"},
+      {"time": "46:57.12", "time_ms": 2817120, "half": 2, "team": "Rush", "player": "Player 19", "shirt": 19},
+      {"time": "50:35.62", "time_ms": 3035620, "half": 2, "team": "Rush", "player": "Player 19", "shirt": 19, "note": "Preceded Rush goal at 50:37"},
+      {"time": "88:40.29", "time_ms": 5320290, "half": 2, "team": "Reign", "player": "Blakeley Bourke", "shirt": 17}
+    ]
+  },
+  "goal_kicks": {
+    "total": 23,
+    "elena_goal_kicks": {
+      "total": 15,
+      "events": [
+        {"time": "00:15.84", "time_ms": 15840, "half": 1},
+        {"time": "10:20.64", "time_ms": 620640, "half": 1},
+        {"time": "11:50.01", "time_ms": 710010, "half": 1},
+        {"time": "12:31.24", "time_ms": 751240, "half": 1},
+        {"time": "16:10.64", "time_ms": 970640, "half": 1},
+        {"time": "16:45.91", "time_ms": 1005910, "half": 1},
+        {"time": "19:52.24", "time_ms": 1192240, "half": 1},
+        {"time": "28:33.34", "time_ms": 1713340, "half": 1},
+        {"time": "31:36.91", "time_ms": 1896910, "half": 1},
+        {"time": "40:54.21", "time_ms": 2454210, "half": 1},
+        {"time": "46:08.15", "time_ms": 2768150, "half": 2},
+        {"time": "47:15.85", "time_ms": 2835850, "half": 2},
+        {"time": "55:41.29", "time_ms": 3341290, "half": 2},
+        {"time": "60:04.95", "time_ms": 3604950, "half": 2},
+        {"time": "67:24.89", "time_ms": 4044890, "half": 2},
+        {"time": "85:00.89", "time_ms": 5100890, "half": 2},
+        {"time": "92:53.05", "time_ms": 5573050, "half": 2}
+      ]
+    },
+    "opponent_goal_kicks": {
+      "total": 6,
+      "events": [
+        {"time": "33:00.28", "time_ms": 1980280, "half": 1},
+        {"time": "58:16.51", "time_ms": 3496510, "half": 2},
+        {"time": "73:56.26", "time_ms": 4436260, "half": 2},
+        {"time": "75:06.73", "time_ms": 4506730, "half": 2},
+        {"time": "79:32.02", "time_ms": 4772020, "half": 2},
+        {"time": "87:51.65", "time_ms": 5271650, "half": 2}
+      ]
+    }
+  },
+  "throw_ins": {
+    "total": 48,
+    "events": [
+      {"time": "00:50.94", "time_ms": 50940, "half": 1, "team": "Reign"},
+      {"time": "02:12.71", "time_ms": 132710, "half": 1, "team": "Rush"},
+      {"time": "02:49.68", "time_ms": 169680, "half": 1, "team": "Rush"},
+      {"time": "03:52.88", "time_ms": 232880, "half": 1, "team": "Rush"},
+      {"time": "05:48.08", "time_ms": 348080, "half": 1, "team": "Reign"},
+      {"time": "08:09.78", "time_ms": 489780, "half": 1, "team": "Reign"},
+      {"time": "09:04.78", "time_ms": 544780, "half": 1, "team": "Rush"},
+      {"time": "09:12.58", "time_ms": 552580, "half": 1, "team": "Reign"},
+      {"time": "14:48.61", "time_ms": 888610, "half": 1, "team": "Rush"},
+      {"time": "19:02.21", "time_ms": 1142210, "half": 1, "team": "Reign"},
+      {"time": "20:33.74", "time_ms": 1233740, "half": 1, "team": "Reign"},
+      {"time": "21:24.58", "time_ms": 1284580, "half": 1, "team": "Rush"},
+      {"time": "21:57.98", "time_ms": 1317980, "half": 1, "team": "Rush"},
+      {"time": "24:27.14", "time_ms": 1467140, "half": 1, "team": "Reign"},
+      {"time": "27:44.54", "time_ms": 1664540, "half": 1, "team": "Rush"},
+      {"time": "34:56.68", "time_ms": 2096680, "half": 1, "team": "Rush"},
+      {"time": "35:34.08", "time_ms": 2134080, "half": 1, "team": "Reign"},
+      {"time": "36:03.81", "time_ms": 2163810, "half": 1, "team": "Rush"},
+      {"time": "39:32.38", "time_ms": 2372380, "half": 1, "team": "Reign"},
+      {"time": "41:10.41", "time_ms": 2470410, "half": 1, "team": "Rush"},
+      {"time": "45:18.81", "time_ms": 2718810, "half": 1, "team": "Rush"},
+      {"time": "46:45.58", "time_ms": 2805580, "half": 1, "team": "Reign"},
+      {"time": "45:23.38", "time_ms": 2723380, "half": 2, "team": "Rush"},
+      {"time": "48:20.92", "time_ms": 2900920, "half": 2, "team": "Reign"},
+      {"time": "56:21.95", "time_ms": 3381950, "half": 2, "team": "Rush"},
+      {"time": "57:35.72", "time_ms": 3455720, "half": 2, "team": "Rush"},
+      {"time": "61:12.39", "time_ms": 3672390, "half": 2, "team": "Reign"},
+      {"time": "61:27.15", "time_ms": 3687150, "half": 2, "team": "Rush"},
+      {"time": "63:33.09", "time_ms": 3813090, "half": 2, "team": "Reign"},
+      {"time": "63:44.75", "time_ms": 3824750, "half": 2, "team": "Reign"},
+      {"time": "64:22.99", "time_ms": 3862990, "half": 2, "team": "Reign"},
+      {"time": "65:42.59", "time_ms": 3942590, "half": 2, "team": "Reign"},
+      {"time": "67:45.73", "time_ms": 4065730, "half": 2, "team": "Rush"},
+      {"time": "67:58.59", "time_ms": 4078590, "half": 2, "team": "Reign"},
+      {"time": "68:24.29", "time_ms": 4104290, "half": 2, "team": "Reign"},
+      {"time": "70:56.93", "time_ms": 4256930, "half": 2, "team": "Rush"},
+      {"time": "73:26.25", "time_ms": 4406250, "half": 2, "team": "Reign"},
+      {"time": "74:27.55", "time_ms": 4467550, "half": 2, "team": "Reign"},
+      {"time": "75:47.89", "time_ms": 4547890, "half": 2, "team": "Reign"},
+      {"time": "77:30.07", "time_ms": 4650070, "half": 2, "team": "Rush"},
+      {"time": "82:20.84", "time_ms": 4940840, "half": 2, "team": "Reign"},
+      {"time": "82:50.52", "time_ms": 4970520, "half": 2, "team": "Rush"},
+      {"time": "88:05.22", "time_ms": 5285220, "half": 2, "team": "Reign"},
+      {"time": "90:06.25", "time_ms": 5406250, "half": 2, "team": "Rush"},
+      {"time": "90:12.96", "time_ms": 5412960, "half": 2, "team": "Rush"},
+      {"time": "91:02.57", "time_ms": 5462570, "half": 2, "team": "Reign"},
+      {"time": "92:13.90", "time_ms": 5533900, "half": 2, "team": "Rush"},
+      {"time": "93:29.83", "time_ms": 5609830, "half": 2, "team": "Rush"}
+    ]
+  },
+  "free_kicks": {
+    "total": 7,
+    "events": [
+      {"time": "17:54.11", "time_ms": 1074110, "half": 1, "team": "Rush", "player": "Player 10", "shirt": 10, "note": "Shot on target"},
+      {"time": "26:38.61", "time_ms": 1598610, "half": 1, "team": "Reign", "player": "Sutton Kelsey", "shirt": 71},
+      {"time": "37:10.91", "time_ms": 2230910, "half": 1, "team": "Rush", "player": "Player 11", "shirt": 11},
+      {"time": "71:42.25", "time_ms": 4302250, "half": 2, "team": "Rush", "player": "Player 1", "shirt": 1},
+      {"time": "82:01.63", "time_ms": 4921630, "half": 2, "team": "Reign", "player": "Ingrid Sorensen", "shirt": 22},
+      {"time": "87:06.35", "time_ms": 5226350, "half": 2, "team": "Reign", "player": "Ingrid Sorensen", "shirt": 22},
+      {"time": "89:41.79", "time_ms": 5381790, "half": 2, "team": "Rush", "player": "Player 11", "shirt": 11}
+    ]
+  },
+  "fouls": {
+    "total": 5,
+    "events": [
+      {"time": "17:23.98", "time_ms": 1043980, "half": 1, "team_fouling": "Reign", "player": "Raeside Pidwerbeski", "shirt": 13},
+      {"time": "25:59.91", "time_ms": 1559910, "half": 1, "team_fouling": "Rush", "player": "Player 19", "shirt": 19, "note": "Handball"},
+      {"time": "53:34.86", "time_ms": 3214860, "half": 2, "team_fouling": "Rush", "player": "Player 17", "shirt": 17},
+      {"time": "80:58.44", "time_ms": 4858440, "half": 2, "team_fouling": "Rush", "player": "Player 22", "shirt": 22, "note": "Handball"},
+      {"time": "86:34.89", "time_ms": 5194890, "half": 2, "team_fouling": "Rush", "player": "Player 11", "shirt": 11},
+      {"time": "89:28.22", "time_ms": 5368220, "half": 2, "team_fouling": "Reign", "player": "Fine Vossler", "shirt": 31}
+    ]
+  },
+  "summary": {
+    "goals": 4,
+    "shots_on_target": 16,
+    "shots_off_target": 13,
+    "blocked_shots": 12,
+    "total_shots": 41,
+    "saves_elena": 11,
+    "saves_opponent": 6,
+    "saves_total": 17,
+    "corners": 9,
+    "goal_kicks_elena": 17,
+    "goal_kicks_opponent": 6,
+    "goal_kicks_total": 23,
+    "throw_ins": 48,
+    "free_kicks": 7,
+    "fouls": 6
+  }
+}

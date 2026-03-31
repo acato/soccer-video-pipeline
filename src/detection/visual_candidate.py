@@ -88,9 +88,11 @@ class VisualCandidateGenerator:
 
     # Motion scan defaults
     _SAMPLE_INTERVAL = 0.5      # Sample every 0.5s for dense coverage
-    _SIGMA_THRESHOLD = 1.5      # 1.5σ above mean — lower than before to catch more
+    _SIGMA_THRESHOLD = 1.0      # 1.0σ — adaptive per-window, lower to catch saves
     _MERGE_WINDOW_SEC = 8.0     # Merge spikes within 8s of each other
     _AUDIO_BOOST_WINDOW = 5.0   # Audio cue within ±5s boosts motion candidate
+    _ADAPTIVE_WINDOW_SEC = 600  # 10-minute sliding window for adaptive threshold
+    _GLOBAL_FLOOR_RATIO = 0.80  # Floor at 80% of global mean (prevent halftime triggers)
 
     def __init__(
         self,
@@ -174,48 +176,69 @@ class VisualCandidateGenerator:
         if not motion_scores:
             return []
 
-        # Compute adaptive threshold
+        import math
+
+        # Compute global stats (for logging and floor)
         scores_arr = np.array([s for _, s in motion_scores])
-        mean_motion = float(np.mean(scores_arr))
-        std_motion = float(np.std(scores_arr))
-        threshold = mean_motion + sigma * std_motion
+        global_mean = float(np.mean(scores_arr))
+        global_std = float(np.std(scores_arr))
+        global_threshold = global_mean + sigma * global_std
 
         log.info("visual_candidate.motion_stats",
-                 mean=round(mean_motion, 5),
-                 std=round(std_motion, 5),
-                 threshold=round(threshold, 5),
+                 mean=round(global_mean, 5),
+                 std=round(global_std, 5),
+                 global_threshold=round(global_threshold, 5),
                  sigma=sigma,
-                 samples=len(motion_scores))
+                 samples=len(motion_scores),
+                 mode="adaptive_window")
 
-        # Find spike regions (contiguous above-threshold segments)
+        # Build per-sample adaptive threshold via sliding window
+        window_samples = int(self._ADAPTIVE_WINDOW_SEC / interval)
+        threshold_floor = global_mean * self._GLOBAL_FLOOR_RATIO
+        thresholds: list[float] = []
+
+        for i in range(len(motion_scores)):
+            # Window centred on current sample
+            half_w = window_samples // 2
+            w_start = max(0, i - half_w)
+            w_end = min(len(motion_scores), i + half_w + 1)
+            window = scores_arr[w_start:w_end]
+            local_mean = float(np.mean(window))
+            local_std = float(np.std(window))
+            local_thresh = local_mean + sigma * local_std
+            # Floor: never below 80% of global mean (prevents halftime triggers)
+            thresholds.append(max(local_thresh, threshold_floor))
+
+        # Find spike regions using per-sample adaptive threshold
         results: list[EventCandidate] = []
         in_spike = False
         spike_start = 0.0
         spike_max_score = 0.0
         spike_max_t = 0.0
+        spike_threshold = 0.0  # threshold at the spike peak
 
-        for t, score in motion_scores:
-            if score > threshold and not in_spike:
+        for idx, (t, score) in enumerate(motion_scores):
+            thresh = thresholds[idx]
+            if score > thresh and not in_spike:
                 in_spike = True
                 spike_start = t
                 spike_max_score = score
                 spike_max_t = t
-            elif score > threshold and in_spike:
+                spike_threshold = thresh
+            elif score > thresh and in_spike:
                 if score > spike_max_score:
                     spike_max_score = score
                     spike_max_t = t
-            elif score <= threshold and in_spike:
+                    spike_threshold = thresh
+            elif score <= thresh and in_spike:
                 in_spike = False
                 spike_dur = t - spike_start
                 clip_start = max(0, spike_max_t - self._CLIP_PRE_SEC)
                 clip_end = min(video_duration, spike_max_t + self._CLIP_POST_SEC)
 
-                # Confidence: how far above threshold (log scale to avoid saturation)
-                import math
-                ratio = spike_max_score / max(threshold, 1e-8)
-                # log scale: ratio 1.0→0.3, 1.5→0.55, 2.0→0.65, 3.0→0.75
+                ratio = spike_max_score / max(spike_threshold, 1e-8)
                 raw_conf = min(0.3 + 0.35 * math.log2(max(ratio, 1.0)), 0.85)
-                dur_bonus = min(spike_dur / 10.0, 0.15)  # Up to +0.15 for 10s+ spikes
+                dur_bonus = min(spike_dur / 10.0, 0.15)
                 confidence = min(raw_conf + dur_bonus, 1.0)
 
                 results.append(EventCandidate(
@@ -232,12 +255,11 @@ class VisualCandidateGenerator:
 
         # Handle spike at end of video
         if in_spike:
-            import math
             t_last = motion_scores[-1][0]
             spike_dur = t_last - spike_start
             clip_start = max(0, spike_max_t - self._CLIP_PRE_SEC)
             clip_end = min(video_duration, spike_max_t + self._CLIP_POST_SEC)
-            ratio = spike_max_score / max(threshold, 1e-8)
+            ratio = spike_max_score / max(spike_threshold, 1e-8)
             raw_conf = min(0.3 + 0.35 * math.log2(max(ratio, 1.0)), 0.85)
             dur_bonus = min(spike_dur / 10.0, 0.15)
             confidence = min(raw_conf + dur_bonus, 1.0)
