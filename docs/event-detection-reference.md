@@ -69,7 +69,7 @@ Dense frame-differencing at 0.5s intervals with **adaptive sliding-window thresh
 
 - **Sample interval**: 0.5s (every 15 frames at 30 FPS)
 - **Resolution**: 320×180 grayscale (downscaled for speed)
-- **Threshold**: 10-minute sliding window, local mean + 1.0σ, floor at 80% of global mean
+- **Threshold**: 10-minute sliding window, local mean + 0.7σ, floor at 80% of global mean
 - **Spike detection**: Contiguous above-threshold segments (using per-sample adaptive threshold)
 - **Merge window**: 8s (spikes within 8s merged, keep highest-confidence peak)
 - **Confidence**: Log-scale `0.3 + 0.35 × log₂(peak/threshold) + duration_bonus` where duration_bonus = min(spike_dur/10, 0.15), capped at 0.85 before bonus.
@@ -148,6 +148,16 @@ The VLM often sees a shot → save → goal kick sequence and classifies it as "
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._save_reclassification()`
 
+### Phase 3a.6: Shot Reclassification (Post-VLM)
+
+The VLM often *sees* a shot (describes it in reasoning text) but classifies the overall sequence as "none" because no clear restart follows. This phase recovers those shots.
+
+**Rule**: Scan rejected verdicts for positive shot keywords (e.g. "shot toward goal", "fired at goal", "went wide", "over the bar", "blocked", "deflected"). Exclude false positives where the reasoning just says "no shot" or "no clear shot". Reclassify matching verdicts as `SHOT_ON_TARGET` or `SHOT_OFF_TARGET` (based on keywords like "wide", "over the bar", "blocked", "deflected").
+
+**Confidence**: Reclassified shots get `original_confidence × 0.7` to reflect lower certainty.
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._shot_reclassification()`
+
 ### Phase 3b: Goal Inference (Post-VLM)
 
 After the main VLM classification, a goal inference pass uses temporal kickoff patterns to both **confirm real goals** and **filter false positive goals**.
@@ -156,7 +166,7 @@ After the main VLM classification, a goal inference pass uses temporal kickoff p
 
 **Step 2 — Shot→goal upgrade**: If a kickoff is confirmed after a shot/save → upgrade to GOAL.
 
-**Step 3 — VLM goal→shot downgrade**: VLM-classified goals WITHOUT a confirmed kickoff 30-180s later are downgraded to `SHOT_ON_TARGET`. The VLM frequently hallucinates celebrations and "ball in net" from sideline footage; kickoff is the only reliable goal confirmation signal.
+**Step 3 — VLM goal→shot downgrade**: VLM-classified goals WITHOUT a confirmed kickoff 30-180s later are downgraded to `SHOT_ON_TARGET` with 0.85× confidence penalty. The VLM frequently hallucinates celebrations and "ball in net" from sideline footage; kickoff is the only reliable goal confirmation signal.
 
 **Step 4 — Goal dedup**: Merge goals within 240s (4 min), keeping higher confidence.
 
@@ -198,6 +208,30 @@ Corners are visually distinctive but the general VLM prompt often misses corner-
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._corner_scan()`
 
+### Phase 3e: Reverse Restart Inference (Post-VLM)
+
+Works backwards from detected restarts (goal kicks, corners) to find shots that the VLM missed. If a confirmed `goal_kick` or `corner_kick` has no associated save or shot within the preceding 30s, the nearest rejected candidate before it is reclassified as a shot.
+
+**Logic**:
+- `goal_kick` with no preceding save → rejected candidate 3-30s before = `SHOT_OFF_TARGET` (missed → goal kick)
+- `corner_kick` with no preceding save → rejected candidate 3-30s before = `SHOT_OFF_TARGET` (blocked/deflected → corner)
+
+**Confidence**: Fixed at 0.6 for reverse-inferred shots.
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._reverse_restart_inference()`
+
+### Phase 3f: Binary Shot Scan (Post-VLM)
+
+Re-probes remaining rejected candidates with a focused binary "was a shot taken?" prompt. Binary questions perform better than multi-class for VLMs on less common categories.
+
+**Candidate selection**: Rejected verdicts that are >10s from any confirmed event. Capped at 30 VLM calls, distributed evenly across time.
+
+**Clip window**: Tighter than the main prompt — 3s pre / 5s post — to focus on the shot moment rather than the aftermath.
+
+**Prompt**: Binary yes/no with `shot_type` sub-classification (`on_target`, `off_target`, `blocked`).
+
+Source: `src/detection/vlm_verifier.py` — `VLMVerifier.verify_shot()`, `src/detection/pipeline.py` — `DetectionPipeline._shot_scan()`
+
 ### Diagnostic Dumps
 
 Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
@@ -209,6 +243,7 @@ Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
 - `kickoff_rescan.jsonl` — goal inference kickoff rescan results (Phase 3b)
 - `set_piece_rescan.jsonl` — set-piece inference results (Phase 3c)
 - `corner_scan.jsonl` — independent corner scan results (Phase 3d)
+- `shot_scan.jsonl` — binary shot scan results (Phase 3f)
 
 ### Configuration
 
@@ -658,9 +693,21 @@ Fast goals (breakouts, quick shots) can be invisible even at 4 FPS. The tagger d
 
 Config: `VLLM_CHUNK_DURATION_SEC` (default 45), `VLLM_CHUNK_FPS` (default 4), `VLLM_CHUNK_OVERLAP_SEC` (default 15), `VLLM_RESCAN_FPS` (default 8), `VLLM_RESCAN_PRE_SEC` (default 60).
 
+### Dual-Emit: Shots from Saves
+
+Every save (SHOT_STOP_DIVING, SHOT_STOP_STANDING, CATCH, PUNCH) implies a shot on target. The pipeline emits a companion SHOT_ON_TARGET event for each save verdict so saves appear in the GK reel and the implied shots appear in the highlights reel. The companion shot has 0.95× the save's confidence.
+
 ### Deduplication
 
-Events from overlapping chunks are deduplicated: same event type within 10s proximity → keep higher confidence. Cross-type dedup then removes shots within 15s of a goal (the shot was superseded by the goal).
+Same-type dedup: events of the same type within 15s → keep higher confidence.
+
+Cross-type dedup: events in the same **related group** within 15s → keep higher-priority type. Groups are separated so saves and shots can coexist:
+
+1. **GK save events**: SHOT_STOP_DIVING, SHOT_STOP_STANDING, CATCH, PUNCH, ONE_ON_ONE
+2. **Highlights shot events**: GOAL, SHOT_ON_TARGET, SHOT_OFF_TARGET, NEAR_MISS, PENALTY, FREE_KICK_SHOT
+3. **Set pieces**: CORNER_KICK, THROW_IN, GOAL_KICK
+
+This ensures a save and its companion shot both survive dedup (different groups, different reels). Within each group, the highest-priority event wins (e.g., goal beats shot_on_target).
 
 ## Known Issues
 

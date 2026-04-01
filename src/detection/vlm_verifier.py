@@ -131,8 +131,9 @@ OR kickoff restart at center circle. "Ball near goal" alone is NEVER enough.
 - "save": SAVE — shot toward goal, then a goal kick restart follows. \
 The GK does NOT need to be visibly touching the ball — if a shot is followed by a goal kick, \
 it was a save. This is the MOST COMMON event in a match.
-- "shot": SHOT — ball kicked toward goal but missed (wide/over bar). No goal kick follows — \
-instead a throw-in, corner, or play continues.
+- "shot": SHOT — ball kicked hard toward goal that MISSED or was BLOCKED by a field player \
+(not the GK). Signs: ball goes wide/over the bar, a defender blocks it, or a corner/throw-in \
+follows instead of a goal kick. If unsure whether it was a save or a shot, classify as "shot".
 - "corner_kick": ball placed at CORNER FLAG arc, kicked into the penalty box.
 - "goal_kick": ONLY when NO shot preceded it — a long ball or cross drifted out over the \
 goal line. If a shot was taken first, classify as "save" instead.
@@ -225,6 +226,34 @@ This is NOT a kickoff if:
 
 Respond with EXACTLY this JSON (no other text):
 {{"is_kickoff": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
+
+_SHOT_CHECK_PROMPT = """\
+You are analyzing {num_frames} frames sampled at 2 FPS from a {clip_duration:.0f}-second clip \
+of a soccer match recorded by a SIDELINE CAMERA at ~50 metres from the field.
+{match_context}
+
+Was a SHOT taken toward goal in these frames?
+
+Signs of a shot:
+- A player strikes/kicks the ball forcefully TOWARD THE GOAL
+- The ball travels at speed in the direction of the goal
+- Players react — ducking, jumping, turning to watch the ball
+- The goalkeeper dives, jumps, or moves laterally
+- Defenders throw themselves at the ball to block
+- A brief crowd reaction (excitement or groaning)
+
+Signs this is NOT a shot:
+- Ball is passed sideways or backwards between teammates
+- A clearance kicked AWAY from goal (upfield)
+- A goal kick or free kick taken from the team's own half
+- Players jogging or walking — no sudden burst of activity
+- Normal midfield play with no clear strike on the ball
+
+Respond with EXACTLY this JSON (no other text):
+{{"is_shot": true, "shot_type": "on_target" or "off_target" or "blocked", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
+or
+{{"is_shot": false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
 
 
 def _match_context(match_config: Optional[MatchConfig]) -> str:
@@ -1081,6 +1110,146 @@ class VLMVerifier:
             reasoning=reasoning,
             model_used=model_used,
         )
+
+    # ------------------------------------------------------------------
+    # Shot scan — binary "was a shot taken?" check
+    # ------------------------------------------------------------------
+
+    def verify_shot(
+        self,
+        candidates: list[EventCandidate],
+        *,
+        match_config: Optional[MatchConfig] = None,
+        source_file: Optional[str | Path] = None,
+    ) -> list[VLMVerdict]:
+        """Focused shot check — binary question with shot_type sub-class.
+
+        Used by the shot scan phase to recover shots from rejected
+        candidates that the multi-class prompt missed.
+        """
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            return [self._passthrough(c) for c in candidates]
+
+        ctx = _match_context(match_config)
+        verdicts: list[VLMVerdict] = []
+
+        for candidate in candidates:
+            mm = int(candidate.timestamp // 60)
+            ss = candidate.timestamp % 60
+            log.info("vlm_verifier.shot_check",
+                     time=f"{mm:02d}:{ss:05.2f}")
+
+            # Use a tighter clip window: 3s pre / 5s post to focus
+            # on the shot moment, not the aftermath
+            tight_start = max(0, candidate.timestamp - 3.0)
+            tight_end = candidate.timestamp + 5.0
+            frames = self._extract_clip_frames(
+                src, tight_start, tight_end,
+            )
+            if not frames:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            clip_duration = tight_end - tight_start
+            prompt = _SHOT_CHECK_PROMPT.format(
+                match_context=ctx,
+                clip_duration=clip_duration,
+                num_frames=len(frames),
+            )
+
+            response = None
+            model_used = "none"
+            if self._vllm_url:
+                response = self._call_vllm(prompt, frames)
+                model_used = self._vllm_model
+            if response is None and self._anthropic_key:
+                response = self._call_claude(prompt, frames)
+                model_used = self._anthropic_model
+
+            if response is None:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            verdict = self._parse_shot_response(
+                response, candidate, model_used,
+            )
+            verdicts.append(verdict)
+
+            log.info("vlm_verifier.shot_result",
+                     time=f"{mm:02d}:{ss:05.2f}",
+                     is_shot=verdict.result == VerificationResult.CONFIRMED,
+                     event_type=(verdict.event_type.value
+                                 if verdict.event_type else None),
+                     reasoning=verdict.reasoning[:100])
+
+        return verdicts
+
+    _SHOT_TYPE_MAP = {
+        "on_target": EventType.SHOT_ON_TARGET,
+        "off_target": EventType.SHOT_OFF_TARGET,
+        "blocked": EventType.SHOT_OFF_TARGET,  # Blocked = off target
+    }
+
+    def _parse_shot_response(
+        self,
+        response: str,
+        candidate: EventCandidate,
+        model_used: str,
+    ) -> VLMVerdict:
+        """Parse shot check response."""
+        try:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+            if "<think>" in text:
+                import re
+                text = re.sub(
+                    r"<think>.*?</think>", "", text, flags=re.DOTALL,
+                ).strip()
+            if not text.startswith("{"):
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+        except (json.JSONDecodeError, IndexError):
+            return self._passthrough(candidate)
+
+        is_shot = data.get("is_shot", False)
+        confidence = float(data.get("confidence", 0.5))
+        reasoning = data.get("reasoning", "")
+        shot_type = data.get("shot_type", "on_target")
+
+        if is_shot and confidence >= self._min_conf:
+            event_type = self._SHOT_TYPE_MAP.get(
+                shot_type, EventType.SHOT_ON_TARGET,
+            )
+            return VLMVerdict(
+                candidate=candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=event_type,
+                confidence=confidence,
+                reasoning=f"SHOT_SCAN: {reasoning}",
+                model_used=model_used,
+            )
+        return VLMVerdict(
+            candidate=candidate,
+            result=VerificationResult.REJECTED,
+            event_type=None,
+            confidence=confidence,
+            reasoning=reasoning,
+            model_used=model_used,
+        )
+
+    # ------------------------------------------------------------------
+    # Kickoff response parsing
+    # ------------------------------------------------------------------
 
     def _parse_kickoff_response(
         self,

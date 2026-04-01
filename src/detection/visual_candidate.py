@@ -88,7 +88,7 @@ class VisualCandidateGenerator:
 
     # Motion scan defaults
     _SAMPLE_INTERVAL = 0.5      # Sample every 0.5s for dense coverage
-    _SIGMA_THRESHOLD = 1.0      # 1.0σ — adaptive per-window, lower to catch saves
+    _SIGMA_THRESHOLD = 0.7      # 0.7σ — lower to catch shots (brief, localized motion)
     _MERGE_WINDOW_SEC = 8.0     # Merge spikes within 8s of each other
     _AUDIO_BOOST_WINDOW = 5.0   # Audio cue within ±5s boosts motion candidate
     _ADAPTIVE_WINDOW_SEC = 600  # 10-minute sliding window for adaptive threshold

@@ -4,10 +4,14 @@ Detection pipeline orchestrator — motion-first architecture.
 Phase ordering:
   1. Motion scan — dense frame-differencing to find activity spikes
   2. Audio detection — optional booster for co-located motion candidates
-  3. VLM classification — two-pass verify + classify via Qwen3-VL / Claude
+  3. VLM classification — single-pass classify via Qwen3-VL / Claude
+  3a.5. Save reclassification — goal_kicks with save evidence → saves
+  3a.6. Shot reclassification — rejected verdicts with shot evidence → shots
   3b. Goal inference — kickoff rescan to upgrade shots, dedup nearby goals
   3c. Set-piece inference — corner/goal-kick rescan after shots
   3d. Corner scan — independent corner detection at uncovered candidates
+  3e. Reverse restart inference — work backwards from restarts to find shots
+  3f. Shot scan — binary VLM re-probe of remaining rejected candidates
 
 Produces Event objects compatible with the existing segmentation/assembly
 pipeline.
@@ -285,6 +289,10 @@ class DetectionPipeline:
                 # with save evidence → SHOT_STOP_DIVING
                 verdicts = self._save_reclassification(verdicts)
 
+                # Phase 3a.6: Shot reclassification — rejected
+                # verdicts whose reasoning describes a shot
+                verdicts = self._shot_reclassification(verdicts)
+
                 # Phase 3b: Goal inference — kickoff rescan (82% → 87%)
                 if progress_callback:
                     progress_callback(0.82)
@@ -300,12 +308,24 @@ class DetectionPipeline:
                     verdicts, all_motion_candidates,
                 )
 
-                # Phase 3d: Independent corner scan (90% → 95%)
+                # Phase 3d: Independent corner scan (90% → 92%)
                 if progress_callback:
                     progress_callback(0.90)
                 verdicts = self._corner_scan(
                     verdicts, all_motion_candidates,
                 )
+
+                # Phase 3e: Reverse restart inference — work
+                # backwards from restarts to find missed shots
+                if progress_callback:
+                    progress_callback(0.92)
+                verdicts = self._reverse_restart_inference(verdicts)
+
+                # Phase 3f: Binary shot scan — re-probe rejected
+                # candidates with a focused "was a shot taken?" prompt
+                if progress_callback:
+                    progress_callback(0.93)
+                verdicts = self._shot_scan(verdicts)
 
                 events = self._verdicts_to_events(verdicts)
             else:
@@ -391,6 +411,87 @@ class DetectionPipeline:
                  total_goal_kicks=sum(
                      1 for v in verdicts
                      if v.event_type == EventType.GOAL_KICK),
+                 reclassified=reclassified)
+
+        return modified
+
+    # ------------------------------------------------------------------
+    # Internal — shot reclassification (Phase 3a.6)
+    # ------------------------------------------------------------------
+
+    # Positive evidence: VLM *describes* a shot actually happening.
+    # These must NOT match negated phrases like "no shot on goal".
+    _SHOT_POSITIVE_KW = [
+        r"(?:a |the )?player.{0,20}(shot|shoots|struck|fired|kicked).{0,15}(toward|towards|at|on).{0,10}goal",
+        r"(?:a |the )?shot (?:is |was )?taken",
+        r"(?:a |the )?shot (?:is |was )?fired",
+        r"took a shot",
+        r"takes a shot",
+        r"hit the (cross)?bar",
+        r"(?:ball |shot )(?:went |goes |travel\w+ )(?:wide|over)",
+        r"over the bar",
+        r"wide of (the )?goal",
+        r"off.{0,5}target",
+        r"blocked.{0,10}(?:by a |by the )?(?:defender|field player)",
+        r"deflect\w* (?:off|by|away)",
+        r"struck.{0,10}(?:toward|at) goal",
+    ]
+
+    def _shot_reclassification(
+        self, verdicts: list[VLMVerdict],
+    ) -> list[VLMVerdict]:
+        """Recover shots from rejected verdicts whose reasoning describes one.
+
+        The VLM often *sees* a shot (mentions it in reasoning) but classifies
+        the sequence as "none" because no clear restart follows.  If the
+        reasoning positively describes a shot actually happening (not just
+        "no shot on goal"), reclassify as SHOT_ON_TARGET or SHOT_OFF_TARGET.
+        """
+        import re
+
+        modified = list(verdicts)
+        reclassified = 0
+
+        for i, v in enumerate(modified):
+            if v.result != VerificationResult.REJECTED:
+                continue
+
+            reasoning = v.reasoning.lower()
+
+            has_positive = any(
+                re.search(kw, reasoning) for kw in self._SHOT_POSITIVE_KW
+            )
+            if not has_positive:
+                continue
+
+            # Determine on/off target from wording
+            off_target_kw = [
+                r"wide", r"over the bar", r"off.{0,5}target",
+                r"missed", r"blocked", r"deflect",
+            ]
+            is_off = any(re.search(kw, reasoning) for kw in off_target_kw)
+            event_type = (EventType.SHOT_OFF_TARGET if is_off
+                          else EventType.SHOT_ON_TARGET)
+
+            modified[i] = VLMVerdict(
+                candidate=v.candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=event_type,
+                confidence=v.confidence * 0.7,   # Penalise reclassified
+                reasoning=f"SHOT_RECLASS: {v.reasoning}",
+                model_used=v.model_used,
+            )
+            reclassified += 1
+            t = v.candidate.timestamp
+            log.info("shot_reclass.upgrade",
+                     time=f"{int(t//60):02d}:{t%60:05.2f}",
+                     event_type=event_type.value,
+                     reasoning_snippet=v.reasoning[:80])
+
+        log.info("shot_reclass.complete",
+                 total_rejected=sum(
+                     1 for v in verdicts
+                     if v.result == VerificationResult.REJECTED),
                  reclassified=reclassified)
 
         return modified
@@ -591,7 +692,7 @@ class DetectionPipeline:
                 candidate=goal.candidate,
                 result=VerificationResult.CONFIRMED,
                 event_type=EventType.SHOT_ON_TARGET,
-                confidence=goal.confidence * 0.7,
+                confidence=goal.confidence * 0.85,
                 reasoning=f"DOWNGRADED: no kickoff confirmation. "
                           f"Original: {goal.reasoning}",
                 model_used=goal.model_used,
@@ -1152,6 +1253,216 @@ class DetectionPipeline:
         return candidates + probes
 
     # ------------------------------------------------------------------
+    # Internal — reverse restart inference (Phase 3e)
+    # ------------------------------------------------------------------
+
+    _REVERSE_RESTART_LOOKBACK_SEC = 30.0   # Look up to 30s before restart
+    _REVERSE_RESTART_MIN_GAP = 3.0         # At least 3s before restart
+
+    def _reverse_restart_inference(
+        self, verdicts: list[VLMVerdict],
+    ) -> list[VLMVerdict]:
+        """Work backwards from restarts to find missed shots.
+
+        For each confirmed goal_kick or corner_kick, check whether there
+        is a rejected VLM candidate 3-30s *before* it.  If so:
+          - goal_kick with no save nearby → rejected candidate = shot off target
+          - corner_kick with no save nearby → rejected candidate = blocked shot
+        """
+        confirmed = [v for v in verdicts
+                     if v.result == VerificationResult.CONFIRMED]
+        rejected = [v for v in verdicts
+                    if v.result == VerificationResult.REJECTED]
+
+        if not rejected:
+            log.info("reverse_restart.no_rejected")
+            return verdicts
+
+        restarts = [
+            v for v in confirmed
+            if v.event_type in {EventType.GOAL_KICK, EventType.CORNER_KICK}
+        ]
+        if not restarts:
+            log.info("reverse_restart.no_restarts")
+            return verdicts
+
+        # Timestamps of existing saves (to avoid re-inferring)
+        save_types = {
+            EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
+            EventType.CATCH, EventType.PUNCH,
+        }
+        save_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type in save_types
+        )
+        # Timestamps of already-recovered shots (from reclassification)
+        shot_types = {
+            EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
+            EventType.GOAL, EventType.NEAR_MISS,
+        }
+        shot_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type in shot_types
+        )
+
+        modified = list(verdicts)
+        upgraded = 0
+
+        for restart in restarts:
+            rt = restart.candidate.timestamp
+
+            # Is there already a save or shot within 30s before this restart?
+            has_nearby_event = (
+                any(rt - self._REVERSE_RESTART_LOOKBACK_SEC < st < rt
+                    for st in save_times)
+                or any(rt - self._REVERSE_RESTART_LOOKBACK_SEC < st < rt
+                       for st in shot_times)
+            )
+            if has_nearby_event:
+                continue
+
+            # Find rejected candidates 3-30s before the restart
+            best: VLMVerdict | None = None
+            best_gap = float("inf")
+            for rej in rejected:
+                gap = rt - rej.candidate.timestamp
+                if (self._REVERSE_RESTART_MIN_GAP < gap
+                        < self._REVERSE_RESTART_LOOKBACK_SEC
+                        and gap < best_gap):
+                    best = rej
+                    best_gap = gap
+
+            if best is None:
+                continue
+
+            # Infer event type from the restart that follows
+            if restart.event_type == EventType.CORNER_KICK:
+                event_type = EventType.SHOT_OFF_TARGET   # Deflected → corner
+                label = "blocked/deflected → corner"
+            else:
+                event_type = EventType.SHOT_OFF_TARGET   # Missed → goal kick
+                label = "missed → goal kick"
+
+            idx = modified.index(best)
+            modified[idx] = VLMVerdict(
+                candidate=best.candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=event_type,
+                confidence=0.6,
+                reasoning=f"REVERSE_RESTART: {label} at "
+                          f"{int(rt//60):02d}:{rt%60:05.2f}. "
+                          f"Original: {best.reasoning[:100]}",
+                model_used=best.model_used,
+            )
+            upgraded += 1
+            t = best.candidate.timestamp
+            log.info("reverse_restart.upgrade",
+                     time=f"{int(t//60):02d}:{t%60:05.2f}",
+                     restart_type=restart.event_type.value,
+                     restart_time=f"{int(rt//60):02d}:{rt%60:05.2f}",
+                     gap=round(best_gap, 1))
+
+        log.info("reverse_restart.complete",
+                 restarts=len(restarts), upgraded=upgraded)
+        return modified
+
+    # ------------------------------------------------------------------
+    # Internal — binary shot scan (Phase 3f)
+    # ------------------------------------------------------------------
+
+    _SHOT_SCAN_MAX = 30     # Cap VLM calls for shot re-probes
+
+    def _shot_scan(self, verdicts: list[VLMVerdict]) -> list[VLMVerdict]:
+        """Re-probe remaining rejected candidates with a binary shot prompt.
+
+        After all other phases, some rejected candidates may still contain
+        shots the multi-class prompt missed.  A focused "was a shot taken?"
+        question performs better for binary classification.
+        """
+        # Collect still-rejected verdicts (not recovered by earlier phases)
+        rejected = [
+            v for v in verdicts
+            if v.result == VerificationResult.REJECTED
+        ]
+        if not rejected:
+            log.info("shot_scan.no_rejected")
+            return verdicts
+
+        # Don't rescan candidates near already-confirmed events
+        confirmed_times = sorted(
+            v.candidate.timestamp for v in verdicts
+            if v.result == VerificationResult.CONFIRMED
+        )
+
+        scan_candidates: list[EventCandidate] = []
+        scan_map: dict[float, int] = {}  # candidate timestamp → verdict index
+
+        for v in rejected:
+            t = v.candidate.timestamp
+            # Skip if near a confirmed event (within 10s)
+            if any(abs(t - ct) < 10.0 for ct in confirmed_times):
+                continue
+            idx = verdicts.index(v)
+            scan_map[t] = idx
+            scan_candidates.append(v.candidate)
+
+        if not scan_candidates:
+            log.info("shot_scan.all_near_confirmed")
+            return verdicts
+
+        # Cap and distribute evenly
+        if len(scan_candidates) > self._SHOT_SCAN_MAX:
+            scan_candidates = self._time_distributed_sample(
+                scan_candidates, self._SHOT_SCAN_MAX,
+            )
+            scan_map = {
+                c.timestamp: scan_map[c.timestamp]
+                for c in scan_candidates
+                if c.timestamp in scan_map
+            }
+
+        log.info("shot_scan.rescanning", candidates=len(scan_candidates))
+
+        shot_verdicts = self._vlm_verifier.verify_shot(
+            scan_candidates,
+            match_config=self._match_config,
+        )
+
+        # Dump diagnostics
+        self._dump_diagnostics("shot_scan", [
+            {"timestamp": sv.candidate.timestamp,
+             "result": sv.result.value,
+             "event_type": sv.event_type.value if sv.event_type else None,
+             "confidence": round(sv.confidence, 3),
+             "reasoning": sv.reasoning,
+             "mm_ss": f"{int(sv.candidate.timestamp//60):02d}:"
+                      f"{sv.candidate.timestamp%60:05.2f}"}
+            for sv in shot_verdicts
+        ])
+
+        # Merge confirmed shots back into verdict list
+        modified = list(verdicts)
+        upgraded = 0
+
+        for sv in shot_verdicts:
+            if sv.result != VerificationResult.CONFIRMED:
+                continue
+            t = sv.candidate.timestamp
+            if t not in scan_map:
+                continue
+            idx = scan_map[t]
+            modified[idx] = sv
+            upgraded += 1
+            log.info("shot_scan.upgrade",
+                     time=f"{int(t//60):02d}:{t%60:05.2f}",
+                     event_type=sv.event_type.value if sv.event_type else None,
+                     reasoning=sv.reasoning[:80])
+
+        log.info("shot_scan.complete",
+                 scanned=len(scan_candidates), upgraded=upgraded)
+        return modified
+
+    # ------------------------------------------------------------------
     # Internal — diagnostics
     # ------------------------------------------------------------------
 
@@ -1220,8 +1531,18 @@ class DetectionPipeline:
     # Internal — verdict/candidate → Event conversion
     # ------------------------------------------------------------------
 
+    # Save types that imply a shot on target (dual-emit for highlights reel)
+    _SAVE_TYPES = {
+        EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
+        EventType.CATCH, EventType.PUNCH,
+    }
+
     def _verdicts_to_events(self, verdicts: list[VLMVerdict]) -> list[Event]:
-        """Convert VLM verdicts to Event objects."""
+        """Convert VLM verdicts to Event objects.
+
+        Save verdicts also emit a companion SHOT_ON_TARGET event so
+        that the highlights reel includes shots that resulted in saves.
+        """
         events: list[Event] = []
 
         for v in verdicts:
@@ -1240,23 +1561,35 @@ class DetectionPipeline:
                 continue
 
             c = v.candidate
+            base_meta = {
+                "source": c.source.value,
+                "vlm_result": v.result.value,
+                "vlm_reasoning": v.reasoning,
+                "vlm_model": v.model_used,
+                "audio_cue": c.audio_cue.cue_type.value if c.audio_cue else None,
+                "motion_magnitude": c.context.motion_magnitude,
+                "spike_duration": c.context.spike_duration_sec,
+                "audio_boost": c.context.audio_boost,
+            }
             events.append(self._make_event(
                 event_type=event_type,
                 timestamp=c.timestamp,
                 clip_start=c.clip_start,
                 clip_end=c.clip_end,
                 confidence=confidence,
-                metadata={
-                    "source": c.source.value,
-                    "vlm_result": v.result.value,
-                    "vlm_reasoning": v.reasoning,
-                    "vlm_model": v.model_used,
-                    "audio_cue": c.audio_cue.cue_type.value if c.audio_cue else None,
-                    "motion_magnitude": c.context.motion_magnitude,
-                    "spike_duration": c.context.spike_duration_sec,
-                    "audio_boost": c.context.audio_boost,
-                },
+                metadata=base_meta,
             ))
+
+            # Dual-emit: every save implies a shot on target
+            if event_type in self._SAVE_TYPES:
+                events.append(self._make_event(
+                    event_type=EventType.SHOT_ON_TARGET,
+                    timestamp=c.timestamp,
+                    clip_start=c.clip_start,
+                    clip_end=c.clip_end,
+                    confidence=confidence * 0.95,  # Slightly lower
+                    metadata={**base_meta, "dual_emit_from": event_type.value},
+                ))
 
         return events
 
@@ -1359,12 +1692,17 @@ class DetectionPipeline:
         EventType.KICKOFF: 20,
     }
 
-    # Related event groups — cross-type dedup applies within groups
+    # Related event groups — cross-type dedup applies within groups.
+    # Saves and shots are in SEPARATE groups so both survive dedup
+    # (saves → GK reel, shots → highlights reel).
     _RELATED_GROUPS: list[set[EventType]] = [
+        # GK-reel save events (dedup among themselves)
+        {EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
+         EventType.CATCH, EventType.PUNCH, EventType.ONE_ON_ONE},
+        # Highlights-reel shot events (dedup among themselves)
         {EventType.GOAL, EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET,
-         EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
-         EventType.CATCH, EventType.PUNCH, EventType.ONE_ON_ONE,
          EventType.NEAR_MISS, EventType.PENALTY, EventType.FREE_KICK_SHOT},
+        # Set pieces
         {EventType.CORNER_KICK, EventType.THROW_IN, EventType.GOAL_KICK},
     ]
 
