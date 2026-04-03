@@ -266,6 +266,8 @@ Detects goalkeeper catches — the hardest save type because catches produce no 
 
 **Edge cases**: Post/crossbar hits where play continues look identical structurally. The 0.85 confidence penalty accounts for this ambiguity. The VLM probe path provides additional confirmation for the goal_kick-gap cases.
 
+**Fallback**: If a VLM catch probe is rejected (GK not holding ball), the shot is downgraded to `SHOT_OFF_TARGET` — the catch hypothesis was tested and rejected, so the ball went out without a save.
+
 - **Parameters**: `_CATCH_NO_RESTART_WINDOW=60s`, `_CATCH_SCAN_MAX=25` VLM calls
 - **Confidence**: structural 0.85×, VLM probe uses VLM confidence directly
 

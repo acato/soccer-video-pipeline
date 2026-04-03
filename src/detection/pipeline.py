@@ -1747,10 +1747,39 @@ class DetectionPipeline:
                                  time=f"{int(t//60):02d}:{t%60:05.2f}",
                                  reasoning=cv.reasoning[:100])
 
+        # Downgrade unconfirmed probes to SHOT_OFF_TARGET.
+        # These are shots with a long-gap goal_kick where the catch
+        # hypothesis was tested (VLM probe) and rejected — so the
+        # ball went out without a save, just with a longer delay.
+        downgraded = 0
+        probed_set = {c.timestamp for c in vlm_probe_candidates}
+        for i, v in enumerate(modified):
+            if (v.result != VerificationResult.CONFIRMED
+                    or v.event_type != EventType.SHOT_ON_TARGET):
+                continue
+            if v.candidate.timestamp not in probed_set:
+                continue
+            # Still SHOT_ON_TARGET → catch probe rejected → off target
+            modified[i] = VLMVerdict(
+                candidate=v.candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.SHOT_OFF_TARGET,
+                confidence=v.confidence,
+                reasoning=f"CATCH_REJECTED: VLM probe found no GK "
+                          f"holding ball — goal_kick follows, likely "
+                          f"miss. Original: {v.reasoning[:100]}",
+                model_used=v.model_used,
+            )
+            downgraded += 1
+            t = v.candidate.timestamp
+            log.info("catch_scan.downgrade_to_off_target",
+                     time=f"{int(t//60):02d}:{t%60:05.2f}")
+
         log.info("catch_scan.complete",
                  structural=structural_catches,
                  vlm_probed=len(vlm_probe_candidates),
                  vlm_confirmed=vlm_catches,
+                 downgraded_to_off=downgraded,
                  total_catches=structural_catches + vlm_catches)
         return modified
 
