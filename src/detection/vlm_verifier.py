@@ -338,7 +338,7 @@ class VLMVerifier:
 
     Usage::
 
-        verifier = VLMVerifier(vllm_url="http://10.10.2.222:8000")
+        verifier = VLMVerifier(vllm_url="http://localhost:8000")
         verdicts = verifier.verify(candidates, match_config=mc)
     """
 

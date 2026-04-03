@@ -131,7 +131,7 @@ VLM_MIN_CONFIDENCE: float = _float("VLM_MIN_CONFIDENCE", 0.6)
 VLLM_ENABLED: bool = _bool("VLLM_ENABLED", False)
 """Use vLLM-hosted vision model (Qwen3-VL) as VLM verification backend."""
 
-VLLM_URL: str = _opt("VLLM_URL", "http://10.10.2.222:8000")
+VLLM_URL: str = _opt("VLLM_URL", "http://localhost:8000")
 """vLLM server URL (OpenAI-compatible API)."""
 
 VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8")
@@ -252,7 +252,7 @@ class _Config:
             "VLM_FRAME_WIDTH": ("VLM_FRAME_WIDTH", "1280"),
             "VLM_MIN_CONFIDENCE": ("VLM_MIN_CONFIDENCE", "0.6"),
             "VLLM_ENABLED": ("VLLM_ENABLED", "false"),
-            "VLLM_URL": ("VLLM_URL", "http://10.10.2.222:8000"),
+            "VLLM_URL": ("VLLM_URL", "http://localhost:8000"),
             "VLLM_MODEL": ("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
             "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
         }
