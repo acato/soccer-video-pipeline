@@ -124,7 +124,9 @@ Each candidate is classified by a vision-language model using a single-pass prom
 
 The prompt is calibrated for sideline camera limitations:
 - Explicitly notes the camera cannot see GK hand contact at 50m distance
-- Emphasises post-event restart patterns as the primary classifier (goal kick after = save, kickoff after = goal)
+- Uses post-event restart patterns as a signal (kickoff after = goal, goal_kick after = shot or save)
+- Save (catch) detection: looks for the **result state** — GK holding/carrying the ball after a shot — rather than the action itself. Catches are static poses visible even at distance.
+- Save (parry) detection is handled structurally by Phase 3c.5 (shot + corner = parry), not by the VLM
 - Provides visual cues for each event type
 
 **Key parameters**:
@@ -140,11 +142,11 @@ Source: `src/detection/vlm_verifier.py` — `VLMVerifier`
 
 ### Phase 3a.5: Save Reclassification (Post-VLM)
 
-The VLM often sees a shot → save → goal kick sequence and classifies it as "goal_kick" (the visible restart) rather than "save" (the meaningful action). This phase fixes that by scanning VLM reasoning text.
+Recovers saves that the VLM classified as "goal_kick". The VLM sometimes sees a shot → save → goal kick sequence and classifies by the visible restart rather than the meaningful action.
 
 **Rule**: If a VLM verdict is `goal_kick` AND the reasoning mentions save-related keywords (save, stopped, blocked, parried, caught, pushed away, tipped, denied, kept out), reclassify to `SHOT_STOP_DIVING`.
 
-**Why**: In initial runs, ALL goal_kick verdicts mentioned saves in their reasoning, but 0 saves were produced. This phase recovered ~40+ saves from misclassified goal kicks.
+**Note**: With the updated prompt (which requires visible GK action for "save"), this phase now mainly catches edge cases where the VLM describes a save in reasoning but classifies the restart instead.
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._save_reclassification()`
 
@@ -192,6 +194,24 @@ After shots/saves, rescan for restarts (corners, goal kicks, throw-ins) that the
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._set_piece_inference()`
 
+### Phase 3c.5: Shot→Restart Reclassification (Post-VLM)
+
+Reclassifies shots based on the restart that follows — the strongest signal for what happened after a shot, since the VLM cannot reliably see GK save actions at distance.
+
+**Rules** (for each confirmed `SHOT_ON_TARGET` with no existing save within ±15s):
+- **shot + corner_kick** (within 90s) → `SHOT_STOP_DIVING` (parry inferred: GK deflected ball over goal line)
+- **shot + goal_kick with short gap** (<25s) → `SHOT_OFF_TARGET` (ball went out quickly = miss)
+- **shot + goal_kick with long gap** (≥25s) → left as `SHOT_ON_TARGET` for catch scan (Phase 3g)
+- Corner is checked first — if both a corner and goal kick follow, the corner takes priority.
+
+**Gap discrimination rationale**: A quick goal kick after a shot means the ball went wide/over. A long delay suggests the GK caught the ball, held it, then distributed — the goal kick is a consequence of catch-then-play, not a direct miss. Phase 3g (catch scan) handles these ambiguous cases with structural inference and VLM probing.
+
+**Zero VLM calls** — purely post-processing on existing verdicts.
+
+- **Parameters**: `_SHOT_RESTART_WINDOW=90s`, `_MISS_GAP_MAX=25s`
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._shot_restart_reclassify()`
+
 ### Phase 3d: Independent Corner Scan (Post-VLM)
 
 Corners are visually distinctive but the general VLM prompt often misses corner-specific cues (player at corner arc, ball at corner flag). This phase independently scans for corners at candidates that the main VLM pass classified as "none" (no event detected).
@@ -232,6 +252,25 @@ Re-probes remaining rejected candidates with a focused binary "was a shot taken?
 
 Source: `src/detection/vlm_verifier.py` — `VLMVerifier.verify_shot()`, `src/detection/pipeline.py` — `DetectionPipeline._shot_scan()`
 
+### Phase 3g: Catch Scan (Post-VLM)
+
+Detects goalkeeper catches — the hardest save type because catches produce no motion spike (GK just holds the ball) and are difficult for VLMs to see at 50m distance.
+
+**Two strategies**:
+
+1. **Structural inference** (no VLM cost): For each remaining `SHOT_ON_TARGET` with no restart (corner, goal kick, or kickoff) within 60s → infer `CATCH`. After a catch, the GK distributes in open play without a dead-ball restart. Confidence: original × 0.85.
+
+2. **VLM probe** (targeted): For shots followed by a goal kick with a long gap (≥25s), extract frames at shot+3s to shot+8s and send a focused binary prompt: "Is the goalkeeper HOLDING the ball?" This shifted window captures the result state, not the shot itself.
+
+**Why this works**: Catches are defined by what does NOT happen afterward (no restart), not by what the VLM sees. Parries produce corners, misses produce goal kicks, goals produce kickoffs — but catches produce nothing. The absence of a restart is itself the signal.
+
+**Edge cases**: Post/crossbar hits where play continues look identical structurally. The 0.85 confidence penalty accounts for this ambiguity. The VLM probe path provides additional confirmation for the goal_kick-gap cases.
+
+- **Parameters**: `_CATCH_NO_RESTART_WINDOW=60s`, `_CATCH_SCAN_MAX=25` VLM calls
+- **Confidence**: structural 0.85×, VLM probe uses VLM confidence directly
+
+Source: `src/detection/pipeline.py` — `DetectionPipeline._catch_scan()`, `src/detection/vlm_verifier.py` — `VLMVerifier.verify_catch()`
+
 ### Diagnostic Dumps
 
 Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
@@ -244,6 +283,7 @@ Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
 - `set_piece_rescan.jsonl` — set-piece inference results (Phase 3c)
 - `corner_scan.jsonl` — independent corner scan results (Phase 3d)
 - `shot_scan.jsonl` — binary shot scan results (Phase 3f)
+- `catch_scan.jsonl` — catch scan VLM probe results (Phase 3g)
 
 ### Configuration
 

@@ -113,30 +113,39 @@ CAMERA LIMITATIONS — at this distance:
 - You CAN see player positions, formations, celebrations, and restart patterns
 
 CLASSIFICATION STRATEGY — what happens AFTER the action is the best signal:
-- Goal kick restart (ball placed in 6-yard box) → classify as "save" (shot was stopped)
-- Corner kick restart (player at corner flag) → classify as "save" (GK deflected it)
 - Kickoff restart (players at center circle) → classify as "goal" (a goal was scored)
 - Throw-in restart (player holding ball at sideline) → classify as "throw_in"
+- Goal kick or corner kick restart → could be "save", "shot", or "goal_kick" (see rules below)
 - Play continues normally → "none"
 
-CRITICAL RULE — "save" vs "goal_kick":
-- If you see a SHOT toward goal followed by a GOAL KICK restart, always classify as "save". \
-The save is what matters, the goal kick is just the restart that follows.
-- Only classify as "goal_kick" when there is NO preceding shot — e.g. a wayward cross or \
-backpass that drifts over the goal line with no shot attempt.
+DISTINGUISHING "save" vs "shot" vs "goal_kick":
+- "save" (CATCH): After a shot, the goalkeeper is HOLDING or CARRYING the ball — \
+cradling it to their chest, picking it up off the ground, or standing with the ball \
+in their hands. This is the result state, not the action. Look for the GK with the \
+ball in hand in any frame AFTER the shot.
+- "save" (PARRY): The goalkeeper DIVES, JUMPS, or REACHES and the ball changes \
+direction near the GK. A corner kick restart after a shot is strong parry evidence, \
+but classify as "shot" here — the pipeline handles parry inference structurally.
+- "shot": A shot was taken toward goal and a goal kick follows, but you do NOT see \
+the goalkeeper holding the ball or making a clear save action. The ball likely went \
+WIDE or OVER the goal.
+- "goal_kick": NO shot preceded the goal kick — a wayward cross or backpass drifted \
+over the goal line with no shot attempt.
+
+When uncertain between "save" and "shot", classify as "shot".
 
 Classify the MAIN event. Choose ONE:
 - "goal": GOAL — ONLY if you see celebration (arms raised, group hugs, sliding) \
 OR kickoff restart at center circle. "Ball near goal" alone is NEVER enough.
-- "save": SAVE — shot toward goal, then a goal kick restart follows. \
-The GK does NOT need to be visibly touching the ball — if a shot is followed by a goal kick, \
-it was a save. This is the MOST COMMON event in a match.
-- "shot": SHOT — ball kicked hard toward goal that MISSED or was BLOCKED by a field player \
-(not the GK). Signs: ball goes wide/over the bar, a defender blocks it, or a corner/throw-in \
-follows instead of a goal kick. If unsure whether it was a save or a shot, classify as "shot".
+- "save": SAVE (catch) — after a shot, the goalkeeper is HOLDING the ball (cradling, \
+carrying, picking up). Look for the GK with ball in hands in frames AFTER the shot.
+- "shot": SHOT — ball kicked toward goal. If followed by a goal kick but you see \
+NO clear goalkeeper save action, classify as "shot" (ball went wide/over). \
+If unsure whether it was a save or a shot, classify as "shot".
 - "corner_kick": ball placed at CORNER FLAG arc, kicked into the penalty box.
-- "goal_kick": ONLY when NO shot preceded it — a long ball or cross drifted out over the \
-goal line. If a shot was taken first, classify as "save" instead.
+- "goal_kick": ball kicked from six-yard box with NO preceding shot attempt — \
+a wayward cross or backpass drifted out. If a shot was taken first, classify as \
+"shot" or "save" instead (depending on whether GK made a save action).
 - "free_kick": ball placed on ground mid-field, kicked from a stoppage after a foul.
 - "penalty": ONE player facing goalkeeper from the penalty spot, all others outside the box.
 - "throw_in": player holding ball OVERHEAD at the sideline, throws it in.
@@ -254,6 +263,34 @@ Respond with EXACTLY this JSON (no other text):
 {{"is_shot": true, "shot_type": "on_target" or "off_target" or "blocked", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 or
 {{"is_shot": false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
+
+_CATCH_CHECK_PROMPT = """\
+You are analyzing {num_frames} frames sampled at 2 FPS from a {clip_duration:.0f}-second clip \
+of a soccer match recorded by a SIDELINE CAMERA at ~50 metres from the field.
+{match_context}
+
+CONTEXT: A shot toward goal was just taken. These frames show the AFTERMATH \
+(3-8 seconds after the shot). Did the goalkeeper CATCH the ball?
+
+Signs of a CATCH (goalkeeper holding the ball):
+- Goalkeeper CRADLING the ball against their chest or stomach
+- Goalkeeper STANDING or KNEELING with the ball in both hands
+- Goalkeeper getting up from the ground with the ball SECURED in their arms
+- Goalkeeper WALKING or MOVING while holding the ball (about to distribute)
+- Ball clearly visible IN the goalkeeper's hands/arms (not on the ground)
+- After catching, goalkeeper may look upfield to distribute
+
+Signs this is NOT a catch:
+- Ball is on the ground near the goalkeeper (not in their hands)
+- Ball is bouncing or rolling away from the goalkeeper
+- Ball is in the air or being played by other players
+- Goalkeeper is diving but the ball is loose or deflected
+- Normal play — ball is far from the goalkeeper
+- Players are taking a goal kick (ball on the ground in the 6-yard box)
+
+Respond with EXACTLY this JSON (no other text):
+{{"is_catch": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
 
 
 def _match_context(match_config: Optional[MatchConfig]) -> str:
@@ -1236,6 +1273,129 @@ class VLMVerifier:
                 event_type=event_type,
                 confidence=confidence,
                 reasoning=f"SHOT_SCAN: {reasoning}",
+                model_used=model_used,
+            )
+        return VLMVerdict(
+            candidate=candidate,
+            result=VerificationResult.REJECTED,
+            event_type=None,
+            confidence=confidence,
+            reasoning=reasoning,
+            model_used=model_used,
+        )
+
+    # ------------------------------------------------------------------
+    # Catch check (Phase 3g)
+    # ------------------------------------------------------------------
+
+    def verify_catch(
+        self,
+        candidates: list[EventCandidate],
+        *,
+        match_config: Optional[MatchConfig] = None,
+        source_file: Optional[str | Path] = None,
+    ) -> list[VLMVerdict]:
+        """Focused catch check — probe aftermath of a shot for GK holding ball.
+
+        Uses a shifted clip window: shot+3s to shot+8s to focus on the
+        result state (GK holding ball) rather than the shot itself.
+        """
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            return [self._passthrough(c) for c in candidates]
+
+        ctx = _match_context(match_config)
+        verdicts: list[VLMVerdict] = []
+
+        for candidate in candidates:
+            mm = int(candidate.timestamp // 60)
+            ss = candidate.timestamp % 60
+            log.info("vlm_verifier.catch_check",
+                     time=f"{mm:02d}:{ss:05.2f}")
+
+            # Shifted window: 3-8s AFTER the shot to see the result state
+            catch_start = candidate.timestamp + 3.0
+            catch_end = candidate.timestamp + 8.0
+            frames = self._extract_clip_frames(
+                src, catch_start, catch_end,
+            )
+            if not frames:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            clip_duration = catch_end - catch_start
+            prompt = _CATCH_CHECK_PROMPT.format(
+                match_context=ctx,
+                clip_duration=clip_duration,
+                num_frames=len(frames),
+            )
+
+            response = None
+            model_used = "none"
+            if self._vllm_url:
+                response = self._call_vllm(prompt, frames)
+                model_used = self._vllm_model
+            if response is None and self._anthropic_key:
+                response = self._call_claude(prompt, frames)
+                model_used = self._anthropic_model
+
+            if response is None:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            verdict = self._parse_catch_response(
+                response, candidate, model_used,
+            )
+            verdicts.append(verdict)
+
+            log.info("vlm_verifier.catch_result",
+                     time=f"{mm:02d}:{ss:05.2f}",
+                     is_catch=verdict.result == VerificationResult.CONFIRMED,
+                     reasoning=verdict.reasoning[:100])
+
+        return verdicts
+
+    def _parse_catch_response(
+        self,
+        response: str,
+        candidate: EventCandidate,
+        model_used: str,
+    ) -> VLMVerdict:
+        """Parse catch check response."""
+        try:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+            if "<think>" in text:
+                import re
+                text = re.sub(
+                    r"<think>.*?</think>", "", text, flags=re.DOTALL,
+                ).strip()
+            if not text.startswith("{"):
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+        except (json.JSONDecodeError, IndexError):
+            return self._passthrough(candidate)
+
+        is_catch = data.get("is_catch", False)
+        confidence = float(data.get("confidence", 0.5))
+        reasoning = data.get("reasoning", "")
+
+        if is_catch and confidence >= self._min_conf:
+            return VLMVerdict(
+                candidate=candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.CATCH,
+                confidence=confidence,
+                reasoning=f"CATCH_SCAN: {reasoning}",
                 model_used=model_used,
             )
         return VLMVerdict(

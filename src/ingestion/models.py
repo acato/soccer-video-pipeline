@@ -84,6 +84,7 @@ _ALL_HIGHLIGHTS_EVENT_TYPES = [
 
 REEL_PRESETS: dict[str, ReelSpec] = {
     "keeper": ReelSpec(name="keeper", event_types=_ALL_GK_EVENT_TYPES),
+    "goalkeeper": ReelSpec(name="goalkeeper", event_types=_ALL_GK_EVENT_TYPES),
     "highlights": ReelSpec(name="highlights", event_types=_ALL_HIGHLIGHTS_EVENT_TYPES),
     "goal_kicks": ReelSpec(name="goal_kicks", event_types=["goal_kick"]),
     "corner_kicks": ReelSpec(name="corner_kicks", event_types=["corner_kick"]),
@@ -93,11 +94,14 @@ REEL_PRESETS: dict[str, ReelSpec] = {
 
 def reel_types_to_specs(reel_types: list[str]) -> list[ReelSpec]:
     """Convert legacy reel_types list to ReelSpec list using presets."""
+    import logging
+    _log = logging.getLogger(__name__)
     specs = []
     for rt in reel_types:
         if rt in REEL_PRESETS:
             specs.append(REEL_PRESETS[rt])
         else:
+            _log.warning("reel_types_to_specs: no preset for %r — reel will have no event types", rt)
             specs.append(ReelSpec(name=rt, event_types=[]))
     return specs
 

@@ -12,6 +12,7 @@ Phase ordering:
   3d. Corner scan — independent corner detection at uncovered candidates
   3e. Reverse restart inference — work backwards from restarts to find shots
   3f. Shot scan — binary VLM re-probe of remaining rejected candidates
+  3g. Catch scan — structural catch inference + VLM probe for GK holding ball
 
 Produces Event objects compatible with the existing segmentation/assembly
 pipeline.
@@ -308,6 +309,10 @@ class DetectionPipeline:
                     verdicts, all_motion_candidates,
                 )
 
+                # Phase 3c.5: Reclassify shots followed by goal kicks
+                # as SHOT_OFF_TARGET (ball went out without GK save)
+                verdicts = self._shot_restart_reclassify(verdicts)
+
                 # Phase 3d: Independent corner scan (90% → 92%)
                 if progress_callback:
                     progress_callback(0.90)
@@ -326,6 +331,12 @@ class DetectionPipeline:
                 if progress_callback:
                     progress_callback(0.93)
                 verdicts = self._shot_scan(verdicts)
+
+                # Phase 3g: Catch scan — structural inference +
+                # VLM probe for GK holding ball after shots
+                if progress_callback:
+                    progress_callback(0.94)
+                verdicts = self._catch_scan(verdicts)
 
                 events = self._verdicts_to_events(verdicts)
             else:
@@ -879,6 +890,125 @@ class DetectionPipeline:
 
         # Add new set-piece verdicts to the verdict list
         modified = list(verdicts) + new_events
+        return modified
+
+    # ------------------------------------------------------------------
+    # Internal — shot→restart reclassification (Phase 3c.5)
+    # ------------------------------------------------------------------
+
+    _SHOT_RESTART_WINDOW = 90.0  # seconds after shot to look for a restart
+    _MISS_GAP_MAX = 25.0  # goal_kick within 25s of shot = likely miss
+
+    def _shot_restart_reclassify(
+        self, verdicts: list[VLMVerdict],
+    ) -> list[VLMVerdict]:
+        """Reclassify shots based on the restart that follows.
+
+        - shot + corner_kick           → SHOT_STOP_DIVING (GK parried it out)
+        - shot + goal_kick (gap <25s)  → SHOT_OFF_TARGET  (ball went out quickly)
+        - shot + goal_kick (gap ≥25s)  → leave as SHOT_ON_TARGET (catch scan probes)
+
+        The restart type is the strongest signal for what happened after a
+        shot, since the VLM cannot reliably see GK save actions at distance.
+        A long gap before a goal_kick may indicate a catch-then-distribution
+        rather than a direct miss — the catch scan (Phase 3g) handles these.
+        """
+        confirmed = [v for v in verdicts
+                     if v.result == VerificationResult.CONFIRMED]
+
+        goal_kick_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.GOAL_KICK
+        )
+        corner_kick_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.CORNER_KICK
+        )
+        save_types = {
+            EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
+            EventType.CATCH, EventType.PUNCH,
+        }
+        save_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type in save_types
+        )
+
+        modified = list(verdicts)
+        to_off_target = 0
+        to_parry = 0
+        left_for_catch = 0
+
+        for i, v in enumerate(modified):
+            if (v.result != VerificationResult.CONFIRMED
+                    or v.event_type != EventType.SHOT_ON_TARGET):
+                continue
+
+            t = v.candidate.timestamp
+
+            # Skip if there's already a nearby save detected
+            has_save = any(
+                abs(st - t) < 15.0 for st in save_times
+            )
+            if has_save:
+                continue
+
+            # shot + corner = parry (GK deflected it over the line)
+            has_corner = any(
+                0 < ck - t < self._SHOT_RESTART_WINDOW
+                for ck in corner_kick_times
+            )
+            if has_corner:
+                modified[i] = VLMVerdict(
+                    candidate=v.candidate,
+                    result=VerificationResult.CONFIRMED,
+                    event_type=EventType.SHOT_STOP_DIVING,
+                    confidence=v.confidence,
+                    reasoning=f"PARRY_INFERRED: corner_kick follows shot — "
+                              f"GK deflected ball out. "
+                              f"Original: {v.reasoning[:100]}",
+                    model_used=v.model_used,
+                )
+                to_parry += 1
+                continue
+
+            # shot + goal_kick — check gap to distinguish miss from catch
+            closest_gk_gap = float("inf")
+            for gk in goal_kick_times:
+                gap = gk - t
+                if 0 < gap < self._SHOT_RESTART_WINDOW:
+                    closest_gk_gap = min(closest_gk_gap, gap)
+
+            has_goal_kick = closest_gk_gap < self._SHOT_RESTART_WINDOW
+
+            if has_goal_kick and closest_gk_gap < self._MISS_GAP_MAX:
+                # Short gap — ball went out quickly = miss
+                modified[i] = VLMVerdict(
+                    candidate=v.candidate,
+                    result=VerificationResult.CONFIRMED,
+                    event_type=EventType.SHOT_OFF_TARGET,
+                    confidence=v.confidence,
+                    reasoning=f"RESTART_RECLASS: goal_kick follows in "
+                              f"{closest_gk_gap:.0f}s (short gap = miss). "
+                              f"Original: {v.reasoning[:100]}",
+                    model_used=v.model_used,
+                )
+                to_off_target += 1
+            elif has_goal_kick:
+                # Long gap — may be catch-then-distribution, leave for catch scan
+                left_for_catch += 1
+                log.info("shot_restart_reclass.long_gap",
+                         time=f"{int(t//60):02d}:{t%60:05.2f}",
+                         gap=f"{closest_gk_gap:.0f}s",
+                         msg="leaving for catch scan")
+
+        log.info("shot_restart_reclass.complete",
+                 shots_checked=sum(
+                     1 for v in verdicts
+                     if v.result == VerificationResult.CONFIRMED
+                     and v.event_type == EventType.SHOT_ON_TARGET),
+                 to_parry=to_parry,
+                 to_off_target=to_off_target,
+                 left_for_catch=left_for_catch)
         return modified
 
     # ------------------------------------------------------------------
@@ -1460,6 +1590,168 @@ class DetectionPipeline:
 
         log.info("shot_scan.complete",
                  scanned=len(scan_candidates), upgraded=upgraded)
+        return modified
+
+    # ------------------------------------------------------------------
+    # Internal — catch scan (Phase 3g)
+    # ------------------------------------------------------------------
+
+    _CATCH_SCAN_MAX = 25          # Cap VLM calls for catch probes
+    _CATCH_NO_RESTART_WINDOW = 60.0  # No restart within 60s → structural catch
+
+    def _catch_scan(self, verdicts: list[VLMVerdict]) -> list[VLMVerdict]:
+        """Detect catches via structural inference and VLM probing.
+
+        Catches are invisible to motion detection (GK just holds the ball)
+        and hard for VLMs to see at distance.  But they have a distinctive
+        structural signature: after a catch, the GK distributes in open play
+        — no dead-ball restart (corner/goal_kick) follows.
+
+        Two strategies:
+        1. **Structural**: shot + no restart within 60s → CATCH (GK caught
+           and distributed without a stoppage).
+        2. **VLM probe**: shot + goal_kick with long gap (≥25s) → probe
+           frames at shot+3s…+8s for "is the GK holding the ball?"
+        """
+        confirmed = [v for v in verdicts
+                     if v.result == VerificationResult.CONFIRMED]
+
+        goal_kick_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.GOAL_KICK
+        )
+        corner_kick_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.CORNER_KICK
+        )
+        kickoff_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.KICKOFF
+        )
+        goal_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type == EventType.GOAL
+        )
+        save_types = {
+            EventType.SHOT_STOP_DIVING, EventType.SHOT_STOP_STANDING,
+            EventType.CATCH, EventType.PUNCH,
+        }
+        save_times = sorted(
+            v.candidate.timestamp for v in confirmed
+            if v.event_type in save_types
+        )
+
+        modified = list(verdicts)
+        structural_catches = 0
+        vlm_probe_candidates: list[EventCandidate] = []
+        vlm_probe_indices: list[int] = []
+
+        for i, v in enumerate(modified):
+            if (v.result != VerificationResult.CONFIRMED
+                    or v.event_type != EventType.SHOT_ON_TARGET):
+                continue
+
+            t = v.candidate.timestamp
+
+            # Skip if already has a nearby save
+            if any(abs(st - t) < 15.0 for st in save_times):
+                continue
+
+            # Skip if near a goal (goal inference handled it)
+            if any(abs(gt - t) < 30.0 for gt in goal_times):
+                continue
+
+            # Check for restarts after the shot
+            has_corner = any(
+                0 < ck - t < self._SHOT_RESTART_WINDOW
+                for ck in corner_kick_times
+            )
+            has_kickoff = any(
+                0 < ko - t < 180.0 for ko in kickoff_times
+            )
+
+            if has_corner or has_kickoff:
+                # Parry/goal inference already handled these
+                continue
+
+            # Find closest goal kick
+            closest_gk_gap = float("inf")
+            for gk in goal_kick_times:
+                gap = gk - t
+                if 0 < gap < self._SHOT_RESTART_WINDOW:
+                    closest_gk_gap = min(closest_gk_gap, gap)
+
+            has_goal_kick = closest_gk_gap < self._SHOT_RESTART_WINDOW
+
+            if not has_goal_kick:
+                # No restart at all → structural catch
+                modified[i] = VLMVerdict(
+                    candidate=v.candidate,
+                    result=VerificationResult.CONFIRMED,
+                    event_type=EventType.CATCH,
+                    confidence=v.confidence * 0.85,
+                    reasoning=f"CATCH_INFERRED: no restart follows shot "
+                              f"within {self._CATCH_NO_RESTART_WINDOW:.0f}s "
+                              f"— GK caught and distributed in open play. "
+                              f"Original: {v.reasoning[:100]}",
+                    model_used=v.model_used,
+                )
+                structural_catches += 1
+                t_fmt = f"{int(t//60):02d}:{t%60:05.2f}"
+                log.info("catch_scan.structural",
+                         time=t_fmt, confidence=v.confidence * 0.85)
+            else:
+                # Long gap to goal kick — VLM probe for GK holding ball
+                vlm_probe_candidates.append(v.candidate)
+                vlm_probe_indices.append(i)
+
+        # VLM catch probes for ambiguous cases (shot + long-gap goal_kick)
+        vlm_catches = 0
+        if vlm_probe_candidates and self._vlm_enabled:
+            vlm_available = self._vlm_verifier.is_available()
+            if vlm_available:
+                if len(vlm_probe_candidates) > self._CATCH_SCAN_MAX:
+                    vlm_probe_candidates = (
+                        vlm_probe_candidates[:self._CATCH_SCAN_MAX]
+                    )
+                    vlm_probe_indices = (
+                        vlm_probe_indices[:self._CATCH_SCAN_MAX]
+                    )
+
+                log.info("catch_scan.vlm_probing",
+                         candidates=len(vlm_probe_candidates))
+
+                catch_verdicts = self._vlm_verifier.verify_catch(
+                    vlm_probe_candidates,
+                    match_config=self._match_config,
+                )
+
+                self._dump_diagnostics("catch_scan", [
+                    {"timestamp": cv.candidate.timestamp,
+                     "result": cv.result.value,
+                     "event_type": (cv.event_type.value
+                                    if cv.event_type else None),
+                     "confidence": round(cv.confidence, 3),
+                     "reasoning": cv.reasoning,
+                     "mm_ss": f"{int(cv.candidate.timestamp//60):02d}:"
+                              f"{cv.candidate.timestamp%60:05.2f}"}
+                    for cv in catch_verdicts
+                ])
+
+                for cv, idx in zip(catch_verdicts, vlm_probe_indices):
+                    if cv.result == VerificationResult.CONFIRMED:
+                        modified[idx] = cv
+                        vlm_catches += 1
+                        t = cv.candidate.timestamp
+                        log.info("catch_scan.vlm_confirmed",
+                                 time=f"{int(t//60):02d}:{t%60:05.2f}",
+                                 reasoning=cv.reasoning[:100])
+
+        log.info("catch_scan.complete",
+                 structural=structural_catches,
+                 vlm_probed=len(vlm_probe_candidates),
+                 vlm_confirmed=vlm_catches,
+                 total_catches=structural_catches + vlm_catches)
         return modified
 
     # ------------------------------------------------------------------
