@@ -114,6 +114,21 @@ VLM_DETECT_FRAME_WIDTH: int = _int("VLM_DETECT_FRAME_WIDTH", 960)
 """Resize width for VLM detection frames (larger than verification frames)."""
 
 # ---------------------------------------------------------------------------
+# vLLM (local inference server)
+# ---------------------------------------------------------------------------
+VLLM_ENABLED: bool = _bool("VLLM_ENABLED", False)
+"""Use local vLLM server for VLM classification instead of Anthropic API."""
+
+VLLM_URL: str = _opt("VLLM_URL", "http://10.10.2.222:8000")
+"""Base URL of the vLLM OpenAI-compatible server."""
+
+VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8")
+"""Model name served by vLLM (must match --served-model-name)."""
+
+VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
+"""Minimum confidence for vLLM classification results."""
+
+# ---------------------------------------------------------------------------
 # Two-Tier VLM Classification
 # ---------------------------------------------------------------------------
 TIERED_VLM_ENABLED: bool = _bool("TIERED_VLM_ENABLED", False)
@@ -249,6 +264,10 @@ class _Config:
             "WATCH_STABLE_TIME_SEC": ("WATCH_STABLE_TIME_SEC", "30.0"),
             "PREVENT_SLEEP": ("PREVENT_SLEEP", "true"),
             "USE_BALL_TOUCH_DETECTOR": ("USE_BALL_TOUCH_DETECTOR", "false"),
+            "VLLM_ENABLED": ("VLLM_ENABLED", "false"),
+            "VLLM_URL": ("VLLM_URL", "http://10.10.2.222:8000"),
+            "VLLM_MODEL": ("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
+            "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
             "VLM_ENABLED": ("VLM_ENABLED", "false"),
             "ANTHROPIC_API_KEY": ("ANTHROPIC_API_KEY", ""),
             "VLM_MODEL": ("VLM_MODEL", "claude-sonnet-4-20250514"),
