@@ -332,6 +332,9 @@ _EVENT_TYPE_MAP = {
     "penalty": EventType.PENALTY,
     "throw_in": EventType.THROW_IN,
     "kickoff": EventType.KICKOFF,
+    "keeper_rushout": EventType.ONE_ON_ONE,
+    "save_catch": EventType.CATCH,
+    "save_parry": EventType.SHOT_STOP_DIVING,
 }
 
 
