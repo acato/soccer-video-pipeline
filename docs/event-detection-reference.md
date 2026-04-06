@@ -73,7 +73,7 @@ Dense frame-differencing at 0.5s intervals with **adaptive sliding-window thresh
 - **Spike detection**: Contiguous above-threshold segments (using per-sample adaptive threshold)
 - **Merge window**: 8s (spikes within 8s merged, keep highest-confidence peak)
 - **Confidence**: Log-scale `0.3 + 0.35 × log₂(peak/threshold) + duration_bonus` where duration_bonus = min(spike_dur/10, 0.15), capped at 0.85 before bonus.
-- **Clip window**: 5s pre / 15s post
+- **Clip window**: 5s pre / 15s post (VLM classification uses 3s pre / 3s post centred on event)
 
 Source: `src/detection/visual_candidate.py` — `VisualCandidateGenerator.motion_scan()`
 
@@ -131,7 +131,8 @@ The prompt is calibrated for sideline camera limitations:
 
 **Key parameters**:
 - Frame extraction: 2 FPS, 768px width, JPEG quality 5
-- Max frames: 24 (12s window)
+- Max frames: 24 (12s window); audio-aware centering shifts window before whistle
+- Claude goal verification: saves/free kicks with kickoff evidence re-checked via Claude API
 - Max tokens: 500, Temperature: 0 (deterministic)
 - VLM candidate cap: 120 (time-distributed sampling with overflow fill)
 - Min confidence: 0.5 to confirm
@@ -162,19 +163,25 @@ Source: `src/detection/pipeline.py` — `DetectionPipeline._shot_reclassificatio
 
 ### Phase 3b: Goal Inference (Post-VLM)
 
-After the main VLM classification, a goal inference pass uses temporal kickoff patterns to both **confirm real goals** and **filter false positive goals**.
+After the main VLM classification, a goal inference pass uses temporal kickoff patterns to both **confirm real goals** and **filter false positive goals**. This phase has four safeguards against false positives:
 
-**Step 1 — Kickoff rescan**: For each confirmed shot/save AND each VLM-classified goal, look for unclassified motion candidates 30-180s later. If no motion candidate exists in the window, extract frames directly at fixed offsets (+60s, +90s, +120s). Send to VLM with a focused kickoff-specific prompt.
+**Step 0 — Pre-game exclusion**: Identify the first confirmed kickoff in the match (the opening whistle). Any shot/save that occurs BEFORE this kickoff is excluded from goal inference entirely — it's a pre-game event and the opening kickoff is NOT a post-goal restart.
 
-**Step 2 — Shot→goal upgrade**: If a kickoff is confirmed after a shot/save → upgrade to GOAL.
+**Step 1 — Kickoff rescan**: For each confirmed shot/save AND each VLM-classified goal, look for unclassified motion candidates 20-90s later. If no motion candidate exists in the window, extract frames directly at dense offsets (+30s, +45s, +60s, +75s, +90s). Send to VLM with a focused kickoff-specific prompt. The opening kickoff is excluded from matching — only kickoffs detected AFTER the shot count.
 
-**Step 3 — VLM goal→shot downgrade**: VLM-classified goals WITHOUT a confirmed kickoff 30-180s later are downgraded to `SHOT_ON_TARGET` with 0.85× confidence penalty. The VLM frequently hallucinates celebrations and "ball in net" from sideline footage; kickoff is the only reliable goal confirmation signal.
+**Step 2 — Shot→goal upgrade**: If a non-opening kickoff is confirmed after a shot/save → provisionally upgrade to GOAL.
 
-**Step 4 — Goal dedup**: Merge goals within 240s (4 min), keeping higher confidence.
+**Step 3 — Celebration probe**: Each provisional goal is verified with a secondary VLM probe: "is there a celebration, ball in net, or dejected opponents?" using frames from shot+2s to shot+12s. Goals that fail the celebration probe are downgraded back to `SHOT_ON_TARGET` with 0.7× confidence. This catches false positives where a shot coincidentally precedes a false-positive kickoff.
+
+**Step 4 — VLM goal→shot downgrade**: VLM-classified goals WITHOUT a confirmed kickoff are downgraded to `SHOT_ON_TARGET` with 0.85× confidence penalty.
+
+**Step 5 — Goal dedup**: Merge goals within 240s (4 min), keeping higher confidence.
 
 - **Kickoff prompt**: Binary question ("is this a center-circle kickoff?")
-- **Direct probes**: Frame extraction at +60/90/120s bypasses motion scan gaps
-- **Parameters**: `_KICKOFF_RESCAN_MIN_GAP=30s`, `_KICKOFF_RESCAN_MAX_GAP=180s`, `_GOAL_DEDUP_WINDOW=240s`
+- **Celebration prompt**: Binary question ("is there a goal celebration / ball in net?")
+- **Direct probes**: Dense frame extraction at +30/45/60/75/90s after shot
+- **Parameters**: `_KICKOFF_RESCAN_MIN_GAP=20s`, `_KICKOFF_RESCAN_MAX_GAP=90s`, `_GOAL_DEDUP_WINDOW=240s`
+- **Diagnostics**: `kickoff_rescan.jsonl`, `goal_celebration_probe.jsonl`
 
 Source: `src/detection/pipeline.py` — `DetectionPipeline._goal_inference()`
 
@@ -282,6 +289,7 @@ Each phase writes JSONL diagnostics to `{working_dir}/diagnostics/`:
 - `filtered_candidates.jsonl` — after match structure filter + audio gap fill + spot-checks (Phase 2b-2d)
 - `vlm_verdicts.jsonl` — VLM classification results (Phase 3)
 - `kickoff_rescan.jsonl` — goal inference kickoff rescan results (Phase 3b)
+- `goal_celebration_probe.jsonl` — goal celebration/scoring VLM probe results (Phase 3b)
 - `set_piece_rescan.jsonl` — set-piece inference results (Phase 3c)
 - `corner_scan.jsonl` — independent corner scan results (Phase 3d)
 - `shot_scan.jsonl` — binary shot scan results (Phase 3f)

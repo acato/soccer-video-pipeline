@@ -134,7 +134,7 @@ VLLM_ENABLED: bool = _bool("VLLM_ENABLED", False)
 VLLM_URL: str = _opt("VLLM_URL", "http://localhost:8000")
 """vLLM server URL (OpenAI-compatible API)."""
 
-VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8")
+VLLM_MODEL: str = _opt("VLLM_MODEL", "soccer-event-classifier")
 """Model name as registered in vLLM."""
 
 VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
@@ -253,7 +253,7 @@ class _Config:
             "VLM_MIN_CONFIDENCE": ("VLM_MIN_CONFIDENCE", "0.6"),
             "VLLM_ENABLED": ("VLLM_ENABLED", "false"),
             "VLLM_URL": ("VLLM_URL", "http://localhost:8000"),
-            "VLLM_MODEL": ("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
+            "VLLM_MODEL": ("VLLM_MODEL", "soccer-event-classifier"),
             "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
         }
         if name not in env_map:

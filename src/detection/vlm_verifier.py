@@ -4,8 +4,8 @@ VLM classification (Phase 3) — two-pass architecture.
 Pass 1 (Observe): "Describe what you see" — free-form observation
 Pass 2 (Classify): Feed observation back + classification question
 
-Extended clip windows: 5s pre / 15s post to capture celebrations
-and post-event context that distinguishes goals from saves.
+Clip windows aligned to training format: 8 frames from a 6-second window
+centred on the event (3s pre / 3s post), at ~100K pixels per frame.
 
 Dependencies: httpx (vLLM), anthropic (Claude fallback), FFmpeg.
 """
@@ -113,44 +113,25 @@ CAMERA LIMITATIONS — at this distance:
 - You CAN see player positions, formations, celebrations, and restart patterns
 
 CLASSIFICATION STRATEGY — what happens AFTER the action is the best signal:
-- Kickoff restart (players at center circle) → classify as "goal" (a goal was scored)
-- Throw-in restart (player holding ball at sideline) → classify as "throw_in"
-- Goal kick or corner kick restart → could be "save", "shot", or "goal_kick" (see rules below)
-- Play continues normally → "none"
+- Kickoff restart (players at center circle) = goal was scored
+- Corner kick restart = goalkeeper parried the shot
+- Goal kick restart with no GK save action = shot went wide/over
+- Goalkeeper holding ball and distributing = goalkeeper caught it
+- Play continues normally = nothing significant
 
-DISTINGUISHING "save" vs "shot" vs "goal_kick":
-- "save" (CATCH): After a shot, the goalkeeper is HOLDING or CARRYING the ball — \
-cradling it to their chest, picking it up off the ground, or standing with the ball \
-in their hands. This is the result state, not the action. Look for the GK with the \
-ball in hand in any frame AFTER the shot.
-- "save" (PARRY): The goalkeeper DIVES, JUMPS, or REACHES and the ball changes \
-direction near the GK. A corner kick restart after a shot is strong parry evidence, \
-but classify as "shot" here — the pipeline handles parry inference structurally.
-- "shot": A shot was taken toward goal and a goal kick follows, but you do NOT see \
-the goalkeeper holding the ball or making a clear save action. The ball likely went \
-WIDE or OVER the goal.
-- "goal_kick": NO shot preceded the goal kick — a wayward cross or backpass drifted \
-over the goal line with no shot attempt.
-
-When uncertain between "save" and "shot", classify as "shot".
-
-Classify the MAIN event. Choose ONE:
-- "goal": GOAL — ONLY if you see celebration (arms raised, group hugs, sliding) \
-OR kickoff restart at center circle. "Ball near goal" alone is NEVER enough.
-- "save": SAVE (catch) — after a shot, the goalkeeper is HOLDING the ball (cradling, \
-carrying, picking up). Look for the GK with ball in hands in frames AFTER the shot.
-- "shot": SHOT — ball kicked toward goal. If followed by a goal kick but you see \
-NO clear goalkeeper save action, classify as "shot" (ball went wide/over). \
-If unsure whether it was a save or a shot, classify as "shot".
-- "corner_kick": ball placed at CORNER FLAG arc, kicked into the penalty box.
-- "goal_kick": ball kicked from six-yard box with NO preceding shot attempt — \
-a wayward cross or backpass drifted out. If a shot was taken first, classify as \
-"shot" or "save" instead (depending on whether GK made a save action).
-- "free_kick": ball placed on ground mid-field, kicked from a stoppage after a foul.
-- "penalty": ONE player facing goalkeeper from the penalty spot, all others outside the box.
-- "throw_in": player holding ball OVERHEAD at the sideline, throws it in.
-- "kickoff": kick-off from CENTER CIRCLE — two players over the ball at the center spot.
-- "none": normal play, nothing significant, or cannot determine.
+Classify the MAIN event visible in these frames. Choose ONE:
+- "goal": A goal was scored -- you see celebration OR kickoff restart at center circle
+- "save": Goalkeeper stopped a shot -- GK touched/blocked/caught the ball, preventing a goal
+- "shot_on_target": Shot toward goal that was saved (but not clearly a catch or parry)
+- "shot_off_target": Shot that missed -- followed by goal kick (ball went wide/over)
+- "shot_blocked": Shot blocked by a defender (not the GK)
+- "corner_kick": Ball placed at corner flag arc, kicked into the box
+- "goal_kick": Ball kicked from six-yard box, no preceding shot attempt visible
+- "throw_in": Player holds ball overhead at sideline, throws it in
+- "free_kick": Ball placed on ground, kicked from a stoppage after a foul
+- "penalty": One shooter vs goalkeeper from penalty spot, others outside box
+- "kickoff": Kick-off from center circle (start of half or after goal)
+- "none": Normal play, nothing significant, or cannot determine
 
 Respond with EXACTLY this JSON (no other text):
 {{"event": "<type>", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
@@ -293,6 +274,38 @@ Respond with EXACTLY this JSON (no other text):
 {{"is_catch": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
 
 
+_GOAL_CELEBRATION_PROMPT = """\
+You are analyzing {num_frames} frames sampled at 2 FPS from a {clip_duration:.0f}-second clip \
+of a soccer match recorded by a SIDELINE CAMERA at ~50 metres from the field.
+{match_context}
+
+CONTEXT: A shot was taken toward goal and a center-circle kickoff restart was detected \
+shortly after. We need to verify whether a GOAL was actually scored.
+
+Did a GOAL occur in these frames?
+
+Strong signs of a GOAL:
+- Players CELEBRATING — running with arms up, sliding, group hugging
+- One team looks DEJECTED (heads down, hands on hips)
+- Ball clearly IN or BEHIND the goal net
+- Goalkeeper on the ground looking back at the net or retrieving the ball from the net
+- Players jogging back to their own half for the restart
+- Scoreboard change visible (if any)
+
+Signs a GOAL did NOT occur:
+- Goalkeeper HOLDING the ball (that's a save/catch, not a goal)
+- Ball going OVER the crossbar or WIDE of the post
+- Goalkeeper makes a save and the ball is deflected away
+- Normal play continues without interruption
+- Players immediately take a goal kick or corner (not a kickoff)
+- No celebration, no change of mood — the game just continues
+
+IMPORTANT: If you see a goalkeeper making a save or holding the ball, this is NOT a goal.
+
+Respond with EXACTLY this JSON (no other text):
+{{"is_goal": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
+
 def _match_context(match_config: Optional[MatchConfig]) -> str:
     if not match_config:
         return ""
@@ -310,6 +323,9 @@ _EVENT_TYPE_MAP = {
     "goal": EventType.GOAL,
     "save": EventType.SHOT_STOP_DIVING,
     "shot": EventType.SHOT_ON_TARGET,
+    "shot_on_target": EventType.SHOT_ON_TARGET,
+    "shot_off_target": EventType.SHOT_OFF_TARGET,
+    "shot_blocked": EventType.SHOT_ON_TARGET,  # blocked → on_target for reel purposes
     "corner_kick": EventType.CORNER_KICK,
     "goal_kick": EventType.GOAL_KICK,
     "free_kick": EventType.FREE_KICK_SHOT,
@@ -342,16 +358,17 @@ class VLMVerifier:
         verdicts = verifier.verify(candidates, match_config=mc)
     """
 
-    _CLIP_FPS = 2         # 2 FPS — longer clips need fewer frames per second
-    _CLIP_WIDTH = 768     # Frame width (768px ≈ 200 tok/frame)
+    _CLIP_FPS = 2         # 2 FPS extraction
+    _CLIP_WIDTH = 768     # 768px — matches training frame resolution
     _MAX_FRAMES = 24      # 12 seconds × 2 FPS = 24 frames
+    _CLIP_WINDOW_SEC = 12.0  # Max extraction window (seconds)
     _TWO_PASS = False     # Single-pass: 2x candidates at same GPU cost
 
     def __init__(
         self,
         *,
         vllm_url: Optional[str] = None,
-        vllm_model: str = "Qwen/Qwen3-VL-32B-Instruct-FP8",
+        vllm_model: str = "soccer-event-classifier",
         anthropic_api_key: Optional[str] = None,
         anthropic_model: str = "claude-sonnet-4-20250514",
         min_confidence: float = 0.5,
@@ -448,11 +465,37 @@ class VLMVerifier:
         source_file: Path,
         match_config: Optional[MatchConfig],
     ) -> VLMVerdict:
-        """Two-pass classification: observe then classify."""
+        """Classify a single candidate using VLM.
+
+        When a whistle audio cue is present, the extraction window is
+        shifted to look BEFORE the whistle (the event that triggered the
+        whistle happened earlier).  This compensates for motion spike
+        timestamps that land on the post-event activity rather than the
+        event itself.
+        """
+        # --- Audio-aware window centering ---
+        # Whistle marks a game stoppage; the event happened BEFORE.
+        # Shift the window to capture pre-whistle context.
+        if (candidate.audio_cue is not None
+                and hasattr(candidate.audio_cue, 'timestamp')):
+            whistle_t = candidate.audio_cue.timestamp
+            # Centre the window 6s before the whistle so we capture
+            # the event (shot, foul, goal) that triggered it.
+            centre = whistle_t - 6.0
+            half = self._CLIP_WINDOW_SEC / 2
+            vlm_start = max(0, centre - half)
+            vlm_end = centre + half
+            log.debug("vlm_verifier.audio_window_shift",
+                       whistle_t=whistle_t, centre=centre,
+                       vlm_start=vlm_start, vlm_end=vlm_end)
+        else:
+            vlm_start = candidate.clip_start
+            vlm_end = candidate.clip_end
+
         frames = self._extract_clip_frames(
             source_file,
-            candidate.clip_start,
-            candidate.clip_end,
+            vlm_start,
+            vlm_end,
         )
         if not frames:
             log.warning("vlm_verifier.no_frames",
@@ -565,8 +608,8 @@ class VLMVerifier:
     ) -> list[bytes]:
         """Extract frames as JPEG bytes from the clip window."""
         clip_duration = end_sec - start_sec
-        # Cap at MAX_FRAMES worth of content
-        max_duration = self._MAX_FRAMES / self._CLIP_FPS
+        # Cap at the training-matched clip window
+        max_duration = self._CLIP_WINDOW_SEC
         if clip_duration > max_duration:
             # Centre the extraction window around the midpoint
             mid = (start_sec + end_sec) / 2
@@ -754,6 +797,101 @@ class VLMVerifier:
         except Exception as exc:
             log.warning("vlm_verifier.claude_text_exception", error=str(exc))
             return None
+
+    # ------------------------------------------------------------------
+    # Claude goal verification (Step C — hybrid 8B/Claude)
+    # ------------------------------------------------------------------
+
+    _GOAL_VERIFY_PROMPT = """\
+You are analysing {num_frames} frames from a {clip_duration:.0f}-second clip \
+of a soccer match recorded by a SIDELINE CAMERA at ~50 metres.
+
+A fine-tuned model classified this clip as "{original_label}". \
+However, structural analysis found a kickoff restart {kickoff_gap:.0f} seconds \
+later, which may indicate a goal was scored.
+
+Look carefully at these frames. Do you see any of these GOAL indicators?
+- Players celebrating (arms raised, running together, hugging)
+- Teams walking back toward the centre circle
+- A kickoff formation at the centre circle
+- A ball in/behind the goal net
+- Score graphics or crowd reaction
+
+Answer with EXACTLY this JSON:
+{{"is_goal": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
+    def goal_verify_claude(
+        self,
+        candidates: list[tuple[EventCandidate, str, float]],
+        source_file: Optional[str | Path] = None,
+    ) -> list[tuple[EventCandidate, bool, float, str]]:
+        """Re-verify candidates with Claude to check for missed goals.
+
+        Args:
+            candidates: list of (candidate, original_label, kickoff_gap_sec)
+            source_file: video file path
+
+        Returns:
+            list of (candidate, is_goal, confidence, reasoning)
+        """
+        if not self._anthropic_key:
+            log.warning("vlm_verifier.claude_goal_verify_no_key")
+            return [(c, False, 0.0, "no API key") for c, _, _ in candidates]
+
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            return [(c, False, 0.0, "no source") for c, _, _ in candidates]
+
+        results = []
+        for candidate, orig_label, kickoff_gap in candidates:
+            # Wide window: 5s before to 20s after to capture celebration
+            wide_start = max(0, candidate.timestamp - 5.0)
+            wide_end = candidate.timestamp + 20.0
+            frames = self._extract_clip_frames(src, wide_start, wide_end)
+            if not frames:
+                results.append((candidate, False, 0.0, "no frames"))
+                continue
+
+            clip_dur = wide_end - wide_start
+            prompt = self._GOAL_VERIFY_PROMPT.format(
+                num_frames=len(frames),
+                clip_duration=clip_dur,
+                original_label=orig_label,
+                kickoff_gap=kickoff_gap,
+            )
+
+            response = self._call_claude(prompt, frames)
+            if response is None:
+                results.append((candidate, False, 0.0, "claude failed"))
+                continue
+
+            try:
+                text = response.strip()
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                    if text.endswith("```"):
+                        text = text[:-3]
+                    text = text.strip()
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                data = json.loads(text[start:end])
+                is_goal = data.get("is_goal", False)
+                conf = float(data.get("confidence", 0.5))
+                reason = data.get("reasoning", "")
+                results.append((candidate, is_goal, conf, reason))
+
+                mm = int(candidate.timestamp // 60)
+                ss = candidate.timestamp % 60
+                log.info("vlm_verifier.claude_goal_verify",
+                         time=f"{mm:02d}:{ss:05.2f}",
+                         is_goal=is_goal, confidence=conf,
+                         reasoning=reason[:80])
+            except (json.JSONDecodeError, ValueError) as exc:
+                log.warning("vlm_verifier.claude_goal_parse_error",
+                            error=str(exc), response=response[:100])
+                results.append((candidate, False, 0.0, f"parse error: {exc}"))
+
+        return results
 
     # ------------------------------------------------------------------
     # Internal — response parsing
@@ -1396,6 +1534,130 @@ class VLMVerifier:
                 event_type=EventType.CATCH,
                 confidence=confidence,
                 reasoning=f"CATCH_SCAN: {reasoning}",
+                model_used=model_used,
+            )
+        return VLMVerdict(
+            candidate=candidate,
+            result=VerificationResult.REJECTED,
+            event_type=None,
+            confidence=confidence,
+            reasoning=reasoning,
+            model_used=model_used,
+        )
+
+    # ------------------------------------------------------------------
+    # Goal celebration verification
+    # ------------------------------------------------------------------
+
+    def verify_goal_celebration(
+        self,
+        candidates: list[EventCandidate],
+        *,
+        match_config: Optional[MatchConfig] = None,
+        source_file: Optional[str | Path] = None,
+    ) -> list[VLMVerdict]:
+        """Focused goal celebration check — probe the aftermath of a shot
+        for celebrations, ball in net, or dejected opponents.
+
+        Uses a shifted window: shot+2s to shot+12s to capture the immediate
+        aftermath (celebration starts, ball settles in net).
+        """
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            return [self._passthrough(c) for c in candidates]
+
+        ctx = _match_context(match_config)
+        verdicts: list[VLMVerdict] = []
+
+        for candidate in candidates:
+            mm = int(candidate.timestamp // 60)
+            ss = candidate.timestamp % 60
+            log.info("vlm_verifier.goal_celebration_check",
+                     time=f"{mm:02d}:{ss:05.2f}")
+
+            # Shifted window: 2-12s AFTER the shot to see celebration
+            cel_start = candidate.timestamp + 2.0
+            cel_end = candidate.timestamp + 12.0
+            frames = self._extract_clip_frames(
+                src, cel_start, cel_end,
+            )
+            if not frames:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            clip_duration = cel_end - cel_start
+            prompt = _GOAL_CELEBRATION_PROMPT.format(
+                match_context=ctx,
+                clip_duration=clip_duration,
+                num_frames=len(frames),
+            )
+
+            response = None
+            model_used = "none"
+            if self._vllm_url:
+                response = self._call_vllm(prompt, frames)
+                model_used = self._vllm_model
+            if response is None and self._anthropic_key:
+                response = self._call_claude(prompt, frames)
+                model_used = self._anthropic_model
+
+            if response is None:
+                verdicts.append(self._passthrough(candidate))
+                continue
+
+            verdict = self._parse_goal_celebration_response(
+                response, candidate, model_used,
+            )
+            verdicts.append(verdict)
+
+            log.info("vlm_verifier.goal_celebration_result",
+                     time=f"{mm:02d}:{ss:05.2f}",
+                     is_goal=verdict.result == VerificationResult.CONFIRMED,
+                     reasoning=verdict.reasoning[:100])
+
+        return verdicts
+
+    def _parse_goal_celebration_response(
+        self,
+        response: str,
+        candidate: EventCandidate,
+        model_used: str,
+    ) -> VLMVerdict:
+        """Parse goal celebration check response."""
+        try:
+            text = response.strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+            if "<think>" in text:
+                import re
+                text = re.sub(
+                    r"<think>.*?</think>", "", text, flags=re.DOTALL,
+                ).strip()
+            if not text.startswith("{"):
+                start = text.find("{")
+                end = text.rfind("}") + 1
+                if start >= 0 and end > start:
+                    text = text[start:end]
+            data = json.loads(text)
+        except (json.JSONDecodeError, IndexError):
+            return self._passthrough(candidate)
+
+        is_goal = data.get("is_goal", False)
+        confidence = float(data.get("confidence", 0.5))
+        reasoning = data.get("reasoning", "")
+
+        if is_goal and confidence >= self._min_conf:
+            return VLMVerdict(
+                candidate=candidate,
+                result=VerificationResult.CONFIRMED,
+                event_type=EventType.GOAL,
+                confidence=confidence,
+                reasoning=f"GOAL_CELEBRATION: {reasoning}",
                 model_used=model_used,
             )
         return VLMVerdict(
