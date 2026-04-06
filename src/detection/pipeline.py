@@ -84,6 +84,19 @@ class DetectionPipeline:
         anthropic_model: str = "claude-sonnet-4-20250514",
         vlm_min_confidence: float = 0.5,
         vlm_enabled: bool = True,
+        # Two-tier VLM config
+        tiered_vlm: bool = False,
+        tier1_model: str = "",
+        tier1_model_path: str = "",
+        tier1_lora_path: str = "",
+        tier2_model: str = "",
+        tier2_model_path: str = "",
+        tier1_min_confidence: float = 0.6,
+        tier1_broken_threshold: float = 3.0,
+        tier2_spot_check_rate: float = 0.10,
+        tier2_escalation_cap: float = 0.50,
+        model_swap_script: str = "",
+        model_swap_timeout_sec: int = 120,
         # General
         working_dir: Optional[str | Path] = None,
         min_event_confidence: float = 0.5,
@@ -134,6 +147,42 @@ class DetectionPipeline:
             source_file=source_file,
             working_dir=self._work,
         )
+
+        # Phase 3 — Two-tier VLM (optional)
+        self._tiered_vlm = tiered_vlm and vlm_enabled
+        self._model_manager = None
+        self._tier_router = None
+
+        if self._tiered_vlm and vllm_url:
+            from src.detection.model_manager import ModelManager, ModelConfig
+            from src.detection.tier_router import TierRouter
+
+            tier1_cfg = ModelConfig(
+                name=tier1_model,
+                tier="tier1",
+                model_path=tier1_model_path,
+                lora_path=tier1_lora_path,
+            ) if tier1_model else None
+
+            tier2_cfg = ModelConfig(
+                name=tier2_model,
+                tier="tier2",
+                model_path=tier2_model_path,
+            ) if tier2_model else None
+
+            self._model_manager = ModelManager(
+                vllm_url=vllm_url,
+                tier1=tier1_cfg,
+                tier2=tier2_cfg,
+                swap_script=model_swap_script,
+                swap_timeout_sec=model_swap_timeout_sec,
+            )
+            self._tier_router = TierRouter(
+                min_confidence=tier1_min_confidence,
+                broken_threshold=tier1_broken_threshold,
+                spot_check_rate=tier2_spot_check_rate,
+                escalation_cap=tier2_escalation_cap,
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -262,17 +311,28 @@ class DetectionPipeline:
         if self._vlm_enabled and candidates:
             vlm_available = self._vlm_verifier.is_available()
             if vlm_available:
-                log.info("pipeline.phase3_vlm", candidates=len(candidates))
+                log.info("pipeline.phase3_vlm",
+                         candidates=len(candidates),
+                         tiered=self._tiered_vlm)
 
                 def vlm_progress(p: float):
                     if progress_callback:
                         progress_callback(0.55 + p * 0.30)
 
-                verdicts = self._vlm_verifier.verify(
-                    candidates,
-                    match_config=self._match_config,
-                    progress_callback=vlm_progress,
-                )
+                if self._tiered_vlm and self._model_manager and self._tier_router:
+                    verdicts = self._vlm_verifier.verify_tiered(
+                        candidates,
+                        match_config=self._match_config,
+                        progress_callback=vlm_progress,
+                        model_manager=self._model_manager,
+                        tier_router=self._tier_router,
+                    )
+                else:
+                    verdicts = self._vlm_verifier.verify(
+                        candidates,
+                        match_config=self._match_config,
+                        progress_callback=vlm_progress,
+                    )
 
                 # Diagnostic: dump VLM verdicts
                 self._dump_diagnostics("vlm_verdicts", [
@@ -1290,8 +1350,9 @@ class DetectionPipeline:
 
     _HALFTIME_GAP_MIN = 300.0   # Min gap (5 min) to qualify as halftime
     _MATCH_HALF_MAX = 3300.0    # Max half duration (55 min) for match end estimate
-    _SPOT_CHECK_GAP = 180.0     # Insert probe in gaps >3 min
-    _SPOT_CHECK_MAX = 15        # Cap spot-check probes per match
+    _SPOT_CHECK_GAP = 90.0      # Insert probe in gaps >90s (was 180s)
+    _SPOT_CHECK_MAX = 30        # Cap spot-check probes per match (was 15)
+    _SPOT_CHECK_INTERVAL = 45.0  # Place probes every 45s within large gaps
     _AUDIO_GAP_WINDOW = 8.0     # Audio orphan if no motion within ±8s
 
     def _detect_match_structure(
@@ -1429,7 +1490,7 @@ class DetectionPipeline:
                 source=CandidateSource.AUDIO_WHISTLE
                        if ac.cue_type == AudioCueType.WHISTLE
                        else CandidateSource.AUDIO_BOTH,
-                confidence=0.45,  # Lower than motion — needs VLM to confirm
+                confidence=0.35,  # Low-energy events need VLM to confirm
                 context=VisualContext(audio_boost=True),
                 audio_cue=ac,
                 clip_start=clip_start,
@@ -1453,9 +1514,11 @@ class DetectionPipeline:
         candidates: list[EventCandidate],
         match_struct: dict,
     ) -> list[EventCandidate]:
-        """Insert VLM probes in temporal gaps >3 min between candidates.
+        """Insert VLM probes in temporal gaps >90s between candidates.
 
-        Insurance against motion+audio blind spots.
+        Places probes every _SPOT_CHECK_INTERVAL seconds within each gap,
+        catching low-energy events (throw-ins, free kicks, goal kicks) that
+        motion+audio detection missed.
         """
         if not candidates:
             return candidates
@@ -1478,18 +1541,26 @@ class DetectionPipeline:
             if ht_start and ht_end and gap_start < ht_end and gap_end > ht_start:
                 continue
 
-            mid = (gap_start + gap_end) / 2
-            if mid > match_end:
-                continue
+            # Place probes every _SPOT_CHECK_INTERVAL within the gap
+            # (offset from gap_start to avoid probing right at existing candidates)
+            t = gap_start + self._SPOT_CHECK_INTERVAL
+            while t < gap_end - 10.0:  # Don't probe too close to gap_end
+                if t > match_end:
+                    break
 
-            probes.append(EventCandidate(
-                timestamp=mid,
-                source=CandidateSource.SPOT_CHECK,
-                confidence=0.35,
-                context=VisualContext(),
-                clip_start=max(0, mid - 5.0),
-                clip_end=min(self._duration, mid + 15.0),
-            ))
+                probes.append(EventCandidate(
+                    timestamp=t,
+                    source=CandidateSource.SPOT_CHECK,
+                    confidence=0.35,
+                    context=VisualContext(),
+                    clip_start=max(0, t - 5.0),
+                    clip_end=min(self._duration, t + 15.0),
+                ))
+
+                if len(probes) >= self._SPOT_CHECK_MAX:
+                    break
+
+                t += self._SPOT_CHECK_INTERVAL
 
             if len(probes) >= self._SPOT_CHECK_MAX:
                 break

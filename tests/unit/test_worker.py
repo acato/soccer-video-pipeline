@@ -66,6 +66,19 @@ def _make_string_config(tmp_path):
     cfg.ANTHROPIC_API_KEY = ""
     cfg.AUDIO_ENABLED = "true"
     cfg.AUDIO_SURGE_STDDEV = "3.5"
+    cfg.USE_VLM_DETECTION = "false"
+    cfg.TIERED_VLM_ENABLED = "false"
+    cfg.TIER1_MODEL = ""
+    cfg.TIER1_MODEL_PATH = ""
+    cfg.TIER1_LORA_PATH = ""
+    cfg.TIER2_MODEL = ""
+    cfg.TIER2_MODEL_PATH = ""
+    cfg.TIER1_MIN_CONFIDENCE = "0.6"
+    cfg.TIER1_BROKEN_THRESHOLD = "3.0"
+    cfg.TIER2_SPOT_CHECK_RATE = "0.10"
+    cfg.TIER2_ESCALATION_CAP = "0.50"
+    cfg.MODEL_SWAP_SCRIPT = ""
+    cfg.MODEL_SWAP_TIMEOUT_SEC = "120"
     return cfg
 
 

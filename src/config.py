@@ -87,58 +87,70 @@ DETECTION_FRAME_STEP: int = _int("DETECTION_FRAME_STEP", 3)
 """Process every Nth frame during detection pass (3 = 10fps effective at 30fps source)."""
 
 # ---------------------------------------------------------------------------
-# Audio Detection (Phase 1)
-# ---------------------------------------------------------------------------
-AUDIO_ENABLED: bool = _bool("AUDIO_ENABLED", True)
-"""Enable audio-based whistle/energy detection. Fails open if no audio stream."""
-
-AUDIO_BANDPASS_LOW_HZ: int = _int("AUDIO_BANDPASS_LOW_HZ", 2000)
-"""Low end of whistle bandpass filter (Hz)."""
-
-AUDIO_BANDPASS_HIGH_HZ: int = _int("AUDIO_BANDPASS_HIGH_HZ", 4000)
-"""High end of whistle bandpass filter (Hz)."""
-
-AUDIO_MIN_WHISTLE_SEC: float = _float("AUDIO_MIN_WHISTLE_SEC", 0.2)
-"""Minimum whistle duration to count as a real whistle (seconds)."""
-
-AUDIO_SURGE_STDDEV: float = _float("AUDIO_SURGE_STDDEV", 3.5)
-"""Energy surge threshold in standard deviations above rolling mean."""
-
-# ---------------------------------------------------------------------------
-# Visual Candidate Generation (Phase 2)
-# ---------------------------------------------------------------------------
-VISUAL_SCAN_INTERVAL_SEC: float = _float("VISUAL_SCAN_INTERVAL_SEC", 15.0)
-"""Spot-check interval for full-scan fallback when no audio (seconds)."""
-
-# ---------------------------------------------------------------------------
-# VLM Verification (Phase 3)
+# VLM (Vision Language Model) Classification
 # ---------------------------------------------------------------------------
 VLM_ENABLED: bool = _bool("VLM_ENABLED", False)
-"""Use Claude API as VLM verification backend."""
+"""Use Claude VLM to verify GK save events post-detection."""
 
 ANTHROPIC_API_KEY: str = _opt("ANTHROPIC_API_KEY", "")
 """API key for Anthropic Claude. Required when VLM_ENABLED=true."""
 
 VLM_MODEL: str = _opt("VLM_MODEL", "claude-sonnet-4-20250514")
-"""Claude model to use for VLM verification."""
+"""Claude model to use for VLM classification."""
 
-VLM_FRAME_WIDTH: int = _int("VLM_FRAME_WIDTH", 1280)
+VLM_FRAME_WIDTH: int = _int("VLM_FRAME_WIDTH", 640)
 """Resize width for extracted VLM frames (smaller = cheaper API calls)."""
 
 VLM_MIN_CONFIDENCE: float = _float("VLM_MIN_CONFIDENCE", 0.6)
-"""Minimum VLM confidence to confirm an event."""
+"""Minimum VLM confidence to keep an event."""
 
-VLLM_ENABLED: bool = _bool("VLLM_ENABLED", False)
-"""Use vLLM-hosted vision model (Qwen3-VL) as VLM verification backend."""
+USE_VLM_DETECTION: bool = _bool("USE_VLM_DETECTION", False)
+"""Use VLM-first two-pass detection instead of YOLO heuristic pipeline."""
 
-VLLM_URL: str = _opt("VLLM_URL", "http://localhost:8000")
-"""vLLM server URL (OpenAI-compatible API)."""
+VLM_FRAME_INTERVAL: float = _float("VLM_FRAME_INTERVAL", 3.0)
+"""Seconds between frames in VLM coarse scan."""
 
-VLLM_MODEL: str = _opt("VLLM_MODEL", "soccer-event-classifier")
-"""Model name as registered in vLLM."""
+VLM_DETECT_FRAME_WIDTH: int = _int("VLM_DETECT_FRAME_WIDTH", 960)
+"""Resize width for VLM detection frames (larger than verification frames)."""
 
-VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
-"""Minimum confidence to keep a classified event."""
+# ---------------------------------------------------------------------------
+# Two-Tier VLM Classification
+# ---------------------------------------------------------------------------
+TIERED_VLM_ENABLED: bool = _bool("TIERED_VLM_ENABLED", False)
+"""Enable two-tier VLM: Tier 1 (8B fast) + Tier 2 (32B accurate)."""
+
+TIER1_MODEL: str = _opt("TIER1_MODEL", "soccer-8b-lora")
+"""Model name for Tier 1 (fast classification). Must match vLLM --served-model-name."""
+
+TIER1_MODEL_PATH: str = _opt("TIER1_MODEL_PATH", "")
+"""HuggingFace or local path for Tier 1 model (used by swap script)."""
+
+TIER1_LORA_PATH: str = _opt("TIER1_LORA_PATH", "")
+"""LoRA adapter path for Tier 1 (if applicable)."""
+
+TIER2_MODEL: str = _opt("TIER2_MODEL", "qwen3-vl-32b-fp8")
+"""Model name for Tier 2 (accurate review). Must match vLLM --served-model-name."""
+
+TIER2_MODEL_PATH: str = _opt("TIER2_MODEL_PATH", "Qwen/Qwen3-VL-32B-Instruct-FP8")
+"""HuggingFace or local path for Tier 2 model (used by swap script)."""
+
+TIER1_MIN_CONFIDENCE: float = _float("TIER1_MIN_CONFIDENCE", 0.6)
+"""Below this confidence, Tier 1 verdicts escalate to Tier 2."""
+
+TIER1_BROKEN_THRESHOLD: float = _float("TIER1_BROKEN_THRESHOLD", 3.0)
+"""If any label exceeds expected_rate * this multiplier, Tier 1 is broken."""
+
+TIER2_SPOT_CHECK_RATE: float = _float("TIER2_SPOT_CHECK_RATE", 0.10)
+"""Fraction of confident Tier 1 verdicts to spot-check with Tier 2."""
+
+TIER2_ESCALATION_CAP: float = _float("TIER2_ESCALATION_CAP", 0.50)
+"""Max fraction of verdicts to escalate. Exceeding this = Tier 1 broken."""
+
+MODEL_SWAP_SCRIPT: str = _opt("MODEL_SWAP_SCRIPT", "")
+"""Path to shell script for swapping vLLM models between tiers."""
+
+MODEL_SWAP_TIMEOUT_SEC: int = _int("MODEL_SWAP_TIMEOUT_SEC", 120)
+"""Max seconds to wait for model swap to complete."""
 
 # ---------------------------------------------------------------------------
 # Output
@@ -237,24 +249,27 @@ class _Config:
             "WATCH_STABLE_TIME_SEC": ("WATCH_STABLE_TIME_SEC", "30.0"),
             "PREVENT_SLEEP": ("PREVENT_SLEEP", "true"),
             "USE_BALL_TOUCH_DETECTOR": ("USE_BALL_TOUCH_DETECTOR", "false"),
-            # Audio detection (Phase 1)
-            "AUDIO_ENABLED": ("AUDIO_ENABLED", "true"),
-            "AUDIO_BANDPASS_LOW_HZ": ("AUDIO_BANDPASS_LOW_HZ", "2000"),
-            "AUDIO_BANDPASS_HIGH_HZ": ("AUDIO_BANDPASS_HIGH_HZ", "4000"),
-            "AUDIO_MIN_WHISTLE_SEC": ("AUDIO_MIN_WHISTLE_SEC", "0.2"),
-            "AUDIO_SURGE_STDDEV": ("AUDIO_SURGE_STDDEV", "3.5"),
-            # Visual candidate generation (Phase 2)
-            "VISUAL_SCAN_INTERVAL_SEC": ("VISUAL_SCAN_INTERVAL_SEC", "15.0"),
-            # VLM verification (Phase 3)
             "VLM_ENABLED": ("VLM_ENABLED", "false"),
             "ANTHROPIC_API_KEY": ("ANTHROPIC_API_KEY", ""),
             "VLM_MODEL": ("VLM_MODEL", "claude-sonnet-4-20250514"),
-            "VLM_FRAME_WIDTH": ("VLM_FRAME_WIDTH", "1280"),
+            "VLM_FRAME_WIDTH": ("VLM_FRAME_WIDTH", "640"),
             "VLM_MIN_CONFIDENCE": ("VLM_MIN_CONFIDENCE", "0.6"),
-            "VLLM_ENABLED": ("VLLM_ENABLED", "false"),
-            "VLLM_URL": ("VLLM_URL", "http://localhost:8000"),
-            "VLLM_MODEL": ("VLLM_MODEL", "soccer-event-classifier"),
-            "VLLM_MIN_CONFIDENCE": ("VLLM_MIN_CONFIDENCE", "0.5"),
+            "USE_VLM_DETECTION": ("USE_VLM_DETECTION", "false"),
+            "VLM_FRAME_INTERVAL": ("VLM_FRAME_INTERVAL", "3.0"),
+            "VLM_DETECT_FRAME_WIDTH": ("VLM_DETECT_FRAME_WIDTH", "960"),
+            # Two-tier VLM
+            "TIERED_VLM_ENABLED": ("TIERED_VLM_ENABLED", "false"),
+            "TIER1_MODEL": ("TIER1_MODEL", "soccer-8b-lora"),
+            "TIER1_MODEL_PATH": ("TIER1_MODEL_PATH", ""),
+            "TIER1_LORA_PATH": ("TIER1_LORA_PATH", ""),
+            "TIER2_MODEL": ("TIER2_MODEL", "qwen3-vl-32b-fp8"),
+            "TIER2_MODEL_PATH": ("TIER2_MODEL_PATH", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
+            "TIER1_MIN_CONFIDENCE": ("TIER1_MIN_CONFIDENCE", "0.6"),
+            "TIER1_BROKEN_THRESHOLD": ("TIER1_BROKEN_THRESHOLD", "3.0"),
+            "TIER2_SPOT_CHECK_RATE": ("TIER2_SPOT_CHECK_RATE", "0.10"),
+            "TIER2_ESCALATION_CAP": ("TIER2_ESCALATION_CAP", "0.50"),
+            "MODEL_SWAP_SCRIPT": ("MODEL_SWAP_SCRIPT", ""),
+            "MODEL_SWAP_TIMEOUT_SEC": ("MODEL_SWAP_TIMEOUT_SEC", "120"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

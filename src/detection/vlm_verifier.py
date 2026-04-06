@@ -48,6 +48,7 @@ class VLMVerdict:
     confidence: float                     # VLM confidence 0-1
     reasoning: str                        # Model's explanation
     model_used: str                       # Which model produced this
+    tier: str = ""                        # "tier1", "tier2", or "" (single-tier)
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +445,187 @@ class VLMVerifier:
                  total=total, confirmed=confirmed,
                  rejected=total - confirmed)
         return verdicts
+
+    def verify_tiered(
+        self,
+        candidates: list[EventCandidate],
+        *,
+        match_config: Optional[MatchConfig] = None,
+        source_file: Optional[str | Path] = None,
+        progress_callback: Optional[Callable[[float], None]] = None,
+        model_manager: Optional[object] = None,
+        tier_router: Optional[object] = None,
+    ) -> list[VLMVerdict]:
+        """Two-tier classification: fast Tier 1, then selective Tier 2 review.
+
+        1. Ensures Tier 1 model is loaded
+        2. Runs all candidates through Tier 1 (verify())
+        3. Routes verdicts through TierRouter
+        4. If any escalated: swaps to Tier 2, re-classifies escalated subset
+        5. Merges: Tier 2 overrides Tier 1 for escalated candidates
+        6. Returns complete verdict list
+
+        Falls back to single-tier (verify) if model_manager or tier_router
+        is None, or if Tier 1/Tier 2 swap fails.
+        """
+        from src.detection.model_manager import ModelManager
+        from src.detection.tier_router import TierRouter
+
+        # Fall back to single-tier if not properly configured
+        if not isinstance(model_manager, ModelManager) or not isinstance(tier_router, TierRouter):
+            log.warning("vlm_verifier.tiered_fallback",
+                        reason="model_manager or tier_router not configured")
+            return self.verify(
+                candidates, match_config=match_config,
+                source_file=source_file,
+                progress_callback=progress_callback,
+            )
+
+        src = Path(source_file) if source_file else self._source
+        if src is None:
+            log.error("vlm_verifier.no_source_file")
+            return [self._passthrough(c) for c in candidates]
+
+        total = len(candidates)
+        if total == 0:
+            return []
+
+        # ── Tier 1: fast classification of all candidates ──────────────
+        log.info("vlm_verifier.tier1_start", total=total)
+
+        # Ensure Tier 1 model is loaded
+        tier1_cfg = model_manager.config_for("tier1")
+        if tier1_cfg and model_manager.ensure_tier("tier1"):
+            # Temporarily use Tier 1 model name
+            saved_model = self._vllm_model
+            self._vllm_model = tier1_cfg.name
+
+            def tier1_progress(pct: float):
+                if progress_callback:
+                    # Tier 1 = first 60% of progress
+                    progress_callback(pct * 0.60)
+
+            tier1_verdicts = self.verify(
+                candidates, match_config=match_config,
+                source_file=source_file,
+                progress_callback=tier1_progress,
+            )
+
+            # Tag verdicts with tier
+            tier1_verdicts = [
+                VLMVerdict(
+                    candidate=v.candidate,
+                    result=v.result,
+                    event_type=v.event_type,
+                    confidence=v.confidence,
+                    reasoning=v.reasoning,
+                    model_used=v.model_used,
+                    tier="tier1",
+                )
+                for v in tier1_verdicts
+            ]
+
+            self._vllm_model = saved_model
+        else:
+            # Tier 1 unavailable — skip to Tier 2 for everything
+            log.warning("vlm_verifier.tier1_unavailable",
+                        hint="Falling back to Tier 2 for all candidates")
+            tier1_verdicts = [self._passthrough(c) for c in candidates]
+
+        # ── Route: decide what escalates to Tier 2 ─────────────────────
+        if progress_callback:
+            progress_callback(0.62)
+
+        routing = tier_router.route(tier1_verdicts)
+
+        log.info("vlm_verifier.routing_done",
+                 escalated=len(routing.escalated),
+                 kept=len(routing.kept),
+                 tier1_broken=routing.tier1_broken,
+                 escalation_rate=round(routing.escalation_rate, 3))
+
+        if not routing.escalated:
+            log.info("vlm_verifier.tier2_skipped", reason="nothing_escalated")
+            if progress_callback:
+                progress_callback(1.0)
+            return tier1_verdicts
+
+        # ── Tier 2: re-classify escalated candidates ───────────────────
+        log.info("vlm_verifier.tier2_start",
+                 escalated=len(routing.escalated),
+                 tier1_broken=routing.tier1_broken)
+
+        tier2_cfg = model_manager.config_for("tier2")
+        if not tier2_cfg or not model_manager.ensure_tier("tier2"):
+            log.error("vlm_verifier.tier2_unavailable",
+                      hint="Keeping Tier 1 verdicts for escalated candidates")
+            if progress_callback:
+                progress_callback(1.0)
+            return tier1_verdicts
+
+        if progress_callback:
+            progress_callback(0.65)
+
+        # Extract the candidates that need re-classification
+        escalated_candidates = [v.candidate for v in routing.escalated]
+
+        # Use Tier 2 model
+        saved_model = self._vllm_model
+        self._vllm_model = tier2_cfg.name
+
+        def tier2_progress(pct: float):
+            if progress_callback:
+                # Tier 2 = 65% → 95% of progress
+                progress_callback(0.65 + pct * 0.30)
+
+        tier2_verdicts = self.verify(
+            escalated_candidates, match_config=match_config,
+            source_file=source_file,
+            progress_callback=tier2_progress,
+        )
+
+        # Tag with tier
+        tier2_verdicts = [
+            VLMVerdict(
+                candidate=v.candidate,
+                result=v.result,
+                event_type=v.event_type,
+                confidence=v.confidence,
+                reasoning=v.reasoning,
+                model_used=v.model_used,
+                tier="tier2",
+            )
+            for v in tier2_verdicts
+        ]
+
+        self._vllm_model = saved_model
+
+        # ── Merge: Tier 2 overrides Tier 1 for escalated candidates ────
+        # Build lookup: candidate timestamp → Tier 2 verdict
+        t2_by_ts: dict[float, VLMVerdict] = {
+            v.candidate.timestamp: v for v in tier2_verdicts
+        }
+
+        merged: list[VLMVerdict] = []
+        for v in tier1_verdicts:
+            t2 = t2_by_ts.get(v.candidate.timestamp)
+            if t2 is not None:
+                merged.append(t2)
+            else:
+                merged.append(v)
+
+        confirmed = sum(1 for v in merged if v.result == VerificationResult.CONFIRMED)
+        t2_used = sum(1 for v in merged if v.tier == "tier2")
+        log.info("vlm_verifier.tiered_complete",
+                 total=total,
+                 confirmed=confirmed,
+                 tier2_used=t2_used,
+                 tier1_kept=total - t2_used)
+
+        if progress_callback:
+            progress_callback(1.0)
+
+        return merged
 
     def is_available(self) -> bool:
         """Check if at least one VLM backend is reachable."""

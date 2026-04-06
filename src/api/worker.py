@@ -134,14 +134,7 @@ process_match = process_match_task
 
 def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     """Execute all pipeline stages for a job. Called by the Celery task."""
-    from src.assembly.composer import ReelComposer
-    from src.assembly.output import write_reel_to_nas, get_output_path, write_job_manifest
-    from src.detection.event_log import EventLog
-    from src.detection.models import EventType, Event
-    from src.detection.pipeline import DetectionPipeline
     from src.ingestion.models import Job, JobStatus
-    from src.segmentation.clipper import compute_clips_v2
-    from src.segmentation.deduplicator import postprocess_clips
 
     job = store.get(job_id)
     vf = job.video_file
@@ -154,6 +147,148 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         log.error("pipeline.source_not_found", job_id=job_id, path=vf.path)
         store.update_status(job_id, JobStatus.FAILED, progress=0.0, error=error_msg)
         return {"job_id": job_id, "output_paths": {}, "error": error_msg}
+
+    # ── Route: VLM-first or heuristic pipeline ─────────────────────────
+    use_vlm = str(cfg.USE_VLM_DETECTION).lower() in ("1", "true", "yes")
+    if use_vlm:
+        return _run_vlm_pipeline(job_id, job, store, cfg, working)
+    return _run_heuristic_pipeline(job_id, job, store, cfg, working)
+
+
+def _run_vlm_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working: Path) -> dict:
+    """VLM-first two-pass detection pipeline."""
+    from src.assembly.composer import ReelComposer
+    from src.assembly.output import write_reel_to_nas
+    from src.detection.vlm_event_detector import VLMEventDetector
+    from src.ingestion.models import JobStatus
+    from src.segmentation.clipper import clips_from_boundaries
+
+    vf = job.video_file
+
+    # ── Stage: DETECTING (VLM scan) ──────────────────────────────────
+    store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
+
+    reel_specs = job.get_reel_specs()
+    # Collect all event types requested across reel specs
+    all_event_types: list[str] = []
+    for spec in reel_specs:
+        all_event_types.extend(spec.event_types)
+    all_event_types = list(set(all_event_types))
+
+    detector = VLMEventDetector(
+        api_key=cfg.ANTHROPIC_API_KEY,
+        model=cfg.VLM_MODEL,
+        source_file=vf.path,
+        video_duration=vf.duration_sec,
+        job_id=job_id,
+        event_types=all_event_types,
+        frame_interval=float(cfg.VLM_FRAME_INTERVAL),
+        frame_width=int(cfg.VLM_DETECT_FRAME_WIDTH),
+    )
+
+    def on_detect_progress(pct: float):
+        store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 55.0)
+
+    all_events = detector.detect(progress_callback=on_detect_progress)
+    log.info("pipeline.vlm_detection_complete", job_id=job_id, events=len(all_events))
+
+    # ── Stage: SEGMENTING ─────────────────────────────────────────────
+    store.update_status(job_id, JobStatus.SEGMENTING, progress=60.0)
+
+    # Group events by reel and convert to clip boundaries
+    clips_by_reel: dict[str, list] = {}
+    for spec in reel_specs:
+        wanted_types = set(spec.event_types)
+        reel_events = [e for e in all_events if e.event_type.value in wanted_types]
+        if not reel_events:
+            clips_by_reel[spec.name] = []
+            continue
+
+        # Build EventBoundary objects from the VLM-detected events
+        from src.detection.models import EventBoundary
+        boundaries = [
+            EventBoundary(
+                event_type=e.event_type.value,
+                clip_start_sec=e.timestamp_start,
+                clip_end_sec=e.timestamp_end,
+                confirmed=True,
+                reasoning=e.metadata.get("vlm_reasoning", ""),
+            )
+            for e in reel_events
+        ]
+
+        clips = clips_from_boundaries(
+            boundaries=boundaries,
+            source_file=vf.path,
+            reel_type=spec.name,
+        )
+        clips_by_reel[spec.name] = clips
+        log.info("pipeline.clips_ready", reel_type=spec.name, clips=len(clips))
+
+    # ── Stage: ASSEMBLING ─────────────────────────────────────────────
+    store.update_status(job_id, JobStatus.ASSEMBLING, progress=70.0)
+
+    output_paths: dict[str, str] = {}
+    nonempty_reels = [r for r in clips_by_reel if clips_by_reel[r]]
+    reel_count = max(len(nonempty_reels), 1)
+
+    for idx, reel_name in enumerate(nonempty_reels):
+        clips = clips_by_reel[reel_name]
+        composer = ReelComposer(
+            job_id=job_id,
+            reel_type=reel_name,
+            working_dir=str(working),
+            codec=cfg.OUTPUT_CODEC,
+            crf=int(cfg.OUTPUT_CRF),
+        )
+
+        local_reel = str(working / f"{reel_name}_reel.mp4")
+        ok = composer.compose(clips=clips, output_path=local_reel)
+        if not ok:
+            continue
+
+        try:
+            nas_path = write_reel_to_nas(
+                local_reel, cfg.NAS_OUTPUT_PATH, job_id, reel_name,
+                max_retries=int(cfg.MAX_NAS_RETRY),
+            )
+            output_paths[reel_name] = nas_path
+        except Exception as exc:
+            log.error("pipeline.nas_write_failed", reel_type=reel_name, error=str(exc))
+
+        store.update_status(
+            job_id, JobStatus.ASSEMBLING,
+            progress=70.0 + (idx + 1) / reel_count * 28.0,
+        )
+
+    # ── Final status ────────────────────────────────────────────────
+    reel_names = [s.name for s in reel_specs]
+    if not output_paths and reel_specs:
+        error_msg = (
+            f"No reels produced for {reel_names}. "
+            f"VLM detection found {len(all_events)} events."
+        )
+        store.update_status(job_id, JobStatus.FAILED, progress=100.0, error=error_msg)
+        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_names=reel_names)
+        return {"job_id": job_id, "output_paths": {}}
+
+    store.update_status(job_id, JobStatus.COMPLETE, progress=100.0, output_paths=output_paths)
+    log.info("pipeline.complete", job_id=job_id, reels=list(output_paths.keys()))
+    return {"job_id": job_id, "output_paths": output_paths}
+
+
+def _run_heuristic_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working: Path) -> dict:
+    """Original heuristic detection pipeline (YOLO + tracking + GK identification)."""
+    from src.assembly.composer import ReelComposer
+    from src.assembly.output import write_reel_to_nas, get_output_path, write_job_manifest
+    from src.detection.event_log import EventLog
+    from src.detection.models import EventType, Event
+    from src.detection.pipeline import DetectionPipeline
+    from src.ingestion.models import Job, JobStatus
+    from src.segmentation.clipper import compute_clips_v2
+    from src.segmentation.deduplicator import postprocess_clips
+
+    vf = job.video_file
 
     # ── Stage: DETECTING ──────────────────────────────────────────────────
     store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
@@ -170,6 +305,9 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
     vllm_url = cfg.VLLM_URL if str(cfg.VLLM_ENABLED).lower() in ("1", "true", "yes") else None
     anthropic_key = cfg.ANTHROPIC_API_KEY if str(cfg.VLM_ENABLED).lower() in ("1", "true", "yes") else None
     null_mode = str(cfg.USE_NULL_DETECTOR).lower() in ("1", "true", "yes")
+
+    # Two-tier VLM config
+    tiered_vlm = str(getattr(cfg, 'TIERED_VLM_ENABLED', 'false')).lower() in ("1", "true", "yes")
 
     pipeline = DetectionPipeline(
         source_file=vf.path,
@@ -192,6 +330,19 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         anthropic_model=cfg.VLM_MODEL,
         vlm_min_confidence=float(cfg.VLLM_MIN_CONFIDENCE),
         vlm_enabled=vllm_url is not None or bool(anthropic_key),
+        # Two-tier VLM
+        tiered_vlm=tiered_vlm,
+        tier1_model=str(getattr(cfg, 'TIER1_MODEL', '')) if tiered_vlm else "",
+        tier1_model_path=str(getattr(cfg, 'TIER1_MODEL_PATH', '')) if tiered_vlm else "",
+        tier1_lora_path=str(getattr(cfg, 'TIER1_LORA_PATH', '')) if tiered_vlm else "",
+        tier2_model=str(getattr(cfg, 'TIER2_MODEL', '')) if tiered_vlm else "",
+        tier2_model_path=str(getattr(cfg, 'TIER2_MODEL_PATH', '')) if tiered_vlm else "",
+        tier1_min_confidence=float(getattr(cfg, 'TIER1_MIN_CONFIDENCE', '0.6')),
+        tier1_broken_threshold=float(getattr(cfg, 'TIER1_BROKEN_THRESHOLD', '3.0')),
+        tier2_spot_check_rate=float(getattr(cfg, 'TIER2_SPOT_CHECK_RATE', '0.10')),
+        tier2_escalation_cap=float(getattr(cfg, 'TIER2_ESCALATION_CAP', '0.50')),
+        model_swap_script=str(getattr(cfg, 'MODEL_SWAP_SCRIPT', '')),
+        model_swap_timeout_sec=int(getattr(cfg, 'MODEL_SWAP_TIMEOUT_SEC', '120')),
         # General
         working_dir=str(working),
         min_event_confidence=float(cfg.MIN_EVENT_CONFIDENCE),
