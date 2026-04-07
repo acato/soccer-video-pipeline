@@ -42,15 +42,15 @@ fi
 
 # ── Step 1: Stop current vLLM ───────────────────────────────────────────
 echo "[swap] Stopping current vLLM..."
-ssh "aless@${VLLM_HOST}" "pkill -f 'vllm.entrypoints' 2>/dev/null || true" 2>/dev/null || true
+ssh llm "pkill -f 'vllm.entrypoints' 2>/dev/null || true" 2>/dev/null || true
 sleep 3
 
 # Kill zombie GPU workers
-ssh "aless@${VLLM_HOST}" "pkill -9 -f 'VLLM::Worker' 2>/dev/null || true" 2>/dev/null || true
+ssh llm "pkill -9 -f 'VLLM::Worker' 2>/dev/null || true" 2>/dev/null || true
 sleep 2
 
 # Verify GPUs are free
-GPU_MEM=$(ssh "aless@${VLLM_HOST}" "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | awk '{s+=\$1}END{print s}'" || echo "?")
+GPU_MEM=$(ssh llm "nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | awk '{s+=\$1}END{print s}'" || echo "?")
 echo "[swap] GPU memory after cleanup: ${GPU_MEM}MB"
 
 # ── Step 2: Build vLLM command (tier-specific GPU config) ──────────────
@@ -87,7 +87,7 @@ fi
 
 # ── Step 3: Start new vLLM via run-vllm.sh wrapper ─────────────────────
 echo "[swap] Starting vLLM: ${SWAP_TARGET_NAME}"
-ssh "aless@${VLLM_HOST}" "nohup bash -c 'source ~/vllm-env/bin/activate && ~/run-vllm.sh python3 -m vllm.entrypoints.openai.api_server ${VLLM_ARGS}' > /tmp/vllm-swap.log 2>&1 &"
+ssh llm "nohup bash -c 'source ~/vllm-env/bin/activate && ~/run-vllm.sh python3 -m vllm.entrypoints.openai.api_server ${VLLM_ARGS}' > /tmp/vllm-swap.log 2>&1 &"
 
 # ── Step 4: Wait for health endpoint ────────────────────────────────────
 echo "[swap] Waiting for vLLM health..."
@@ -116,5 +116,5 @@ done
 
 echo "[swap] ERROR: vLLM did not start within ${MAX_WAIT}s"
 echo "[swap] Last log:"
-ssh "aless@${VLLM_HOST}" "tail -20 /tmp/vllm-swap.log" 2>/dev/null || true
+ssh llm "tail -20 /tmp/vllm-swap.log" 2>/dev/null || true
 exit 1
