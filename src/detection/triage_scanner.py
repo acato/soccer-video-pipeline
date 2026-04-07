@@ -3,10 +3,12 @@
 
 Scans the entire game with the 8B model using a sliding window of N frames
 spanning a configurable time span. Produces candidate time windows where
-"something is happening" (ATTACK, SHOT, SAVE, etc.) for detailed 32B review.
+"something is happening" for detailed 32B review.
 
-The 8B model can't reliably classify specific set pieces (corners, throw-ins)
-but detects attacking play and shots near goals/saves with good recall.
+Uses a simple 3-label taxonomy (EVENT/PLAY/DEAD) because 8B models can't
+reliably distinguish specific set piece types. The 32B pass does fine-grained
+classification. The 8B just needs to separate "something happened" from
+"open midfield play" and "dead ball / stoppage".
 """
 from __future__ import annotations
 
@@ -21,19 +23,14 @@ from src.detection.frame_sampler import FrameSampler, SampledFrame
 
 log = structlog.get_logger(__name__)
 
-# Labels the 8B model can assign. Labels that indicate "something happening"
-# will be flagged as candidates for the 32B pass.
-TRIAGE_LABELS = [
-    "GOAL", "SAVE", "SHOT", "CORNER", "FREE_KICK",
-    "THROW_IN", "GOAL_KICK", "KICKOFF", "PENALTY",
-    "ATTACK", "PLAY", "DEAD",
-]
+# Simple 3-label taxonomy — 8B only decides "is something happening?"
+TRIAGE_LABELS = ["EVENT", "PLAY", "DEAD"]
 
 # Labels that trigger a candidate window for 32B review
-ACTIVE_LABELS = frozenset({
-    "GOAL", "SAVE", "SHOT", "CORNER", "FREE_KICK",
-    "THROW_IN", "GOAL_KICK", "KICKOFF", "PENALTY", "ATTACK",
-})
+ACTIVE_LABELS = frozenset({"EVENT"})
+
+
+VALID_BALL_ZONES = frozenset({"left_third", "middle", "right_third"})
 
 
 @dataclass
@@ -43,6 +40,7 @@ class TriageFlag:
     label: str          # 8B classification label
     window_start: float # Start of the multi-frame window
     window_end: float   # End of the multi-frame window
+    ball_zone: str = "middle"  # Where the ball/action is on the pitch
 
 
 @dataclass
@@ -66,23 +64,24 @@ TRIAGE_PROMPT = """\
 You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames spanning {span_sec:.0f} seconds of play.
 
-Classify what is happening in these frames. Choose ONE label:
+Classify what is happening using ONE label:
 
-- GOAL: Ball clearly entering the net, or immediate celebration after scoring
-- SAVE: Goalkeeper diving/catching/parrying a shot
-- SHOT: A player shooting toward goal (but no goal or save visible)
-- CORNER: Corner kick being set up or taken (player at corner flag)
-- FREE_KICK: Free kick being set up or taken
-- THROW_IN: Throw-in being taken from the sideline
-- GOAL_KICK: Goal kick being taken from the 6-yard box
-- KICKOFF: Kick-off from the center circle
-- PENALTY: Penalty kick setup or execution
-- ATTACK: Attacking play, ball moving toward a goal, dangerous buildup
-- PLAY: Normal midfield play, nothing dangerous
-- DEAD: Dead ball, stoppage, replays, graphics, halftime
+- EVENT: Something specific is happening — a set piece (corner kick, throw-in, \
+goal kick, free kick, penalty), a shot, a save, a goal, a goalkeeper catch, \
+a kickoff, or any restart of play. Look for: players lined up at the sideline \
+for a throw-in, a player at the corner flag, the ball in the goalkeeper's \
+hands, players forming a wall for a free kick, the ball in or near the goal, \
+celebrations, or the ball being placed on the ground for a restart.
+- PLAY: Normal open play — midfield passing, dribbling, running with the ball. \
+No set piece, shot, or goalkeeper action visible.
+- DEAD: Dead ball with no restart visible, stoppage, referee talking, replays, \
+graphics overlay, halftime, or players milling around.
 
 Respond with ONLY a JSON object:
-{{"label": "PLAY", "confidence": 0.8}}
+{{"label": "PLAY", "ball_zone": "middle"}}
+
+ball_zone should be one of: "left_third", "middle", "right_third" \
+(based on where the ball/action is on the pitch from the camera's perspective).
 """
 
 
@@ -161,13 +160,14 @@ class TriageScanner:
             frames = [frame_by_ts[t] for t in frame_times if t in frame_by_ts]
 
             if len(frames) >= 3:  # Need at least 3 frames
-                label, conf = self._classify_window(frames)
+                label, ball_zone = self._classify_window(frames)
                 if label in ACTIVE_LABELS:
                     flags.append(TriageFlag(
                         center_sec=center,
                         label=label,
                         window_start=window_start,
                         window_end=window_end,
+                        ball_zone=ball_zone,
                     ))
 
             window_idx += 1
@@ -180,11 +180,11 @@ class TriageScanner:
                  total_windows=window_idx, flags=len(flags))
         return flags
 
-    def _classify_window(self, frames: list[SampledFrame]) -> tuple[str, float]:
+    def _classify_window(self, frames: list[SampledFrame]) -> tuple[str, str]:
         """Send a multi-frame window to the 8B model for classification.
 
         Returns:
-            (label, confidence) tuple.
+            (label, ball_zone) tuple.
         """
         import httpx
 
@@ -218,17 +218,21 @@ class TriageScanner:
             if r.status_code != 200:
                 log.warning("triage_scanner.vllm_error",
                             status=r.status_code, body=r.text[:200])
-                return ("PLAY", 0.0)
+                return ("PLAY", "middle")
 
             text = r.json()["choices"][0]["message"]["content"].strip()
             return self._parse_response(text)
 
         except Exception as exc:
             log.warning("triage_scanner.request_error", error=str(exc))
-            return ("PLAY", 0.0)
+            return ("PLAY", "middle")
 
-    def _parse_response(self, text: str) -> tuple[str, float]:
-        """Parse the 8B model's JSON response."""
+    def _parse_response(self, text: str) -> tuple[str, str]:
+        """Parse the 8B model's JSON response.
+
+        Returns:
+            (label, ball_zone) tuple.
+        """
         # Strip markdown fences if present
         if text.startswith("```"):
             lines = text.split("\n")
@@ -238,30 +242,40 @@ class TriageScanner:
         try:
             data = json.loads(text)
             label = data.get("label", "PLAY").upper()
-            conf = float(data.get("confidence", 0.5))
+            ball_zone = data.get("ball_zone", "middle")
             if label not in TRIAGE_LABELS:
                 label = "PLAY"
-            return (label, conf)
+            if ball_zone not in VALID_BALL_ZONES:
+                ball_zone = "middle"
+            return (label, ball_zone)
         except (json.JSONDecodeError, ValueError, TypeError):
             # Try to extract label from free text
             text_upper = text.upper()
             for label in TRIAGE_LABELS:
                 if label in text_upper:
-                    return (label, 0.5)
-            return ("PLAY", 0.0)
+                    return (label, "middle")
+            return ("PLAY", "middle")
 
 
 def merge_flags(
     flags: list[TriageFlag],
-    merge_gap_sec: float = 15.0,
-    pad_sec: float = 10.0,
+    merge_gap_sec: float = 4.0,
+    pad_sec: float = 3.0,
+    max_window_sec: float = 60.0,
 ) -> list[CandidateWindow]:
     """Merge nearby triage flags into candidate windows for 32B review.
 
+    Merging rules:
+      - Flags closer than ``merge_gap_sec`` are merged.
+      - Ball-zone change forces a window break (different area of the pitch
+        likely means a different event).
+      - Windows exceeding ``max_window_sec`` are split at the largest gap.
+
     Args:
-        flags: Sorted list of triage flags from the 8B scan.
+        flags: List of triage flags from the 8B scan.
         merge_gap_sec: Maximum gap between flags to merge them.
         pad_sec: Padding added before first and after last flag in a window.
+        max_window_sec: Hard ceiling on window duration (split if exceeded).
 
     Returns:
         List of CandidateWindow with merged time ranges.
@@ -270,33 +284,79 @@ def merge_flags(
         return []
 
     sorted_flags = sorted(flags, key=lambda f: f.center_sec)
-    windows: list[CandidateWindow] = []
-    current = CandidateWindow(
-        start_sec=max(0, sorted_flags[0].window_start - pad_sec),
-        end_sec=sorted_flags[0].window_end + pad_sec,
-        labels=[sorted_flags[0].label],
-        flags=[sorted_flags[0]],
-    )
+
+    # First pass: group flags, breaking on gap or ball_zone change
+    groups: list[list[TriageFlag]] = [[sorted_flags[0]]]
 
     for flag in sorted_flags[1:]:
-        if flag.window_start - current.end_sec <= merge_gap_sec:
-            # Merge: extend the window
-            current.end_sec = flag.window_end + pad_sec
-            current.labels.append(flag.label)
-            current.flags.append(flag)
-        else:
-            # Gap too large: start new window
-            windows.append(current)
-            current = CandidateWindow(
-                start_sec=max(0, flag.window_start - pad_sec),
-                end_sec=flag.window_end + pad_sec,
-                labels=[flag.label],
-                flags=[flag],
-            )
+        prev = groups[-1][-1]
+        gap = flag.window_start - prev.window_end
+        zone_changed = flag.ball_zone != prev.ball_zone
 
-    windows.append(current)
+        if gap > merge_gap_sec or zone_changed:
+            groups.append([flag])
+        else:
+            groups[-1].append(flag)
+
+    # Second pass: convert groups to windows, split oversized ones
+    windows: list[CandidateWindow] = []
+    for group in groups:
+        win = _group_to_window(group, pad_sec)
+        if win.duration_sec <= max_window_sec:
+            windows.append(win)
+        else:
+            windows.extend(_split_oversized(group, pad_sec, max_window_sec))
 
     log.info("triage_scanner.merge_complete",
              input_flags=len(flags), output_windows=len(windows),
              total_review_sec=sum(w.duration_sec for w in windows))
     return windows
+
+
+def _group_to_window(
+    group: list[TriageFlag], pad_sec: float
+) -> CandidateWindow:
+    """Convert a list of flags into a single CandidateWindow."""
+    return CandidateWindow(
+        start_sec=max(0, group[0].window_start - pad_sec),
+        end_sec=group[-1].window_end + pad_sec,
+        labels=[f.label for f in group],
+        flags=list(group),
+    )
+
+
+def _split_oversized(
+    group: list[TriageFlag],
+    pad_sec: float,
+    max_window_sec: float,
+) -> list[CandidateWindow]:
+    """Split an oversized group of flags at the largest internal gap.
+
+    Recursively splits until all windows are under max_window_sec.
+    """
+    if len(group) <= 1:
+        return [_group_to_window(group, pad_sec)]
+
+    # Find largest gap
+    best_gap = -1.0
+    best_idx = 0
+    for i in range(1, len(group)):
+        gap = group[i].window_start - group[i - 1].window_end
+        if gap > best_gap:
+            best_gap = gap
+            best_idx = i
+
+    left = group[:best_idx]
+    right = group[best_idx:]
+    result: list[CandidateWindow] = []
+
+    for sub in (left, right):
+        if not sub:
+            continue
+        win = _group_to_window(sub, pad_sec)
+        if win.duration_sec <= max_window_sec:
+            result.append(win)
+        else:
+            result.extend(_split_oversized(sub, pad_sec, max_window_sec))
+
+    return result

@@ -37,30 +37,36 @@ log = structlog.get_logger(__name__)
 # 32B classification prompt — sent with dense frames from a candidate window
 _CLASSIFY_PROMPT = """\
 You are analyzing a soccer match from a sideline camera. \
-Here are {n_frames} frames at 1-second intervals from a {duration:.0f}-second window \
+Here are {n_frames} frames from a {duration:.0f}-second window \
 where our triage model flagged potential events: {triage_labels}.
 
-Analyze these frames and identify ALL distinct events in this window. \
-For each event, provide the event type and approximate timestamp boundaries.
+Analyze these frames and identify ALL distinct events. Events happen \
+frequently in soccer — expect 1-3 events in a 20-second window. \
+List every event you can identify, even if you're only moderately confident.
 
-Valid event types:
-- goal: Ball entering the net or immediate post-goal celebration
-- catch: Goalkeeper catching/collecting the ball cleanly
-- shot_stop_diving: Goalkeeper diving to stop a shot
-- shot_stop_standing: Goalkeeper blocking a shot while standing
-- shot_on_target: Shot heading toward goal (that the GK then deals with)
-- shot_off_target: Shot missing the goal
-- corner_kick: Corner kick being taken (player at corner flag/arc)
-- goal_kick: Goal kick from the 6-yard box
-- throw_in: Throw-in from the sideline
-- free_kick_shot: Free kick taken as a shot on goal
-- penalty: Penalty kick
-- kickoff: Kick-off from center circle
-- punch: Goalkeeper punching the ball away
+Event types and their visual signatures:
+- goal: Ball crossing the goal line into the net, or players celebrating with arms raised
+- catch: Goalkeeper holding the ball against chest/body with both hands after collecting it
+- shot_stop_diving: Goalkeeper horizontal/airborne, diving to one side to deflect or stop a shot
+- shot_stop_standing: Goalkeeper blocking a shot while staying mostly upright
+- shot_on_target: A player in a shooting stance, leg drawn back, ball traveling toward the goal
+- shot_off_target: Shot that misses wide or high — ball trajectory away from goal frame
+- corner_kick: Player standing at the corner flag/arc, ball on the ground at the corner; \
+other players clustered in/near the penalty area
+- goal_kick: Goalkeeper or defender placing/kicking the ball from inside the 6-yard box, \
+with opposition players retreated
+- throw_in: Player holding the ball with BOTH HANDS above/behind their head at the sideline, \
+feet on or behind the touchline
+- free_kick_shot: Ball placed on ground with defensive wall of players standing in a line; \
+the kicker shoots toward goal
+- penalty: All players outside the penalty area except the kicker and goalkeeper; \
+ball on the penalty spot
+- kickoff: Ball placed at the center circle dot; two players near the center circle
+- punch: Goalkeeper punching the ball away with a fist, usually in a crowded penalty area
 
 Respond with ONLY a JSON array of events (empty array [] if no clear events):
-[{{"event_type": "catch", "start_sec": 125.0, "end_sec": 135.0, \
-"confidence": 0.8, "reasoning": "GK in yellow collects cross at 130s"}}]
+[{{"event_type": "catch", "start_sec": 125.0, "end_sec": 130.0, \
+"confidence": 0.8, "reasoning": "GK in yellow collects cross at 127s"}}]
 """
 
 
@@ -84,13 +90,15 @@ class DualPassConfig:
     window_span_sec: float = 10.0
     step_sec: float = 6.0
 
-    # Candidate merging
-    merge_gap_sec: float = 15.0
-    merge_pad_sec: float = 10.0
+    # Candidate merging (tight — ball_zone + gap splitting)
+    merge_gap_sec: float = 4.0
+    merge_pad_sec: float = 3.0
+    max_window_sec: float = 60.0
 
     # 32B classification
-    classify_frame_interval: float = 1.0  # Dense frames at 1fps for 32B
-    classify_max_frames: int = 30  # Max frames per 32B call
+    classify_max_frames: int = 45  # Max frames per 32B call
+    sub_window_sec: float = 20.0  # Sub-window size for chunking
+    sub_window_overlap_sec: float = 5.0  # Overlap between sub-windows
 
     # Model swap
     swap_script: str = ""  # Path to swap_vllm_model.sh
@@ -169,6 +177,7 @@ class DualPassDetector:
             flags,
             merge_gap_sec=self._cfg.merge_gap_sec,
             pad_sec=self._cfg.merge_pad_sec,
+            max_window_sec=self._cfg.max_window_sec,
         )
 
         # Save diagnostics
@@ -261,17 +270,70 @@ class DualPassDetector:
             raise RuntimeError("Model swap timed out")
 
     def _classify_window(self, window: CandidateWindow) -> list[Event]:
-        """Send dense frames from a candidate window to the 32B model.
+        """Classify a candidate window using sub-window chunking.
 
-        Returns a list of Event objects detected in this window.
+        Windows >sub_window_sec are split into overlapping sub-windows,
+        each classified independently. Results are deduplicated.
+
+        Frame density adapts to sub-window size:
+          - ≤30s: 1fps (every frame)
+          - >30s: 1 frame per 2s
         """
+        sub_size = self._cfg.sub_window_sec
+        overlap = self._cfg.sub_window_overlap_sec
+
+        # Build sub-window boundaries
+        if window.duration_sec <= sub_size + overlap:
+            # Small enough — single call
+            sub_windows = [(window.start_sec, window.end_sec)]
+        else:
+            step = sub_size - overlap
+            sub_windows = []
+            t = window.start_sec
+            while t < window.end_sec:
+                end = min(t + sub_size, window.end_sec)
+                sub_windows.append((t, end))
+                t += step
+                if end >= window.end_sec:
+                    break
+
+        log.info("dual_pass.classify_sub_windows",
+                 window_start=window.start_sec,
+                 window_dur=window.duration_sec,
+                 n_sub=len(sub_windows))
+
+        all_events: list[Event] = []
+        for sw_start, sw_end in sub_windows:
+            sw_dur = sw_end - sw_start
+            # Adaptive frame interval
+            interval = 1.0 if sw_dur <= 30 else 2.0
+
+            events = self._classify_sub_window(
+                start_sec=sw_start,
+                end_sec=sw_end,
+                interval_sec=interval,
+                triage_labels=list(set(window.labels)),
+            )
+            all_events.extend(events)
+
+        return all_events
+
+    def _classify_sub_window(
+        self,
+        start_sec: float,
+        end_sec: float,
+        interval_sec: float,
+        triage_labels: list[str],
+    ) -> list[Event]:
+        """Send a single sub-window to the 32B model for classification."""
         import httpx
 
-        # Extract frames at 1fps for the window
-        frames = self._sampler.sample(
-            duration_sec=window.end_sec,
-            interval_sec=self._cfg.classify_frame_interval,
-            start_sec=window.start_sec,
+        duration = end_sec - start_sec
+        frames = self._sampler.sample_range(
+            center_sec=(start_sec + end_sec) / 2,
+            window_sec=duration / 2,
+            interval_sec=interval_sec,
+            duration_sec=self._video_duration,
         )
 
         if not frames:
@@ -285,8 +347,8 @@ class DualPassDetector:
 
         prompt = _CLASSIFY_PROMPT.format(
             n_frames=len(frames),
-            duration=window.duration_sec,
-            triage_labels=", ".join(set(window.labels)),
+            duration=duration,
+            triage_labels=", ".join(triage_labels),
         )
 
         content: list[dict] = []
@@ -318,15 +380,20 @@ class DualPassDetector:
             if r.status_code != 200:
                 log.warning("dual_pass.classify_error",
                             status=r.status_code, body=r.text[:200],
-                            window_start=window.start_sec)
+                            sub_start=start_sec)
                 return []
 
             text = r.json()["choices"][0]["message"]["content"].strip()
-            return self._parse_classify_response(text, window)
+            # Create a temporary CandidateWindow for parsing
+            tmp_window = CandidateWindow(
+                start_sec=start_sec, end_sec=end_sec,
+                labels=triage_labels, flags=[],
+            )
+            return self._parse_classify_response(text, tmp_window)
 
         except Exception as exc:
             log.warning("dual_pass.classify_exception",
-                        error=str(exc), window_start=window.start_sec)
+                        error=str(exc), sub_start=start_sec)
             return []
 
     def _parse_classify_response(
@@ -448,6 +515,7 @@ class DualPassDetector:
                 json.dump({
                     "center_sec": flag.center_sec,
                     "label": flag.label,
+                    "ball_zone": flag.ball_zone,
                     "window_start": flag.window_start,
                     "window_end": flag.window_end,
                 }, f)
