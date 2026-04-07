@@ -66,12 +66,20 @@ class DetectedEvent:
     reasoning: str
 
 
-def load_ground_truth(half2_video_start: float = 3916.0) -> list[GTEvent]:
+def load_ground_truth(
+    half2_video_start: float = 3916.0,
+    half2_game_offset: float = 2700.0,
+) -> list[GTEvent]:
     """Load ground truth events from NAS JSON files.
 
+    The analytics JSON uses cumulative game clock (event_time in ms from
+    kickoff).  The 2nd half JSON does NOT reset to zero — times start around
+    2700000ms (45:00 game time).
+
     Args:
-        half2_video_start: Video timestamp where 2nd half begins.
-                          Rush game: halftime at ~65:16 = 3916s in video.
+        half2_video_start: Video timestamp where 2nd half kickoff occurs.
+        half2_game_offset: Game-clock time (seconds) at 2nd half start.
+                          Used to convert 2H game_sec to elapsed-in-half.
     """
     gt_events = []
 
@@ -105,7 +113,11 @@ def load_ground_truth(half2_video_start: float = 3916.0) -> list[GTEvent]:
                 if half_idx == 0:
                     video_sec = game_sec + VIDEO_OFFSET
                 else:
-                    video_sec = game_sec + half2_video_start
+                    # game_sec is cumulative clock (e.g. 2723s = 45:23);
+                    # subtract the 2H game-clock offset to get elapsed
+                    # time within the 2nd half, then add video offset.
+                    elapsed_in_half = game_sec - half2_game_offset
+                    video_sec = elapsed_in_half + half2_video_start
 
                 gt_events.append(GTEvent(
                     half=half_idx,
@@ -297,13 +309,19 @@ def main():
                         help="Matching tolerance in seconds (default: 15.0)")
     parser.add_argument("--half2-start", type=float, default=3916.0,
                         help="Video timestamp where 2nd half starts (default: 3916.0)")
+    parser.add_argument("--half2-game-offset", type=float, default=2700.0,
+                        help="Game-clock seconds at 2nd half start (default: 2700.0)")
     args = parser.parse_args()
 
     global VIDEO_OFFSET
     VIDEO_OFFSET = args.video_offset
 
-    print(f"Loading GT (video_offset={VIDEO_OFFSET}s, half2_start={args.half2_start}s)...")
-    gt_events = load_ground_truth(half2_video_start=args.half2_start)
+    print(f"Loading GT (video_offset={VIDEO_OFFSET}s, half2_start={args.half2_start}s, "
+          f"half2_game_offset={args.half2_game_offset}s)...")
+    gt_events = load_ground_truth(
+        half2_video_start=args.half2_start,
+        half2_game_offset=args.half2_game_offset,
+    )
     print(f"  GT events: {len(gt_events)}")
 
     gt_counts = Counter(e.event_type for e in gt_events)
