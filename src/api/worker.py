@@ -148,7 +148,10 @@ def _run_pipeline(job_id: str, store: Any, cfg: Any) -> dict:
         store.update_status(job_id, JobStatus.FAILED, progress=0.0, error=error_msg)
         return {"job_id": job_id, "output_paths": {}, "error": error_msg}
 
-    # ── Route: VLM-first or heuristic pipeline ─────────────────────────
+    # ── Route: dual-pass, VLM-first, or heuristic pipeline ──────────────
+    dual_pass = str(cfg.DUAL_PASS_ENABLED).lower() in ("1", "true", "yes")
+    if dual_pass:
+        return _run_dual_pass_pipeline(job_id, job, store, cfg, working)
     use_vlm = str(cfg.USE_VLM_DETECTION).lower() in ("1", "true", "yes")
     if use_vlm:
         return _run_vlm_pipeline(job_id, job, store, cfg, working)
@@ -267,6 +270,140 @@ def _run_vlm_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working: Path
         error_msg = (
             f"No reels produced for {reel_names}. "
             f"VLM detection found {len(all_events)} events."
+        )
+        store.update_status(job_id, JobStatus.FAILED, progress=100.0, error=error_msg)
+        log.warning("pipeline.no_reels_produced", job_id=job_id, reel_names=reel_names)
+        return {"job_id": job_id, "output_paths": {}}
+
+    store.update_status(job_id, JobStatus.COMPLETE, progress=100.0, output_paths=output_paths)
+    log.info("pipeline.complete", job_id=job_id, reels=list(output_paths.keys()))
+    return {"job_id": job_id, "output_paths": output_paths}
+
+
+def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working: Path) -> dict:
+    """Dual-pass VLM pipeline: 8B triage → model swap → 32B classification."""
+    from src.assembly.composer import ReelComposer
+    from src.assembly.output import write_reel_to_nas
+    from src.detection.dual_pass_detector import DualPassConfig, DualPassDetector
+    from src.detection.event_log import EventLog
+    from src.ingestion.models import JobStatus
+    from src.segmentation.clipper import compute_clips_v2
+    from src.segmentation.deduplicator import postprocess_clips
+
+    vf = job.video_file
+
+    # ── Stage: DETECTING (dual-pass VLM) ─────────────────────────────────
+    store.update_status(job_id, JobStatus.DETECTING, progress=5.0)
+
+    dp_config = DualPassConfig(
+        vllm_url=cfg.VLLM_URL,
+        tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
+        tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
+        tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,
+        tier2_model_path=cfg.DUAL_PASS_TIER2_PATH,
+        step_sec=float(cfg.DUAL_PASS_TRIAGE_STEP),
+        swap_script=cfg.DUAL_PASS_SWAP_SCRIPT or "",
+    )
+
+    detector = DualPassDetector(
+        config=dp_config,
+        source_file=vf.path,
+        video_duration=vf.duration_sec,
+        job_id=job_id,
+        working_dir=str(working),
+    )
+
+    def on_detect_progress(pct: float):
+        store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 55.0)
+
+    all_events = detector.detect(progress_callback=on_detect_progress)
+
+    # Write events to event log
+    event_log = EventLog(working / "events.jsonl")
+    event_log.clear()
+    for ev in all_events:
+        event_log.append(ev)
+
+    log.info("pipeline.dual_pass_detection_complete",
+             job_id=job_id, events=len(all_events))
+
+    # ── Stage: SEGMENTING ────────────────────────────────────────────────
+    store.update_status(job_id, JobStatus.SEGMENTING, progress=60.0)
+
+    reel_specs = job.get_reel_specs()
+    event_conf_map = {e.event_id: e.confidence for e in all_events}
+
+    from src.detection.models import EventType as ET
+    clips_by_reel: dict[str, list] = {}
+    for spec in reel_specs:
+        wanted = set()
+        for t in spec.event_types:
+            try:
+                wanted.add(ET(t))
+            except ValueError:
+                log.warning("pipeline.unknown_event_type", event_type=t, reel=spec.name)
+
+        filtered = [e for e in all_events if e.event_type in wanted]
+        if not filtered:
+            clips_by_reel[spec.name] = []
+            continue
+
+        clips = compute_clips_v2(
+            events=filtered,
+            video_duration=vf.duration_sec,
+            reel_name=spec.name,
+        )
+        clips = postprocess_clips(
+            clips,
+            reel_type=spec.name,
+            max_reel_duration_sec=spec.max_reel_duration_sec,
+            event_confidence_map=event_conf_map,
+        )
+        clips_by_reel[spec.name] = clips
+        log.info("pipeline.clips_ready", reel_type=spec.name, clips=len(clips))
+
+    # ── Stage: ASSEMBLING ────────────────────────────────────────────────
+    store.update_status(job_id, JobStatus.ASSEMBLING, progress=70.0)
+
+    output_paths: dict[str, str] = {}
+    nonempty_reels = [r for r in clips_by_reel if clips_by_reel[r]]
+    reel_count = max(len(nonempty_reels), 1)
+
+    for idx, reel_name in enumerate(nonempty_reels):
+        clips = clips_by_reel[reel_name]
+        composer = ReelComposer(
+            job_id=job_id,
+            reel_type=reel_name,
+            working_dir=str(working),
+            codec=cfg.OUTPUT_CODEC,
+            crf=int(cfg.OUTPUT_CRF),
+        )
+
+        local_reel = str(working / f"{reel_name}_reel.mp4")
+        ok = composer.compose(clips=clips, output_path=local_reel)
+        if not ok:
+            continue
+
+        try:
+            nas_path = write_reel_to_nas(
+                local_reel, cfg.NAS_OUTPUT_PATH, job_id, reel_name,
+                max_retries=int(cfg.MAX_NAS_RETRY),
+            )
+            output_paths[reel_name] = nas_path
+        except Exception as exc:
+            log.error("pipeline.nas_write_failed", reel_type=reel_name, error=str(exc))
+
+        store.update_status(
+            job_id, JobStatus.ASSEMBLING,
+            progress=70.0 + (idx + 1) / reel_count * 28.0,
+        )
+
+    # ── Final status ─────────────────────────────────────────────────────
+    reel_names = [s.name for s in reel_specs]
+    if not output_paths and reel_specs:
+        error_msg = (
+            f"No reels produced for {reel_names}. "
+            f"Dual-pass detection found {len(all_events)} events."
         )
         store.update_status(job_id, JobStatus.FAILED, progress=100.0, error=error_msg)
         log.warning("pipeline.no_reels_produced", job_id=job_id, reel_names=reel_names)

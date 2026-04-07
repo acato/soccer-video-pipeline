@@ -168,6 +168,30 @@ MODEL_SWAP_TIMEOUT_SEC: int = _int("MODEL_SWAP_TIMEOUT_SEC", 120)
 """Max seconds to wait for model swap to complete."""
 
 # ---------------------------------------------------------------------------
+# Dual-Pass VLM Detection (8B triage + 32B classify)
+# ---------------------------------------------------------------------------
+DUAL_PASS_ENABLED: bool = _bool("DUAL_PASS_ENABLED", False)
+"""Enable dual-pass VLM: 8B triage scan → model swap → 32B classify."""
+
+DUAL_PASS_TIER1_NAME: str = _opt("DUAL_PASS_TIER1_NAME", "qwen3-vl-8b")
+"""8B model --served-model-name for triage pass."""
+
+DUAL_PASS_TIER1_PATH: str = _opt("DUAL_PASS_TIER1_PATH", "Qwen/Qwen3-VL-8B-Instruct")
+"""8B model HuggingFace path for triage pass."""
+
+DUAL_PASS_TIER2_NAME: str = _opt("DUAL_PASS_TIER2_NAME", "qwen3-vl-32b-fp8")
+"""32B model --served-model-name for classification pass."""
+
+DUAL_PASS_TIER2_PATH: str = _opt("DUAL_PASS_TIER2_PATH", "Qwen/Qwen3-VL-32B-Instruct-FP8")
+"""32B model HuggingFace path for classification pass."""
+
+DUAL_PASS_TRIAGE_STEP: float = _float("DUAL_PASS_TRIAGE_STEP", 6.0)
+"""Seconds between sliding window steps in 8B triage scan."""
+
+DUAL_PASS_SWAP_SCRIPT: str = _opt("DUAL_PASS_SWAP_SCRIPT", "")
+"""Path to model swap script (defaults to scripts/swap_vllm_model.sh)."""
+
+# ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
 OUTPUT_CODEC: str = _opt("OUTPUT_CODEC", "copy")
@@ -289,6 +313,14 @@ class _Config:
             "TIER2_ESCALATION_CAP": ("TIER2_ESCALATION_CAP", "0.50"),
             "MODEL_SWAP_SCRIPT": ("MODEL_SWAP_SCRIPT", ""),
             "MODEL_SWAP_TIMEOUT_SEC": ("MODEL_SWAP_TIMEOUT_SEC", "120"),
+            # Dual-pass VLM
+            "DUAL_PASS_ENABLED": ("DUAL_PASS_ENABLED", "false"),
+            "DUAL_PASS_TIER1_NAME": ("DUAL_PASS_TIER1_NAME", "qwen3-vl-8b"),
+            "DUAL_PASS_TIER1_PATH": ("DUAL_PASS_TIER1_PATH", "Qwen/Qwen3-VL-8B-Instruct"),
+            "DUAL_PASS_TIER2_NAME": ("DUAL_PASS_TIER2_NAME", "qwen3-vl-32b-fp8"),
+            "DUAL_PASS_TIER2_PATH": ("DUAL_PASS_TIER2_PATH", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
+            "DUAL_PASS_TRIAGE_STEP": ("DUAL_PASS_TRIAGE_STEP", "6.0"),
+            "DUAL_PASS_SWAP_SCRIPT": ("DUAL_PASS_SWAP_SCRIPT", ""),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

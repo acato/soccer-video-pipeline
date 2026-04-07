@@ -276,6 +276,37 @@ def resolve_jersey_color(name: str) -> tuple[float, float, float]:
     return JERSEY_COLOR_PALETTE[key]
 
 
+# ---------------------------------------------------------------------------
+# VLM detection pipeline data types
+# ---------------------------------------------------------------------------
+
+class GameState(str, Enum):
+    """Game state classification from VLM scene analysis."""
+    ACTIVE_PLAY = "active_play"
+    CORNER_KICK = "corner_kick"
+    GOAL_KICK   = "goal_kick"
+    STOPPAGE    = "stoppage"
+    REPLAY      = "replay"
+    OTHER       = "other"
+
+
+@dataclass
+class SceneLabel:
+    """VLM classification result for a single frame."""
+    timestamp_sec: float
+    game_state: GameState
+
+
+@dataclass
+class EventBoundary:
+    """Precise event boundaries from VLM refinement pass."""
+    event_type: str
+    clip_start_sec: float
+    clip_end_sec: float
+    confirmed: bool
+    reasoning: str = ""
+
+
 class BoundingBox(BaseModel):
     """Normalized bounding box (0.0–1.0 relative to frame dimensions)."""
     x: float
