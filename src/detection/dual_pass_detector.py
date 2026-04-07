@@ -40,34 +40,63 @@ You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames from a {duration:.0f}-second window \
 where our triage model flagged potential events: {triage_labels}.
 
-Analyze these frames and identify ALL distinct events. Events happen \
-frequently in soccer — expect 1-3 events in a 20-second window. \
-List every event you can identify, even if you're only moderately confident.
+Analyze these frames carefully. Only report events you are CONFIDENT about. \
+If a window shows nothing notable, return an empty array [].
 
-Event types and their visual signatures:
-- goal: Ball crossing the goal line into the net, or players celebrating with arms raised
-- catch: Goalkeeper holding the ball against chest/body with both hands after collecting it
-- shot_stop_diving: Goalkeeper horizontal/airborne, diving to one side to deflect or stop a shot
-- shot_stop_standing: Goalkeeper blocking a shot while staying mostly upright
-- shot_on_target: A player in a shooting stance, leg drawn back, ball traveling toward the goal
-- shot_off_target: Shot that misses wide or high — ball trajectory away from goal frame
-- corner_kick: Player standing at the corner flag/arc, ball on the ground at the corner; \
-other players clustered in/near the penalty area
-- goal_kick: Goalkeeper or defender placing/kicking the ball from inside the 6-yard box, \
-with opposition players retreated
-- throw_in: Player holding the ball with BOTH HANDS above/behind their head at the sideline, \
-feet on or behind the touchline
-- free_kick_shot: Ball placed on ground with defensive wall of players standing in a line; \
-the kicker shoots toward goal
-- penalty: All players outside the penalty area except the kicker and goalkeeper; \
-ball on the penalty spot
-- kickoff: Ball placed at the center circle dot; two players near the center circle
-- punch: Goalkeeper punching the ball away with a fist, usually in a crowded penalty area
+Valid event types (choose ONLY from this list):
+{valid_types_block}
 
-Respond with ONLY a JSON array of events (empty array [] if no clear events):
+GOALKEEPER DECISION TREE — use the OUTCOME, not the technique:
+- catch: The GK ends up HOLDING the ball securely (hugging it, cradling it). \
+If the GK dove, jumped, or stood to collect it, it is still a "catch" as long \
+as they SECURE the ball. This is the most common GK event.
+- shot_stop_diving: The GK dives/deflects but does NOT secure the ball — \
+it rebounds to another player, goes out of play, etc.
+- punch: The GK deliberately strikes the ball away with a FIST. Clearly a punch motion.
+- Rule: GK secures ball → always "catch", regardless of diving/standing/jumping.
+
+NOT a save event: GK adjusting position, walking, fielding a routine back-pass, \
+bending to pick up a slow ball, or kicking for distribution.
+
+TIMESTAMP PRECISION — mark the ACTION moment:
+- Restarts (goal_kick, corner_kick, throw_in, free_kick_shot, kickoff): \
+start_sec = the frame where the ball is KICKED or THROWN, not the setup.
+- Shots: start_sec = the frame where the player's foot contacts the ball.
+- Saves/catches: start_sec = the frame where the GK makes contact with the ball.
+- end_sec should be 3-5 seconds after start_sec (the immediate aftermath).
+
+Respond with ONLY a JSON array (empty [] if no clear events):
 [{{"event_type": "catch", "start_sec": 125.0, "end_sec": 130.0, \
-"confidence": 0.8, "reasoning": "GK in yellow collects cross at 127s"}}]
+"confidence": 0.85, "reasoning": "GK dives right and secures ball at 127s"}}]
 """
+
+# Event types allowed per triage context
+_ATTACK_TYPES = [
+    ("shot_on_target", "Player shoots toward goal, ball heading at the goal frame"),
+    ("shot_off_target", "Shot that clearly misses wide or high of the goal"),
+    ("goal", "Ball crossing the goal line into the net, or players celebrating with arms raised immediately after"),
+    ("catch", "GK collects/secures the ball (see decision tree above)"),
+    ("shot_stop_diving", "GK dives to deflect but does NOT secure (ball rebounds away)"),
+    ("punch", "GK punches ball away with fist in a crowded area"),
+    ("corner_kick", "Player at the corner flag/arc, ball on ground at corner, players clustered in penalty area"),
+    ("goal_kick", "GK or defender kicking ball from inside the 6-yard box, opposition retreated"),
+    ("free_kick_shot", "Ball on ground with defensive wall; kicker shoots toward goal"),
+]
+
+_SET_PIECE_TYPES = _ATTACK_TYPES + [
+    ("throw_in", "Player holding ball with BOTH HANDS above/behind head at the sideline touchline"),
+    ("penalty", "All players outside penalty area except kicker and GK; ball on penalty spot"),
+    ("kickoff", "Ball at center circle dot; two players near center circle (only at game start, halftime, or after a goal)"),
+]
+
+def _build_valid_types_block(triage_labels: list[str]) -> str:
+    """Build the valid event types section based on triage context."""
+    has_set_piece = any(l in ("SET_PIECE", "GOAL") for l in triage_labels)
+    types = _SET_PIECE_TYPES if has_set_piece else _ATTACK_TYPES
+    lines = []
+    for name, desc in types:
+        lines.append(f"- {name}: {desc}")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -218,6 +247,9 @@ class DualPassDetector:
         # Deduplicate events that overlap significantly
         all_events = self._deduplicate_events(all_events)
 
+        # G2-7: Post-filter — suppress contextually invalid events
+        all_events = self._post_filter_events(all_events)
+
         # Save classification diagnostics
         self._save_classify_diagnostics(candidates, all_events)
 
@@ -345,10 +377,12 @@ class DualPassDetector:
             indices = [int(i * step) for i in range(self._cfg.classify_max_frames)]
             frames = [frames[i] for i in indices]
 
+        valid_types_block = _build_valid_types_block(triage_labels)
         prompt = _CLASSIFY_PROMPT.format(
             n_frames=len(frames),
             duration=duration,
             triage_labels=", ".join(triage_labels),
+            valid_types_block=valid_types_block,
         )
 
         content: list[dict] = []
@@ -428,9 +462,15 @@ class DualPassDetector:
                     continue
 
                 start = float(item.get("start_sec", window.start_sec))
-                end = float(item.get("end_sec", start + 10))
+                end = float(item.get("end_sec", start + 5))
                 conf = float(item.get("confidence", 0.7))
                 reasoning = str(item.get("reasoning", ""))
+
+                # G2-5: Confidence floor — drop low-confidence events
+                if conf < 0.6:
+                    log.debug("dual_pass.low_confidence_dropped",
+                              event_type=event_type_str, conf=conf)
+                    continue
 
                 # Clamp to video bounds
                 start = max(0.0, start)
@@ -500,6 +540,71 @@ class DualPassDetector:
         if len(kept) < len(events):
             log.info("dual_pass.deduplicated",
                      before=len(events), after=len(kept))
+        return kept
+
+    def _post_filter_events(self, events: list[Event]) -> list[Event]:
+        """Apply contextual post-filters to reduce false positives.
+
+        G2-7:
+        - Kickoff suppression: only allow kickoffs near game start, halftime,
+          or within 60s after a detected goal.
+        - shot_stop_standing → catch promotion: standing GK blocks are often
+          catches; reclassify if no rebound visible (conservative: just drop
+          shot_stop_standing since GT doesn't have it).
+        """
+        # Collect goal timestamps for kickoff validation
+        goal_times = [
+            e.timestamp_start for e in events
+            if e.event_type == EventType.GOAL
+        ]
+
+        # Valid kickoff windows: start of each half ± 120s, after goals ± 60s
+        halftime_approx = self._video_duration / 2
+        valid_kickoff_windows = [
+            (0, 120),  # Game start
+            (halftime_approx - 60, halftime_approx + 120),  # Halftime
+        ]
+        for gt in goal_times:
+            valid_kickoff_windows.append((gt, gt + 60))
+
+        def is_valid_kickoff(ts: float) -> bool:
+            return any(lo <= ts <= hi for lo, hi in valid_kickoff_windows)
+
+        kept: list[Event] = []
+        dropped = 0
+        for event in events:
+            if event.event_type == EventType.KICKOFF:
+                if not is_valid_kickoff(event.timestamp_start):
+                    log.debug("dual_pass.kickoff_suppressed",
+                              ts=event.timestamp_start)
+                    dropped += 1
+                    continue
+
+            # Reclassify shot_stop_standing → catch
+            # (GT never has shot_stop_standing; these are usually catches)
+            if event.event_type == EventType.SHOT_STOP_STANDING:
+                event = Event(
+                    event_id=event.event_id,
+                    job_id=event.job_id,
+                    source_file=event.source_file,
+                    event_type=EventType.CATCH,
+                    timestamp_start=event.timestamp_start,
+                    timestamp_end=event.timestamp_end,
+                    confidence=event.confidence,
+                    reel_targets=event.reel_targets,
+                    is_goalkeeper_event=True,
+                    frame_start=event.frame_start,
+                    frame_end=event.frame_end,
+                    reviewed=event.reviewed,
+                    review_override=event.review_override,
+                    metadata=event.metadata,
+                )
+
+            kept.append(event)
+
+        if dropped:
+            log.info("dual_pass.post_filtered",
+                     dropped=dropped, kept=len(kept))
         return kept
 
     def _save_triage_diagnostics(
