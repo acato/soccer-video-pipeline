@@ -23,11 +23,14 @@ from src.detection.frame_sampler import FrameSampler, SampledFrame
 
 log = structlog.get_logger(__name__)
 
-# Simple 3-label taxonomy — 8B only decides "is something happening?"
-TRIAGE_LABELS = ["EVENT", "PLAY", "DEAD"]
+# Triage labels — 8B identifies broad categories, active ones trigger 32B review
+TRIAGE_LABELS = [
+    "SET_PIECE", "SHOT_SAVE", "GOAL",
+    "ATTACK", "PLAY", "DEAD",
+]
 
 # Labels that trigger a candidate window for 32B review
-ACTIVE_LABELS = frozenset({"EVENT"})
+ACTIVE_LABELS = frozenset({"SET_PIECE", "SHOT_SAVE", "GOAL", "ATTACK"})
 
 
 VALID_BALL_ZONES = frozenset({"left_third", "middle", "right_third"})
@@ -64,24 +67,29 @@ TRIAGE_PROMPT = """\
 You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames spanning {span_sec:.0f} seconds of play.
 
-Classify what is happening using ONE label:
+Classify what is happening. Choose ONE label:
 
-- EVENT: Something specific is happening — a set piece (corner kick, throw-in, \
-goal kick, free kick, penalty), a shot, a save, a goal, a goalkeeper catch, \
-a kickoff, or any restart of play. Look for: players lined up at the sideline \
-for a throw-in, a player at the corner flag, the ball in the goalkeeper's \
-hands, players forming a wall for a free kick, the ball in or near the goal, \
-celebrations, or the ball being placed on the ground for a restart.
-- PLAY: Normal open play — midfield passing, dribbling, running with the ball. \
-No set piece, shot, or goalkeeper action visible.
-- DEAD: Dead ball with no restart visible, stoppage, referee talking, replays, \
-graphics overlay, halftime, or players milling around.
+- SET_PIECE: A restart of play — corner kick (player near corner flag), \
+throw-in (player holding ball overhead at sideline), goal kick (GK kicking \
+from 6-yard box), free kick (ball on ground, wall forming), penalty, or kickoff.
+- SHOT_SAVE: A shot on goal, goalkeeper diving/catching/punching, or the ball \
+heading toward/hitting the goal frame.
+- GOAL: Ball entering the net, or players celebrating a goal.
+- ATTACK: Ball in the attacking third near a goal, dangerous play building up, \
+crosses into the box, or players converging on goal.
+- PLAY: Normal midfield play — passing, dribbling, no threat to either goal. \
+Ball is in the middle third, no set piece or shot happening.
+- DEAD: Stoppage, referee stoppage, halftime, replay graphics, substitution, \
+or players walking around with no ball in play.
+
+Important: When in doubt between PLAY and ATTACK, choose ATTACK. \
+When in doubt between PLAY and SET_PIECE, choose SET_PIECE. \
+It is better to flag a moment than to miss it.
 
 Respond with ONLY a JSON object:
 {{"label": "PLAY", "ball_zone": "middle"}}
 
-ball_zone should be one of: "left_third", "middle", "right_third" \
-(based on where the ball/action is on the pitch from the camera's perspective).
+ball_zone: "left_third", "middle", or "right_third" (where the action is).
 """
 
 
@@ -144,6 +152,7 @@ class TriageScanner:
 
         # Sliding window
         flags: list[TriageFlag] = []
+        label_counts: dict[str, int] = {}
         window_start = start_sec
         total_windows = int((end_sec - start_sec - self._window_span_sec) / self._step_sec) + 1
         window_idx = 0
@@ -161,6 +170,7 @@ class TriageScanner:
 
             if len(frames) >= 3:  # Need at least 3 frames
                 label, ball_zone = self._classify_window(frames)
+                label_counts[label] = label_counts.get(label, 0) + 1
                 if label in ACTIVE_LABELS:
                     flags.append(TriageFlag(
                         center_sec=center,
@@ -174,10 +184,18 @@ class TriageScanner:
             if progress_callback and total_windows > 0:
                 progress_callback(min(1.0, window_idx / total_windows))
 
+            # Log progress every 100 windows
+            if window_idx % 100 == 0:
+                log.info("triage_scanner.progress",
+                         window=window_idx, total=total_windows,
+                         flags_so_far=len(flags),
+                         label_dist=dict(label_counts))
+
             window_start += self._step_sec
 
         log.info("triage_scanner.scan_complete",
-                 total_windows=window_idx, flags=len(flags))
+                 total_windows=window_idx, flags=len(flags),
+                 label_distribution=dict(label_counts))
         return flags
 
     def _classify_window(self, frames: list[SampledFrame]) -> tuple[str, str]:
