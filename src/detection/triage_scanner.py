@@ -152,6 +152,9 @@ class TriageScanner:
 
         # Sliding window
         flags: list[TriageFlag] = []
+        # Run #6: track EVERY window (including PLAY/DEAD) to detect
+        # DEAD -> non-DEAD transitions that signal set-piece restarts.
+        all_window_records: list[TriageFlag] = []
         label_counts: dict[str, int] = {}
         window_start = start_sec
         total_windows = int((end_sec - start_sec - self._window_span_sec) / self._step_sec) + 1
@@ -171,14 +174,16 @@ class TriageScanner:
             if len(frames) >= 3:  # Need at least 3 frames
                 label, ball_zone = self._classify_window(frames)
                 label_counts[label] = label_counts.get(label, 0) + 1
+                record = TriageFlag(
+                    center_sec=center,
+                    label=label,
+                    window_start=window_start,
+                    window_end=window_end,
+                    ball_zone=ball_zone,
+                )
+                all_window_records.append(record)
                 if label in ACTIVE_LABELS:
-                    flags.append(TriageFlag(
-                        center_sec=center,
-                        label=label,
-                        window_start=window_start,
-                        window_end=window_end,
-                        ball_zone=ball_zone,
-                    ))
+                    flags.append(record)
 
             window_idx += 1
             if progress_callback and total_windows > 0:
@@ -193,8 +198,18 @@ class TriageScanner:
 
             window_start += self._step_sec
 
+        # Run #6: synthesize restart flags at DEAD -> non-DEAD transitions.
+        # These are set-piece candidates the 8B is classifying as PLAY/DEAD
+        # but which hold corner_kick / goal_kick / throw_in / free_kick events.
+        restart_flags = _synthesize_restart_flags(all_window_records)
+        if restart_flags:
+            log.info("triage_scanner.restart_flags_synthesized",
+                     count=len(restart_flags))
+            flags.extend(restart_flags)
+
         log.info("triage_scanner.scan_complete",
                  total_windows=window_idx, flags=len(flags),
+                 restart_flags=len(restart_flags),
                  label_distribution=dict(label_counts))
         return flags
 
@@ -273,6 +288,62 @@ class TriageScanner:
                 if label in text_upper:
                     return (label, "middle")
             return ("PLAY", "middle")
+
+
+def _synthesize_restart_flags(
+    records: list[TriageFlag],
+    min_dead_windows: int = 2,
+) -> list[TriageFlag]:
+    """Find DEAD -> non-DEAD transitions and emit synthetic SET_PIECE flags.
+
+    Soccer restarts (corner, throw-in, goal_kick, free_kick) start with the
+    ball dead, then the kick/throw, then play resumes. The 8B triage often
+    labels the dead portion as DEAD and the resume as PLAY, missing the
+    set-piece itself. This helper walks the full label sequence and emits
+    a SET_PIECE flag at every boundary where at least ``min_dead_windows``
+    consecutive DEAD windows are followed by a non-DEAD window.
+
+    Args:
+        records: ALL window records from the scan (active + inactive),
+            in chronological order.
+        min_dead_windows: Minimum consecutive DEAD count required before
+            a transition qualifies.
+
+    Returns:
+        List of synthetic TriageFlag with label SET_PIECE positioned at the
+        transition moment, inheriting ball_zone from the first non-DEAD window.
+    """
+    if not records:
+        return []
+
+    synthetic: list[TriageFlag] = []
+    dead_run = 0
+    dead_start_record: Optional[TriageFlag] = None
+
+    for rec in records:
+        if rec.label == "DEAD":
+            if dead_run == 0:
+                dead_start_record = rec
+            dead_run += 1
+            continue
+
+        # Non-DEAD: check if we just exited a DEAD run
+        if dead_run >= min_dead_windows and dead_start_record is not None:
+            # Span the transition: from start of DEAD run to end of current window.
+            start = dead_start_record.window_start
+            end = rec.window_end
+            center = (start + end) / 2
+            synthetic.append(TriageFlag(
+                center_sec=center,
+                label="SET_PIECE",
+                window_start=start,
+                window_end=end,
+                ball_zone=rec.ball_zone,
+            ))
+        dead_run = 0
+        dead_start_record = None
+
+    return synthetic
 
 
 def merge_flags(
