@@ -418,6 +418,8 @@ class DualPassDetector:
                 return []
 
             text = r.json()["choices"][0]["message"]["content"].strip()
+            log.info("dual_pass.raw_32b_response",
+                     sub_start=start_sec, text=text[:300])
             # Create a temporary CandidateWindow for parsing
             tmp_window = CandidateWindow(
                 start_sec=start_sec, end_sec=end_sec,
@@ -468,8 +470,9 @@ class DualPassDetector:
 
                 # G2-5: Confidence floor — drop low-confidence events
                 if conf < 0.6:
-                    log.debug("dual_pass.low_confidence_dropped",
-                              event_type=event_type_str, conf=conf)
+                    log.info("dual_pass.low_confidence_dropped",
+                             event_type=event_type_str, conf=conf,
+                             start=start)
                     continue
 
                 # Clamp to video bounds
