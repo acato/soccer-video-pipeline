@@ -69,25 +69,40 @@ Here are {n_frames} frames spanning {span_sec:.0f} seconds of play.
 
 Classify what is happening. Choose ONE label:
 
-- SET_PIECE: A restart of play — corner kick (player near corner flag), \
-throw-in (player holding ball overhead at sideline), goal kick (GK kicking \
-from 6-yard box), free kick (ball on ground, wall forming), penalty, or kickoff.
-- SHOT_SAVE: A shot on goal, goalkeeper diving/catching/punching, or the ball \
-heading toward/hitting the goal frame.
-- GOAL: Ball entering the net, or players celebrating a goal.
-- ATTACK: Ball in the attacking third near a goal, dangerous play building up, \
-crosses into the box, or players converging on goal.
-- PLAY: Normal midfield play — passing, dribbling, no threat to either goal. \
-Ball is in the middle third, no set piece or shot happening.
-- DEAD: Stoppage, referee stoppage, halftime, replay graphics, substitution, \
-or players walking around with no ball in play.
+- SET_PIECE: Any restart of play OR the setup before a restart. Use this \
+whenever you see ANY of these: a player near the corner flag, a player \
+walking to the sideline with a ball, a player holding a ball with both \
+hands at the sideline, a GK placing or about to kick the ball from inside \
+the penalty area, a ball on the ground with a defensive wall forming, \
+players gathering around the center circle for kickoff, a player standing \
+over a stationary ball outside the run of play. SET_PIECE covers the \
+WHOLE restart phase (setup through kick), not only the instant of contact.
+- SHOT_SAVE: A shot on goal, the ball flying toward/hitting the goal frame, \
+or the goalkeeper diving/catching/punching/parrying a shot.
+- GOAL: Ball clearly inside the net, or players celebrating with arms \
+raised and running toward teammates.
+- ATTACK: Ball in the attacking third with ongoing play — dangerous build-up, \
+crosses into the box, or players converging on goal. No restart is happening.
+- PLAY: Normal flowing midfield play — passing, dribbling, the ball is \
+visibly on the pitch between the two penalty areas and no restart or \
+shot is happening.
+- DEAD: The ball is not visibly in play and no player is about to restart \
+it — referee stoppage, halftime, substitution, replay graphic, or players \
+milling around waiting. Use DEAD only if no SET_PIECE signal is visible.
 
-Important: When in doubt between PLAY and ATTACK, choose ATTACK. \
-When in doubt between PLAY and SET_PIECE, choose SET_PIECE. \
+Priority rules (most important first):
+1. If you see ANY restart signal (corner flag, sideline throw-in, GK with \
+ball in the six-yard box, wall forming, kickoff circle) → SET_PIECE.
+2. If you see a shot or a GK contacting the ball → SHOT_SAVE.
+3. If the ball is out of play with no one about to restart → DEAD.
+4. If play is flowing in the attacking third → ATTACK.
+5. Otherwise → PLAY.
+
+Tie-breaker: prefer SET_PIECE > SHOT_SAVE > ATTACK > DEAD > PLAY. \
 It is better to flag a moment than to miss it.
 
 Respond with ONLY a JSON object:
-{{"label": "PLAY", "ball_zone": "middle"}}
+{{"label": "SET_PIECE", "ball_zone": "left_third"}}
 
 ball_zone: "left_third", "middle", or "right_third" (where the action is).
 """
