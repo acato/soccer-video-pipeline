@@ -49,17 +49,17 @@ nothing but routine midfield play.
 Valid event types (choose ONLY from this list):
 {valid_types_block}
 
-GOALKEEPER DECISION TREE — use the OUTCOME, not the technique:
-- catch: The GK ends up HOLDING the ball securely (hugging it, cradling it). \
-If the GK dove, jumped, or stood to collect it, it is still a "catch" as long \
-as they SECURE the ball. This is the most common GK event.
-- shot_stop_diving: The GK dives/deflects but does NOT secure the ball — \
-it rebounds to another player, goes out of play, etc.
-- punch: The GK deliberately strikes the ball away with a FIST. Clearly a punch motion.
-- Rule: GK secures ball → always "catch", regardless of diving/standing/jumping.
+GOALKEEPER GUIDELINES — any GK ball contact during a shot is a save event:
+- catch: GK clearly ends up HOLDING the ball securely (hugging/cradling, no \
+rebound visible). Use only when you can see the ball is fully controlled.
+- shot_stop_diving: GK contacts the ball during a shot — diving, deflecting, \
+parrying, or stopping. Use this whenever you see GK contact and you are NOT \
+certain the ball was secured. This is the DEFAULT save label when in doubt.
+- punch: GK clearly strikes the ball with a FIST (visible punch motion).
+- Rule: When unsure between catch vs shot_stop_diving → emit shot_stop_diving.
 
-NOT a save event: GK adjusting position, walking, fielding a routine back-pass, \
-bending to pick up a slow ball, or kicking for distribution.
+NOT a save event: GK walking, fielding a routine back-pass to feet, \
+or kicking for distribution with no shot involved.
 
 TIMESTAMP PRECISION — mark the ACTION moment:
 - Restarts (goal_kick, corner_kick, throw_in, free_kick_shot, kickoff): \
@@ -75,8 +75,7 @@ Respond with ONLY a JSON array listing every event you observe:
 
 # Event types allowed per triage context
 _ATTACK_TYPES = [
-    ("shot_on_target", "Player shoots toward goal, ball heading at the goal frame"),
-    ("shot_off_target", "Shot that clearly misses wide or high of the goal"),
+    ("shot_on_target", "Player shoots toward goal — any clear shot attempt at the goal frame, on or off target"),
     ("goal", "Ball crossing the goal line into the net, or players celebrating with arms raised immediately after"),
     ("catch", "GK collects/secures the ball (see decision tree above)"),
     ("shot_stop_diving", "GK dives to deflect but does NOT secure (ball rebounds away)"),
@@ -472,7 +471,7 @@ class DualPassDetector:
                 reasoning = str(item.get("reasoning", ""))
 
                 # G2-5: Confidence floor — drop low-confidence events
-                if conf < 0.5:
+                if conf < 0.4:
                     log.info("dual_pass.low_confidence_dropped",
                              event_type=event_type_str, conf=conf,
                              start=start)
@@ -549,43 +548,14 @@ class DualPassDetector:
         return kept
 
     def _post_filter_events(self, events: list[Event]) -> list[Event]:
-        """Apply contextual post-filters to reduce false positives.
+        """Apply contextual post-filters.
 
-        G2-7:
-        - Kickoff suppression: only allow kickoffs near game start, halftime,
-          or within 60s after a detected goal.
         - shot_stop_standing → catch promotion: standing GK blocks are often
-          catches; reclassify if no rebound visible (conservative: just drop
-          shot_stop_standing since GT doesn't have it).
+          catches; reclassify since GT doesn't have shot_stop_standing.
         """
-        # Collect goal timestamps for kickoff validation
-        goal_times = [
-            e.timestamp_start for e in events
-            if e.event_type == EventType.GOAL
-        ]
-
-        # Valid kickoff windows: start of each half ± 120s, after goals ± 60s
-        halftime_approx = self._video_duration / 2
-        valid_kickoff_windows = [
-            (0, 120),  # Game start
-            (halftime_approx - 60, halftime_approx + 120),  # Halftime
-        ]
-        for gt in goal_times:
-            valid_kickoff_windows.append((gt, gt + 60))
-
-        def is_valid_kickoff(ts: float) -> bool:
-            return any(lo <= ts <= hi for lo, hi in valid_kickoff_windows)
-
         kept: list[Event] = []
         dropped = 0
         for event in events:
-            if event.event_type == EventType.KICKOFF:
-                if not is_valid_kickoff(event.timestamp_start):
-                    log.debug("dual_pass.kickoff_suppressed",
-                              ts=event.timestamp_start)
-                    dropped += 1
-                    continue
-
             # Reclassify shot_stop_standing → catch
             # (GT never has shot_stop_standing; these are usually catches)
             if event.event_type == EventType.SHOT_STOP_STANDING:
