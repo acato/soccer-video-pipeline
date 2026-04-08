@@ -40,8 +40,11 @@ You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames from a {duration:.0f}-second window \
 where our triage model flagged potential events: {triage_labels}.
 
-Analyze these frames carefully. Only report events you are CONFIDENT about. \
-If a window shows nothing notable, return an empty array [].
+The triage system has already filtered for likely events, so this window \
+almost certainly contains AT LEAST ONE event. Identify every event you can \
+see in these frames — typical windows contain 1-3 events. Be specific about \
+what you observe; do not return an empty list unless the frames clearly show \
+nothing but routine midfield play.
 
 Valid event types (choose ONLY from this list):
 {valid_types_block}
@@ -65,7 +68,7 @@ start_sec = the frame where the ball is KICKED or THROWN, not the setup.
 - Saves/catches: start_sec = the frame where the GK makes contact with the ball.
 - end_sec should be 3-5 seconds after start_sec (the immediate aftermath).
 
-Respond with ONLY a JSON array (empty [] if no clear events):
+Respond with ONLY a JSON array listing every event you observe:
 [{{"event_type": "catch", "start_sec": 125.0, "end_sec": 130.0, \
 "confidence": 0.85, "reasoning": "GK dives right and secures ball at 127s"}}]
 """
@@ -469,7 +472,7 @@ class DualPassDetector:
                 reasoning = str(item.get("reasoning", ""))
 
                 # G2-5: Confidence floor — drop low-confidence events
-                if conf < 0.6:
+                if conf < 0.5:
                     log.info("dual_pass.low_confidence_dropped",
                              event_type=event_type_str, conf=conf,
                              start=start)
