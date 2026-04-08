@@ -49,14 +49,23 @@ nothing but routine midfield play.
 Valid event types (choose ONLY from this list):
 {valid_types_block}
 
-GOALKEEPER GUIDELINES — any GK ball contact during a shot is a save event:
-- catch: GK clearly ends up HOLDING the ball securely (hugging/cradling, no \
-rebound visible). Use only when you can see the ball is fully controlled.
-- shot_stop_diving: GK contacts the ball during a shot — diving, deflecting, \
-parrying, or stopping. Use this whenever you see GK contact and you are NOT \
-certain the ball was secured. This is the DEFAULT save label when in doubt.
+GOALKEEPER GUIDELINES — any GK ball contact during an opponent attack is a save:
+- catch: GK ends up HOLDING the ball (ball is in hands/arms and stays there \
+for 2+ frames, OR the ball is no longer visible because it is clutched to \
+the GK body, OR play clearly stops for the GK to distribute). Catches are \
+common — about half of all GK events are catches.
+- shot_stop_diving: GK contacts the ball but it CLEARLY rebounds away, \
+continues in play, or goes out for a corner. A rebound must be visible.
 - punch: GK clearly strikes the ball with a FIST (visible punch motion).
-- Rule: When unsure between catch vs shot_stop_diving → emit shot_stop_diving.
+- Split rule: If the ball is visible and moving away after GK contact → \
+shot_stop_diving. If the ball disappears into the GK or is held → catch.
+
+GOAL DETECTION:
+- goal: Emit this when you see BOTH (a) a shot toward goal AND (b) players \
+celebrating within the same window (arms raised, running toward teammates, \
+hugging). If a shot is followed by a GK catch or defenders clearing, it is \
+NOT a goal. When you emit goal, DO NOT also emit shot_on_target for the \
+same moment.
 
 NOT a save event: GK walking, fielding a routine back-pass to feet, \
 or kicking for distribution with no shot involved.
@@ -73,31 +82,26 @@ Respond with ONLY a JSON array listing every event you observe:
 "confidence": 0.85, "reasoning": "GK dives right and secures ball at 127s"}}]
 """
 
-# Event types allowed per triage context
-_ATTACK_TYPES = [
+# Full event type catalog — all types offered for every window regardless of
+# triage label (Run #4 showed has_set_piece gating missed corner_kick/throw_in).
+_ALL_TYPES = [
     ("shot_on_target", "Player shoots toward goal — any clear shot attempt at the goal frame, on or off target"),
-    ("goal", "Ball crossing the goal line into the net, or players celebrating with arms raised immediately after"),
-    ("catch", "GK collects/secures the ball (see decision tree above)"),
-    ("shot_stop_diving", "GK dives to deflect but does NOT secure (ball rebounds away)"),
-    ("punch", "GK punches ball away with fist in a crowded area"),
-    ("corner_kick", "Player at the corner flag/arc, ball on ground at corner, players clustered in penalty area"),
-    ("goal_kick", "GK or defender kicking ball from inside the 6-yard box, opposition retreated"),
+    ("goal", "Ball crossing the goal line into the net, players celebrating with arms raised, running to teammates"),
+    ("catch", "GK holds/secures the ball — ball in hands/arms for 2+ frames or disappears into GK body"),
+    ("shot_stop_diving", "GK contacts ball but it CLEARLY rebounds away or continues in play"),
+    ("punch", "GK strikes ball with a FIST — visible punch motion in crowded area"),
+    ("corner_kick", "Player at corner flag/arc with ball on ground at the corner; opponents clustered in penalty area"),
+    ("goal_kick", "GK or defender kicking ball from inside the 6-yard box, opposition retreated to halfway"),
     ("free_kick_shot", "Ball on ground with defensive wall; kicker shoots toward goal"),
-]
-
-_SET_PIECE_TYPES = _ATTACK_TYPES + [
     ("throw_in", "Player holding ball with BOTH HANDS above/behind head at the sideline touchline"),
     ("penalty", "All players outside penalty area except kicker and GK; ball on penalty spot"),
     ("kickoff", "Ball at center circle dot; two players near center circle (only at game start, halftime, or after a goal)"),
 ]
 
+
 def _build_valid_types_block(triage_labels: list[str]) -> str:
-    """Build the valid event types section based on triage context."""
-    has_set_piece = any(l in ("SET_PIECE", "GOAL") for l in triage_labels)
-    types = _SET_PIECE_TYPES if has_set_piece else _ATTACK_TYPES
-    lines = []
-    for name, desc in types:
-        lines.append(f"- {name}: {desc}")
+    """Build the valid event types section — always offer the full catalog."""
+    lines = [f"- {name}: {desc}" for name, desc in _ALL_TYPES]
     return "\n".join(lines)
 
 
@@ -123,7 +127,7 @@ class DualPassConfig:
 
     # Candidate merging (tight — ball_zone + gap splitting)
     merge_gap_sec: float = 4.0
-    merge_pad_sec: float = 3.0
+    merge_pad_sec: float = 6.0  # Run #5: extra post-event context for goal celebrations
     max_window_sec: float = 60.0
 
     # 32B classification
