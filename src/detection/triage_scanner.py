@@ -69,37 +69,40 @@ Here are {n_frames} frames spanning {span_sec:.0f} seconds of play.
 
 Classify what is happening. Choose ONE label:
 
-- SET_PIECE: Any restart of play OR the setup before a restart. Use this \
-whenever you see ANY of these: a player near the corner flag, a player \
-walking to the sideline with a ball, a player holding a ball with both \
-hands at the sideline, a GK placing or about to kick the ball from inside \
-the penalty area, a ball on the ground with a defensive wall forming, \
-players gathering around the center circle for kickoff, a player standing \
-over a stationary ball outside the run of play. SET_PIECE covers the \
-WHOLE restart phase (setup through kick), not only the instant of contact.
+- SET_PIECE: A restart where the ball is STATIONARY and a specific player \
+is about to kick or throw it. Use this ONLY when you can identify the \
+restart type from visual cues: (a) player at the corner flag/arc with \
+ball on ground, (b) player at the sideline holding ball with BOTH HANDS \
+above/behind head, (c) GK standing in the six-yard box with a stationary \
+ball at their feet, (d) stationary ball with a defensive wall of 3+ \
+players forming, (e) ball placed at the center circle dot with both teams \
+on their own halves. SET_PIECE requires a stationary ball.
 - SHOT_SAVE: A shot on goal, the ball flying toward/hitting the goal frame, \
 or the goalkeeper diving/catching/punching/parrying a shot.
 - GOAL: Ball clearly inside the net, or players celebrating with arms \
 raised and running toward teammates.
-- ATTACK: Ball in the attacking third with ongoing play — dangerous build-up, \
-crosses into the box, or players converging on goal. No restart is happening.
-- PLAY: Normal flowing midfield play — passing, dribbling, the ball is \
-visibly on the pitch between the two penalty areas and no restart or \
-shot is happening.
-- DEAD: The ball is not visibly in play and no player is about to restart \
-it — referee stoppage, halftime, substitution, replay graphic, or players \
-milling around waiting. Use DEAD only if no SET_PIECE signal is visible.
+- ATTACK: Ball IN MOTION in the attacking third — flowing attack, dribbling \
+toward goal, crosses into the box, players converging near the penalty area.
+- PLAY: Normal flowing midfield play — passing, dribbling in the middle \
+third, no threat to either goal.
+- DEAD: Ball out of play with no imminent restart — referee stoppage, \
+injury, halftime, substitution, replay graphic, or players jogging back \
+after a whistle.
 
 Priority rules (most important first):
-1. If you see ANY restart signal (corner flag, sideline throw-in, GK with \
-ball in the six-yard box, wall forming, kickoff circle) → SET_PIECE.
-2. If you see a shot or a GK contacting the ball → SHOT_SAVE.
-3. If the ball is out of play with no one about to restart → DEAD.
-4. If play is flowing in the attacking third → ATTACK.
-5. Otherwise → PLAY.
+1. If the ball is CLEARLY in the net or players are celebrating → GOAL.
+2. If you see a shot being taken or a GK contacting the ball → SHOT_SAVE.
+3. If the ball is STATIONARY and a player is about to restart from a \
+specific position (corner/sideline/6-yard box/wall/center) → SET_PIECE.
+4. If the ball is moving in the attacking third → ATTACK.
+5. If the ball is out of play with no restart imminent → DEAD.
+6. Otherwise → PLAY.
 
-Tie-breaker: prefer SET_PIECE > SHOT_SAVE > ATTACK > DEAD > PLAY. \
-It is better to flag a moment than to miss it.
+Important: SET_PIECE requires a STATIONARY ball. If the ball is moving, \
+it cannot be SET_PIECE — it is ATTACK, PLAY, or SHOT_SAVE.
+
+Tie-breaker when borderline between PLAY and ATTACK → choose ATTACK. \
+Tie-breaker when borderline between PLAY and DEAD → choose DEAD.
 
 Respond with ONLY a JSON object:
 {{"label": "SET_PIECE", "ball_zone": "left_third"}}
@@ -436,31 +439,52 @@ def _split_oversized(
 ) -> list[CandidateWindow]:
     """Split an oversized group of flags at the largest internal gap.
 
-    Recursively splits until all windows are under max_window_sec.
+    Iterative implementation (stack-based) — earlier recursive version hit
+    Python's 1000-frame limit when contiguous triage flags filled a long
+    section of the video (Run #7 with 428 SET_PIECE flags).
     """
-    if len(group) <= 1:
-        return [_group_to_window(group, pad_sec)]
-
-    # Find largest gap
-    best_gap = -1.0
-    best_idx = 0
-    for i in range(1, len(group)):
-        gap = group[i].window_start - group[i - 1].window_end
-        if gap > best_gap:
-            best_gap = gap
-            best_idx = i
-
-    left = group[:best_idx]
-    right = group[best_idx:]
     result: list[CandidateWindow] = []
+    stack: list[list[TriageFlag]] = [group]
 
-    for sub in (left, right):
+    while stack:
+        sub = stack.pop()
         if not sub:
             continue
+        if len(sub) <= 1:
+            result.append(_group_to_window(sub, pad_sec))
+            continue
+
         win = _group_to_window(sub, pad_sec)
         if win.duration_sec <= max_window_sec:
             result.append(win)
-        else:
-            result.extend(_split_oversized(sub, pad_sec, max_window_sec))
+            continue
+
+        # Find largest internal gap
+        best_gap = -float("inf")
+        best_idx = 1
+        for i in range(1, len(sub)):
+            gap = sub[i].window_start - sub[i - 1].window_end
+            if gap > best_gap:
+                best_gap = gap
+                best_idx = i
+
+        left = sub[:best_idx]
+        right = sub[best_idx:]
+
+        # Degenerate case: all flags overlap (no real gap). Fall back to
+        # splitting in half by index so we always make progress.
+        if not left or not right:
+            mid = max(1, len(sub) // 2)
+            left = sub[:mid]
+            right = sub[mid:]
+
+        # Safety: if we still can't split (len==1 on either side), emit the
+        # oversized window as-is to avoid infinite loops.
+        if not left or not right:
+            result.append(win)
+            continue
+
+        stack.append(right)
+        stack.append(left)
 
     return result
