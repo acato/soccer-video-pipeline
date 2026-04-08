@@ -305,7 +305,7 @@ def main():
     parser.add_argument("events_file", help="Path to events.jsonl or dual_pass_events.jsonl")
     parser.add_argument("--video-offset", type=float, default=418.0,
                         help="Video offset in seconds (default: 418.0)")
-    parser.add_argument("--tolerance", type=float, default=15.0,
+    parser.add_argument("--tolerance", type=float, default=30.0,
                         help="Matching tolerance in seconds (default: 15.0)")
     parser.add_argument("--half2-start", type=float, default=3916.0,
                         help="Video timestamp where 2nd half starts (default: 3916.0)")
