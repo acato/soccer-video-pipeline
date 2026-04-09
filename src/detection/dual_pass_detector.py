@@ -71,7 +71,7 @@ NOT a save event: GK walking, fielding a routine back-pass to feet, \
 or kicking for distribution with no shot involved.
 
 TIMESTAMP PRECISION — mark the ACTION moment:
-- Restarts (goal_kick, corner_kick, throw_in, free_kick_shot, kickoff): \
+- Restarts (goal_kick, corner_kick, throw_in, free_kick_shot): \
 start_sec = the frame where the ball is KICKED or THROWN, not the setup.
 - Shots: start_sec = the frame where the player's foot contacts the ball.
 - Saves/catches: start_sec = the frame where the GK makes contact with the ball.
@@ -85,17 +85,16 @@ Respond with ONLY a JSON array listing every event you observe:
 # Full event type catalog — all types offered for every window regardless of
 # triage label (Run #4 showed has_set_piece gating missed corner_kick/throw_in).
 _ALL_TYPES = [
-    ("shot_on_target", "Player shoots toward goal — any clear shot attempt at the goal frame, on or off target"),
+    ("shot_on_target", "Player shoots toward goal — any clear shot attempt at the goal frame, on or off target. NOT a corner_kick or free_kick_shot — shots ONLY apply to open-play shots, not set-piece restarts."),
     ("goal", "Ball crossing the goal line into the net, players celebrating with arms raised, running to teammates"),
     ("catch", "GK holds/secures the ball — ball in hands/arms for 2+ frames or disappears into GK body"),
     ("shot_stop_diving", "GK contacts ball but it CLEARLY rebounds away or continues in play"),
     ("punch", "GK strikes ball with a FIST — visible punch motion in crowded area"),
-    ("corner_kick", "Player at corner flag/arc with ball on ground at the corner; opponents clustered in penalty area"),
-    ("goal_kick", "GK or defender kicking ball from inside the 6-yard box, opposition retreated to halfway"),
-    ("free_kick_shot", "Ball on ground with defensive wall; kicker shoots toward goal"),
-    ("throw_in", "Player holding ball with BOTH HANDS above/behind head at the sideline touchline"),
-    ("penalty", "All players outside penalty area except kicker and GK; ball on penalty spot"),
-    ("kickoff", "Ball at center circle dot; two players near center circle (only at game start, halftime, or after a goal)"),
+    ("corner_kick", "Player standing over a STATIONARY ball INSIDE the corner arc of the pitch (the quarter-circle at a pitch corner). The kicker is by the corner flag; opponents cluster in the penalty area. If you see the corner flag AND a player near it with a stationary ball, it is a corner_kick — NOT shot_on_target, NOT free_kick_shot. The resulting kick/cross is still part of the corner_kick event, not a separate shot."),
+    ("goal_kick", "GK or defender standing over a STATIONARY ball inside their own 6-yard box or penalty area, preparing to kick it long. Typical cue: the opposing team has retreated past the halfway line. If the GK is in their own 6-yard box with a stationary ball, it is a goal_kick — NOT a catch or distribution."),
+    ("free_kick_shot", "Stationary ball outside the penalty area with a defensive wall of 3+ players forming; the free-kick taker is preparing to shoot directly at goal. NOT a corner_kick (corner is inside the corner arc) and NOT a goal_kick (that is the GK in the 6-yard box)."),
+    ("throw_in", "Player at the sideline/touchline holding the ball with BOTH HANDS above or behind the head, about to throw it back in. Also count the setup frames where a player is standing at the sideline gathering a ball. If ANY player is near the sideline with a ball and the throw motion is visible or imminent, it is a throw_in."),
+    ("penalty", "All players outside the penalty area except the kicker and GK; ball on the penalty spot, GK on the goal line"),
 ]
 
 

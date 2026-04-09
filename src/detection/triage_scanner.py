@@ -70,13 +70,21 @@ Here are {n_frames} frames spanning {span_sec:.0f} seconds of play.
 Classify what is happening. Choose ONE label:
 
 - SET_PIECE: A restart where the ball is STATIONARY and a specific player \
-is about to kick or throw it. Use this ONLY when you can identify the \
-restart type from visual cues: (a) player at the corner flag/arc with \
-ball on ground, (b) player at the sideline holding ball with BOTH HANDS \
-above/behind head, (c) GK standing in the six-yard box with a stationary \
-ball at their feet, (d) stationary ball with a defensive wall of 3+ \
-players forming, (e) ball placed at the center circle dot with both teams \
-on their own halves. SET_PIECE requires a stationary ball.
+is about to kick or throw it. Use this whenever you can identify ANY of: \
+(a) corner kick — player at/near the corner flag or inside the corner arc \
+with a stationary ball; \
+(b) throw-in — ANY player standing near the sideline/touchline gathering \
+or about to throw a ball (even hands-low setup counts); \
+(c) goal kick — the GK OR a defender standing in the defensive 6-yard \
+box or penalty area with a stationary ball, with the opponent retreated \
+— this is very common, flag aggressively whenever the GK has a ball at \
+their feet inside their own box; \
+(d) free kick — stationary ball anywhere on the pitch with a defensive \
+wall of 3+ players forming in front of it; \
+(e) penalty — ball on the penalty spot with only the kicker and GK in \
+the penalty area. \
+SET_PIECE requires a stationary ball. Note that goal_kick and throw_in \
+are the MOST COMMON set pieces — expect many of them across the game.
 - SHOT_SAVE: A shot on goal, the ball flying toward/hitting the goal frame, \
 or the goalkeeper diving/catching/punching/parrying a shot.
 - GOAL: Ball clearly inside the net, or players celebrating with arms \
@@ -91,15 +99,23 @@ after a whistle.
 
 Priority rules (most important first):
 1. If the ball is CLEARLY in the net or players are celebrating → GOAL.
-2. If you see a shot being taken or a GK contacting the ball → SHOT_SAVE.
-3. If the ball is STATIONARY and a player is about to restart from a \
-specific position (corner/sideline/6-yard box/wall/center) → SET_PIECE.
+2. If you see a shot being taken or a GK contacting the ball DURING an \
+attack (a rebounded/flying/airborne ball) → SHOT_SAVE.
+3. If the ball is STATIONARY and a player is about to restart — \
+corner flag, sideline throw-in, GK in own 6-yard box, wall forming → \
+SET_PIECE. Flag these AGGRESSIVELY: throw-ins and goal kicks happen \
+dozens of times per half; do not under-count them.
 4. If the ball is moving in the attacking third → ATTACK.
 5. If the ball is out of play with no restart imminent → DEAD.
 6. Otherwise → PLAY.
 
 Important: SET_PIECE requires a STATIONARY ball. If the ball is moving, \
 it cannot be SET_PIECE — it is ATTACK, PLAY, or SHOT_SAVE.
+
+Common mistake to avoid: When the GK picks up or stands over the ball \
+inside their own penalty area with opponents having retreated, that is \
+a GOAL_KICK (SET_PIECE), NOT SHOT_SAVE. SHOT_SAVE requires a shot being \
+taken or actively contested.
 
 Tie-breaker when borderline between PLAY and ATTACK → choose ATTACK. \
 Tie-breaker when borderline between PLAY and DEAD → choose DEAD.
