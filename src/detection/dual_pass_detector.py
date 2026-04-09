@@ -134,6 +134,7 @@ class DualPassConfig:
     classify_max_frames: int = 45  # Max frames per 32B call
     sub_window_sec: float = 20.0  # Sub-window size for chunking
     sub_window_overlap_sec: float = 5.0  # Overlap between sub-windows
+    max_candidates: int = 150  # Cap candidate windows to stay under time limit
 
     # Model swap
     swap_script: str = ""  # Path to swap_vllm_model.sh
@@ -214,6 +215,21 @@ class DualPassDetector:
             pad_sec=self._cfg.merge_pad_sec,
             max_window_sec=self._cfg.max_window_sec,
         )
+
+        # Cap candidates to stay within time budget.  Rank by triage label
+        # priority so we keep SHOT_SAVE/GOAL/SET_PIECE over generic ATTACK.
+        _LABEL_PRIORITY = {"GOAL": 0, "SHOT_SAVE": 1, "SET_PIECE": 2, "ATTACK": 3}
+        if len(candidates) > self._cfg.max_candidates:
+            def _score(w):
+                best = min(_LABEL_PRIORITY.get(l, 99) for l in w.labels) if w.labels else 99
+                return (best, w.start_sec)
+            candidates.sort(key=_score)
+            dropped = len(candidates) - self._cfg.max_candidates
+            candidates = candidates[:self._cfg.max_candidates]
+            # Re-sort by time for sequential processing
+            candidates.sort(key=lambda w: w.start_sec)
+            log.info("dual_pass.candidates_capped",
+                     kept=len(candidates), dropped=dropped)
 
         # Save diagnostics
         self._save_triage_diagnostics(flags, candidates)
