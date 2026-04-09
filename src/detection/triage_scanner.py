@@ -90,7 +90,9 @@ or the goalkeeper diving/catching/punching/parrying a shot.
 - GOAL: Ball clearly inside the net, or players celebrating with arms \
 raised and running toward teammates.
 - ATTACK: Ball IN MOTION in the attacking third — flowing attack, dribbling \
-toward goal, crosses into the box, players converging near the penalty area.
+toward goal, crosses into the box, players converging near the penalty area. \
+The ball MUST be moving and MUST NOT be at a GK's feet in their own box \
+(that is goal_kick / SET_PIECE).
 - PLAY: Normal flowing midfield play — passing, dribbling in the middle \
 third, no threat to either goal.
 - DEAD: Ball out of play with no imminent restart — referee stoppage, \
@@ -112,13 +114,27 @@ dozens of times per half; do not under-count them.
 Important: SET_PIECE requires a STATIONARY ball. If the ball is moving, \
 it cannot be SET_PIECE — it is ATTACK, PLAY, or SHOT_SAVE.
 
-Common mistake to avoid: When the GK picks up or stands over the ball \
-inside their own penalty area with opponents having retreated, that is \
-a GOAL_KICK (SET_PIECE), NOT SHOT_SAVE. SHOT_SAVE requires a shot being \
-taken or actively contested.
+Common mistakes to avoid:
+- When the GK picks up or stands over the ball inside their own penalty \
+area with opponents having retreated, that is a GOAL_KICK (SET_PIECE), \
+NOT SHOT_SAVE and NOT ATTACK. SHOT_SAVE requires a shot being taken or \
+actively contested.
+- A player standing near the touchline with a ball (even before lifting \
+it) is a throw_in (SET_PIECE), NOT ATTACK.
+- A stationary ball in the defensive third with the GK walking to it is \
+a goal_kick (SET_PIECE), NOT PLAY.
 
-Tie-breaker when borderline between PLAY and ATTACK → choose ATTACK. \
-Tie-breaker when borderline between PLAY and DEAD → choose DEAD.
+HARD OVERRIDE: If the GK is in their own box with a ball at their feet \
+OR a player is near the touchline gathering a loose ball OR a player is \
+at a corner flag → the label is SET_PIECE, regardless of any other rule \
+or tiebreaker below.
+
+Tie-breakers (only apply AFTER the hard override):
+- Borderline between SET_PIECE and anything else → choose SET_PIECE. \
+SET_PIECE recall is the priority; false positives here are cheap.
+- Borderline between PLAY and ATTACK → choose PLAY (ATTACK is reserved \
+for clearly threatening movement in the attacking third).
+- Borderline between PLAY and DEAD → choose DEAD.
 
 Respond with ONLY a JSON object:
 {{"label": "SET_PIECE", "ball_zone": "left_third"}}
