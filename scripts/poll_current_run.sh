@@ -128,7 +128,7 @@ snap = {
     "job_id": job_id,
     "status": "unreachable",
     "http_code": http,
-    "polled_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "polled_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 tmp = dest + ".tmp"
 open(tmp, "w").write(json.dumps(snap, indent=2))
@@ -150,7 +150,7 @@ snap = {
     "updated_at": data.get("updated_at"),
     "error": data.get("error"),
     "reel_types": data.get("reel_types"),
-    "polled_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "polled_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 tmp = dest + ".tmp"
 open(tmp, "w").write(json.dumps(snap, indent=2))
@@ -175,7 +175,7 @@ payload = {
     "status": "error",
     "error": "events_file_missing",
     "events_file": events,
-    "recorded_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "recorded_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 tmp = dest + ".tmp"
 open(tmp, "w").write(json.dumps(payload, indent=2))
@@ -210,7 +210,7 @@ payload = {
     "job_id": man["job_id"],
     "commit_sha": man.get("commit_sha"),
     "status": "success",
-    "completed_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "completed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "overall": overall,
     "per_type": eval_data.get("per_type", {}),
     "gt_total": eval_data.get("gt_total"),
@@ -240,7 +240,7 @@ payload = {
     "job_id": job_id,
     "status": "eval_failed",
     "eval_log": log_path,
-    "recorded_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "recorded_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 tmp = dest + ".tmp"
 open(tmp, "w").write(json.dumps(payload, indent=2))
@@ -262,7 +262,7 @@ payload = {
     "status": "job_failed",
     "job_status": status,
     "error": snap.get("error"),
-    "recorded_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "recorded_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
 }
 tmp = dest + ".tmp"
 open(tmp, "w").write(json.dumps(payload, indent=2))
