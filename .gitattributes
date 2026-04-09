@@ -1,0 +1,11 @@
+# Shell scripts, launchd plists, and JSON state files must have LF line
+# endings so macOS/Linux interpreters (bash, launchd, python -c) can parse
+# them after a Windows checkout.
+*.sh        text eol=lf
+*.plist     text eol=lf
+*.json      text eol=lf
+*.jsonl     text eol=lf
+Makefile    text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.py        text eol=lf

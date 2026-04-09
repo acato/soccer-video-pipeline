@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent: polls the currently active soccer pipeline run every 5
+  minutes. See scripts/poll_current_run.sh for behavior and
+  scripts/install_poller_launchd.sh to install. Paths marked __PLACEHOLDER__
+  are rewritten by the installer at install time.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.soccer.runpoller</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>__REPO__/scripts/poll_current_run.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/soccer-runs/logs/poller.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__HOME__/soccer-runs/logs/poller.stderr.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SOCCER_REPO</key>
+        <string>__REPO__</string>
+        <key>SOCCER_STATE_DIR</key>
+        <string>__HOME__/soccer-runs/state</string>
+        <key>SOCCER_LOGS_DIR</key>
+        <string>__HOME__/soccer-runs/logs</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+</dict>
+</plist>

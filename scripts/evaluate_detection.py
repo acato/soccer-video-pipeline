@@ -311,6 +311,8 @@ def main():
                         help="Video timestamp where 2nd half starts (default: 3916.0)")
     parser.add_argument("--half2-game-offset", type=float, default=2700.0,
                         help="Game-clock seconds at 2nd half start (default: 2700.0)")
+    parser.add_argument("--json-out", type=str, default=None,
+                        help="Write structured results to this JSON file (for pollers/tools)")
     args = parser.parse_args()
 
     global VIDEO_OFFSET
@@ -339,6 +341,33 @@ def main():
     print(f"\nMatching with tolerance={args.tolerance}s...")
     results = match_events(gt_events, detected, tolerance_sec=args.tolerance)
     print_report(results)
+
+    if args.json_out:
+        def _serialize(obj):
+            # Drop the fn_events list (contains dataclasses) for JSON output;
+            # keep the scalar metrics which are what tooling cares about.
+            out = {}
+            for etype, r in obj.items():
+                out[etype] = {k: v for k, v in r.items() if k != "fn_events"}
+            return out
+
+        payload = {
+            "events_file": args.events_file,
+            "tolerance_sec": args.tolerance,
+            "video_offset_sec": args.video_offset,
+            "half2_video_start_sec": args.half2_start,
+            "half2_game_offset_sec": args.half2_game_offset,
+            "gt_total": len(gt_events),
+            "gt_counts": dict(gt_counts),
+            "detected_total": len(detected),
+            "detected_counts": dict(det_counts),
+            "per_type": _serialize(results),
+            "overall": _serialize(results).get("__overall__", {}),
+        }
+        out_path = Path(args.json_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, indent=2))
+        print(f"\nWrote JSON results to {out_path}")
 
 
 if __name__ == "__main__":

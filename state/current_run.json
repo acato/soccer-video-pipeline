@@ -1,0 +1,29 @@
+{
+  "$schema_version": 1,
+  "run_number": 8,
+  "run_label": "run_8",
+  "job_id": "0eb76694-edfa-46d3-9ba0-d2102d781cac",
+  "commit_sha": "fd6907f",
+  "submitted_at": "2026-04-09T14:38:15Z",
+  "host": "mac",
+  "api_url": "http://127.0.0.1:8088",
+  "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
+  "evaluate_script": "scripts/evaluate_detection.py",
+  "evaluate_args": ["--tolerance", "30"],
+  "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
+  "baseline": {
+    "run": "7c",
+    "f1": 0.28,
+    "notes": "Run #7c breakthrough: catch 0->3 TP, throw_in 1->7, goal_kick 0->1, saves 60%->80% recall"
+  },
+  "targets": {
+    "f1": 0.35,
+    "goal_kick_tp_min": 8,
+    "throw_in_tp_min": 15,
+    "corner_kick_tp_min": 2,
+    "kickoff_fp_max": 0
+  },
+  "notes": "Run #8 - corner_kick description strengthened, goal_kick+throw_in 'expect many' hint added, kickoff removed from 32B type catalog, 'GK in box = goal_kick not SHOT_SAVE' rule.",
+  "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
+  "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
+}
