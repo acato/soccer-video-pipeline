@@ -243,12 +243,73 @@ That's exactly what `start_poller_loop.sh` does.
 | Mac reboot | The loop dies | **Not handled** — re-run `start_poller_loop.sh start` after reboot. In 31+ days of Mac uptime this has not happened yet. |
 | API crash on Mac | curl returns non-200 | Status file records `status: unreachable`; next tick retries |
 | Worker killed mid-job | Job state stuck at `detecting` | Poller keeps polling; heartbeat stays fresh so you can see it's alive but the job isn't progressing. Result file is never written. |
+| Worker running stale code (Python import cache) | `git pull` does NOT reload modules in a running Celery worker. A run can finish with old prompts/configs and report bogus metrics. | **Run #9 post-mortem**, now guarded by `worker_commit.txt`. See [Worker-commit guardrail](#worker-commit-guardrail) below. |
 | LLM server crash | Worker stalls on 32B calls | Same as above |
 | Events file missing on completion | `dual_pass_events.jsonl` not where expected | Poller writes an error result file with `status: events_file_missing` and stops polling |
 | evaluate_detection.py crashes | Non-zero exit from evaluator | Poller writes `status: eval_failed` result with a pointer to `run_<N>_eval.log` and stops polling. Restart by deleting the result file. |
 | Half-written status/result file | — | All writes use `.tmp` + `os.replace()`. Readers only ever see complete files. |
 | Log bloat | poller.log grows unbounded | Rotated to `poller.log.1` at ~2 MB at the top of each tick |
 | Multiple concurrent runs submitted | Manifest holds one run only | Not supported by design; submit one at a time |
+
+## Worker-commit guardrail
+
+**The problem.** Celery workers hold Python modules in memory. `git pull` on
+the Mac updates the files on disk, but the running worker keeps using the
+code it imported at startup. A run submitted after the pull will silently
+execute against the OLD code, producing metrics that don't reflect the
+committed changes.
+
+**Run #9 post-mortem (2026-04-09).** Run #9 was submitted against commit
+`c3f399f` which contained six prompt/config changes. The worker had been
+running since that morning (commit `fd6907f`, Run #8). The job reached
+~35% progress with the old triage prompt and an exactly-150 candidate cap
+before the mismatch was caught — two hours of compute wasted. A stale
+worker is the worst kind of failure: the run *completes*, the poller
+*evaluates* it, and the result file *looks normal*.
+
+**The guardrails.**
+
+1. **`scripts/restart_pipeline.sh`** — the ONLY supported way to restart
+   the API + Celery worker. It kills existing processes, re-sources
+   `infra/.env`, launches fresh uvicorn and celery, waits for health, and
+   then atomically writes `~/soccer-runs/state/worker_commit.txt` with the
+   git HEAD of the repo at restart time.
+
+2. **`scripts/submit_run.sh`** — the ONLY supported way to submit a new
+   run. Reads `state/current_run.json.commit_sha`, compares it against
+   `worker_commit.txt`, and *refuses* to submit if they don't match. Also
+   supports `--restart` to do pull + restart + submit in one shot.
+
+3. **`scripts/poll_current_run.sh`** — when it completes a run, the
+   resulting `run_<N>_result.json` carries both `commit_sha` (expected)
+   and `worker_commit_sha` (actually observed) plus a boolean
+   `worker_commit_matches_manifest`. If you ever see `false` in a result
+   file, throw that run's metrics away.
+
+**Mental model.** Manifest commit_sha = *what I intended to run*.
+worker_commit.txt = *what's actually running on the Mac right now*. If
+they ever diverge, either restart the worker or fix the manifest — do
+not submit a run.
+
+**Normal submission flow (Mac shell):**
+```bash
+ssh mac
+cd ~/Downloads/soccer-video-pipeline
+# (1) make sure you're at the commit you want to test
+git pull
+# (2) bounce the worker so it reloads the new code
+bash scripts/restart_pipeline.sh
+# (3) bump state/current_run.json (commit_sha, notes, etc.), commit + push
+#     (from the dev machine), then pull on the Mac, then:
+bash scripts/submit_run.sh
+# submit_run.sh verifies worker_commit_sha == manifest.commit_sha before
+# curling the API. If it mismatches it bails with an actionable message.
+```
+
+**One-shot shortcut (`--restart`):**
+```bash
+bash scripts/submit_run.sh --restart   # pull + restart + verify + submit
+```
 
 ## Usage — day-to-day
 
