@@ -48,8 +48,8 @@ def get_celery_app():
             accept_content=["json"],
             task_track_started=True,
             worker_prefetch_multiplier=1,
-            task_time_limit=14400,
-            task_soft_time_limit=13500,
+            task_time_limit=86400,       # 24h — uncapped candidates can run long
+            task_soft_time_limit=82800,  # 23h — soft limit before hard kill
         )
         _celery_app = app
     return _celery_app

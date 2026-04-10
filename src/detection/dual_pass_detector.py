@@ -40,11 +40,12 @@ You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames from a {duration:.0f}-second window \
 where our triage model flagged potential events: {triage_labels}.
 
-The triage system has already filtered for likely events, so this window \
-almost certainly contains AT LEAST ONE event. Identify every event you can \
-see in these frames — typical windows contain 1-3 events. Be specific about \
-what you observe; do not return an empty list unless the frames clearly show \
-nothing but routine midfield play.
+The triage system has already filtered for likely events, but the triage \
+model is intentionally noisy — it flags aggressively and many windows will \
+contain NO real event. Return an EMPTY list [] when the frames show routine \
+play, midfield passing, or no clear event. False positives are costly; only \
+emit events you can clearly see. Typical windows with a real event contain \
+1-2 events.
 
 Valid event types (choose ONLY from this list):
 {valid_types_block}
@@ -148,9 +149,9 @@ class DualPassConfig:
 
     # Triage scanner settings
     frame_width: int = 960
-    frames_per_window: int = 5
+    frames_per_window: int = 7
     window_span_sec: float = 10.0
-    step_sec: float = 6.0
+    step_sec: float = 4.0  # Tighter step = more overlap = fewer boundary misses
 
     # Candidate merging (tight — ball_zone + gap splitting)
     merge_gap_sec: float = 4.0
@@ -161,7 +162,7 @@ class DualPassConfig:
     classify_max_frames: int = 45  # Max frames per 32B call
     sub_window_sec: float = 20.0  # Sub-window size for chunking
     sub_window_overlap_sec: float = 5.0  # Overlap between sub-windows
-    max_candidates: int = 300  # Cap candidate windows to stay under time limit
+    max_candidates: int = 9999  # Effectively uncapped — user trades time for quality
 
     # Model swap
     swap_script: str = ""  # Path to swap_vllm_model.sh
