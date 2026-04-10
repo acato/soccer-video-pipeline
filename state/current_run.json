@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
   "run_number": 11,
-  "run_label": "run_11",
+  "run_label": "run_11b",
   "job_id": "7c7fd5cd-e5f4-446d-8135-51f2db6619db",
-  "commit_sha": "c8b9dc0",
-  "submitted_at": "2026-04-10T13:37:30Z",
+  "commit_sha": "32c722e",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,7 +34,7 @@
     "goal_fp_max": 6,
     "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #11 - includes all Run #10 classify fixes (catch walkback, corner_kick-requires-flag, goal_kick OVERRIDE, goal tightening) PLUS: uncapped candidates (9999), 7-frame triage (was 5), 4s triage step (was 6), 32B empty-list license (triage is noisy, return [] for routine play). Celery time limit raised 4h->24h (Run #10 timeout fix). Expected longer runtime (8-12h).",
+  "notes": "Run #11b - same as Run #11 but REVERTED empty-list license (caused 0 events in 605 calls). Balanced prompt: 'most flagged windows do contain a real event, may return [] for clearly routine midfield'. Added classify canary (fails after 20 sub-windows if <5% non-empty). Keeps: uncapped candidates (9999), 7-frame triage, 4s step, 24h time limit.",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
