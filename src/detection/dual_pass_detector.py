@@ -49,22 +49,26 @@ nothing but routine midfield play.
 Valid event types (choose ONLY from this list):
 {valid_types_block}
 
-GOALKEEPER GUIDELINES — a GK ball contact is ONLY a save if a shot is \
-visibly involved. Many GK interactions are restarts, not saves:
+GOALKEEPER GUIDELINES — distinguishing saves from restarts:
 - catch: GK ends up HOLDING the ball (ball is in hands/arms and stays there \
 for 2+ frames, OR the ball is no longer visible because it is clutched to \
-the GK body, OR play clearly stops for the GK to distribute). A catch \
-REQUIRES a visible shot or cross that the GK intercepts. If the GK is \
-simply standing over a stationary ball in their own 6-yard box with \
-opponents retreated, that is a goal_kick, NOT a catch.
+the GK body, OR play clearly stops for the GK to distribute). Catches are \
+extremely common — roughly half of all GK events in this game are catches. \
+A catch is valid whether or not a shot is clearly visible in the sampled \
+frames: if the GK ends up holding the ball in play, it is a catch.
+- SHOT-THEN-CATCH IS ONE EVENT — emit catch, NOT shot_on_target. \
+If you see a shot and then the GK holds the ball in the same window, the \
+event is catch. The shot_on_target + catch pair is wrong — pick catch.
 - shot_stop_diving: GK contacts the ball but it CLEARLY rebounds away, \
-continues in play, or goes out for a corner. REQUIRES a visible shot \
-(an attacker kicking the ball toward goal in the same window) AND a \
-visible rebound. No shot → no shot_stop_diving.
+continues in play, or goes out for a corner. A visible rebound must be \
+present. If the ball is no longer in play (GK holding), it is a catch.
 - punch: GK clearly strikes the ball with a FIST (visible punch motion).
-- Split rule: If the ball is visible and moving away after GK contact → \
-shot_stop_diving. If the ball disappears into the GK or is held → catch. \
-If the ball was stationary before the GK touch → goal_kick.
+- Split rule: ball held after GK contact → catch. Ball rebounds visibly → \
+shot_stop_diving. Stationary ball on the ground in the 6-yard box with no \
+GK contact yet → goal_kick.
+- CATCH vs GOAL_KICK: catch means the ball is IN THE GK'S HANDS. goal_kick \
+means the ball is STATIONARY ON THE GROUND and the GK is preparing to kick \
+it. Ball location (hands vs ground) is the deciding factor.
 
 SET-PIECE TIEBREAKER — when a stationary ball + kicker is visible, prefer \
 the specific restart type over free_kick_shot:
@@ -78,12 +82,17 @@ defensive wall → kickoff.
 forming in front of a stationary ball OUTSIDE the penalty area and the \
 other five options above do not apply.
 
-GOAL DETECTION:
-- goal: Emit this when you see BOTH (a) a shot toward goal AND (b) players \
-celebrating within the same window (arms raised, running toward teammates, \
-hugging). If a shot is followed by a GK catch or defenders clearing, it is \
-NOT a goal. When you emit goal, DO NOT also emit shot_on_target for the \
-same moment.
+GOAL DETECTION — goals are RARE (typically 2-6 per game), so require \
+strong evidence. Emit goal ONLY when at least ONE of these is present:
+- (a) the ball is clearly visible INSIDE the goal frame / touching or \
+crossing the goal line / bulging the net, OR
+- (b) MULTIPLE teammates celebrating together for 2+ consecutive frames \
+(arms raised AND running toward teammates AND/OR hugging). A single \
+player with arms raised is NOT enough — require a celebration group.
+A shot alone, even a powerful one, is NOT a goal. A shot followed by a GK \
+catch or defenders clearing is NOT a goal. If you are not certain, prefer \
+shot_on_target over goal. When you emit goal, DO NOT also emit \
+shot_on_target for the same moment.
 
 NOT a save event: GK walking, fielding a routine back-pass to feet, \
 or kicking for distribution with no shot involved.
@@ -108,8 +117,8 @@ _ALL_TYPES = [
     ("catch", "GK holds/secures the ball — ball in hands/arms for 2+ frames or disappears into GK body"),
     ("shot_stop_diving", "GK contacts ball but it CLEARLY rebounds away or continues in play"),
     ("punch", "GK strikes ball with a FIST — visible punch motion in crowded area"),
-    ("corner_kick", "Player standing over a STATIONARY ball INSIDE the corner arc of the pitch (the quarter-circle at a pitch corner). The kicker is by the corner flag; opponents cluster in the penalty area. If you see the corner flag AND a player near it with a stationary ball, it is a corner_kick — NOT shot_on_target, NOT free_kick_shot. The resulting kick/cross is still part of the corner_kick event, not a separate shot."),
-    ("goal_kick", "GK or defender standing near a STATIONARY ball that is ON THE GROUND inside their own 6-yard box or penalty area, preparing to kick it long. Typical cue: the opposing team has retreated past the halfway line. If the GK is in their own 6-yard box with a ball on the ground (not in hands), it is a goal_kick. If the GK is HOLDING the ball after a save, that is a catch, not a goal_kick."),
+    ("corner_kick", "Player standing over a STATIONARY ball INSIDE the corner arc (the quarter-circle at a pitch corner). REQUIREMENT: the corner flag OR the quarter-circle arc MUST be visible in at least one frame of the window. If you only see players clustered in the penalty area around a crossed ball with NO corner flag/arc in frame, it is NOT a corner_kick — it is likely goal_kick aftermath, shot_on_target, or open-play cross. Do not guess corner_kick from context alone; require the visual cue."),
+    ("goal_kick", "GK or defender standing near a STATIONARY ball ON THE GROUND inside their own 6-yard box or penalty area, preparing to kick it long. Typical cue: the opposing team has retreated past the halfway line. OVERRIDE: whenever you see a GK or defender in or near their own 6-yard box with a stationary ball on the ground AND opponents retreated past midfield, classify as goal_kick — this takes priority over corner_kick (corner_kick requires a visible corner flag/arc in the attacking corner, which a goal_kick never has), throw_in (which requires a touchline), free_kick_shot (which requires a defensive wall), and shot_on_target (which requires a visible kicking motion at goal). goal_kicks are among the most common restarts — expect 15-25 per game."),
     ("free_kick_shot", "Stationary ball outside the penalty area with a defensive wall of 3+ players forming; the free-kick taker is preparing to shoot directly at goal. NOT a corner_kick (corner is inside the corner arc) and NOT a goal_kick (that is the GK in the 6-yard box)."),
     ("throw_in", "Player at the sideline/touchline holding the ball with BOTH HANDS above or behind the head, about to throw it back in. Also count the setup frames where a player is standing at the sideline gathering a ball. If ANY player is near the sideline with a ball and the throw motion is visible or imminent, it is a throw_in."),
     ("penalty", "All players outside the penalty area except the kicker and GK; ball on the penalty spot, GK on the goal line"),
@@ -152,7 +161,7 @@ class DualPassConfig:
     classify_max_frames: int = 45  # Max frames per 32B call
     sub_window_sec: float = 20.0  # Sub-window size for chunking
     sub_window_overlap_sec: float = 5.0  # Overlap between sub-windows
-    max_candidates: int = 220  # Cap candidate windows to stay under time limit
+    max_candidates: int = 300  # Cap candidate windows to stay under time limit
 
     # Model swap
     swap_script: str = ""  # Path to swap_vllm_model.sh

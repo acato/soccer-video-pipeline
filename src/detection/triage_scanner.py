@@ -124,10 +124,21 @@ it) is a throw_in (SET_PIECE), NOT ATTACK.
 - A stationary ball in the defensive third with the GK walking to it is \
 a goal_kick (SET_PIECE), NOT PLAY.
 
-HARD OVERRIDE: If the GK is in their own box with a ball at their feet \
-OR a player is near the touchline gathering a loose ball OR a player is \
-at a corner flag → the label is SET_PIECE, regardless of any other rule \
-or tiebreaker below.
+HARD OVERRIDE: If ANY of these are visible → label is SET_PIECE, \
+regardless of any other rule or tiebreaker below:
+  - GK or defender in their own 6-yard box or penalty area with a ball \
+at their feet or on the ground nearby (goal_kick). THIS IS THE MOST \
+COMMON ERROR: the 8B under-flags goal_kicks because the ball looks \
+like it might be moving. Flag it anyway — even if the GK is just \
+walking toward a stationary ball in their own box, that is a goal_kick \
+in progress and MUST be SET_PIECE. Never label this as ATTACK or PLAY.
+  - Player near the touchline/sideline gathering or holding a ball \
+(throw_in), even if the throw itself is not yet happening.
+  - Player standing at or near a corner flag with a ball (corner_kick).
+  - Stationary ball outside the penalty area with a wall of 3+ \
+defensive players forming in front of it (free_kick_shot).
+  - Ball on the penalty spot with only the kicker and GK in the \
+penalty area (penalty).
 
 Tie-breakers (only apply AFTER the hard override):
 - Borderline between SET_PIECE and anything else → choose SET_PIECE. \
