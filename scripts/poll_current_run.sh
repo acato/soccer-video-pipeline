@@ -308,7 +308,22 @@ PYEOF
     ;;
 
   *)
-    # ingesting/detecting/segmenting/assembling — still in flight, nothing more to do.
+    # ingesting/detecting/segmenting/assembling — still in flight.
+    # ── Canary 6: Progress stall detector ──────────────────────────────
+    # If progress hasn't moved >0.1% in the last 2 poll cycles (~10 min),
+    # warn that the job may be stuck (e.g., Celery killed worker silently,
+    # vLLM server crashed, network issue).
+    STALL_FILE="$STATE_DIR/${RUN_LABEL}_prev_progress"
+    if [[ -f "$STALL_FILE" ]]; then
+      read -r PREV_PROGRESS PREV_TS < "$STALL_FILE"
+      DELTA_PROGRESS=$("$PY" -c "print(abs(${PROGRESS:-0} - ${PREV_PROGRESS:-0}))")
+      IS_STALLED=$("$PY" -c "print('yes' if float('${DELTA_PROGRESS}') < 0.1 else 'no')")
+      if [[ "$IS_STALLED" == "yes" ]]; then
+        log "WARN: progress stalled at ${PROGRESS}% (was ${PREV_PROGRESS}% at $PREV_TS) — job may be stuck"
+        notify "Soccer Pipeline" "Run $RUN_NUMBER stalled at ${PROGRESS}% — check worker health"
+      fi
+    fi
+    echo "$PROGRESS $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STALL_FILE"
     ;;
 esac
 

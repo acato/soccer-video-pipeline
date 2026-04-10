@@ -27,7 +27,9 @@ import structlog
 from src.detection.frame_sampler import FrameSampler, SampledFrame
 from src.detection.models import Event, EventType
 from src.detection.triage_scanner import (
+    ACTIVE_LABELS,
     CandidateWindow,
+    TriageScanResult,
     TriageScanner,
     merge_flags,
 )
@@ -173,11 +175,27 @@ class DualPassConfig:
     swap_script: str = ""  # Path to swap_vllm_model.sh
     swap_timeout_sec: int = 180
 
-    # Classify canary — detect all-empty 32B responses early
+    # ── Canary system ───────────────────────────────────────────────────
     canary_enabled: bool = True
+    canary_action: str = "fail"             # "fail" or "warn"
+
+    # Canary 1: Classify empty-response detector
     canary_window_count: int = 20           # Check after this many sub-windows
     canary_min_nonempty_fraction: float = 0.05  # Fail if < 5% produced events
-    canary_action: str = "fail"             # "fail" or "warn"
+
+    # Canary 2: Triage distribution sanity check
+    triage_canary_max_single_label_pct: float = 0.92  # Fail if any label > 92%
+    triage_canary_min_active_pct: float = 0.03        # Fail if < 3% active flags
+
+    # Canary 3: Model swap health ping
+    swap_canary_enabled: bool = True  # Send test prompt after 32B swap
+
+    # Canary 4: Event type diversity (mid-classify, 50% mark)
+    diversity_canary_min_types: int = 2     # Expect ≥2 distinct event types
+    diversity_canary_check_after: int = 50  # Check after this many events
+
+    # Canary 5: vLLM latency tracking
+    latency_canary_max_p95_sec: float = 180.0  # Warn if p95 > 3 min
 
 
 class DualPassDetector:
@@ -245,7 +263,12 @@ class DualPassDetector:
         def on_triage_progress(pct: float):
             _progress(0.02 + pct * 0.43)
 
-        flags = scanner.scan(progress_callback=on_triage_progress)
+        scan_result = scanner.scan(progress_callback=on_triage_progress)
+        flags = scan_result.flags
+
+        # ── Canary 2: Triage distribution sanity check ────────────────
+        if self._cfg.canary_enabled:
+            self._check_triage_canary(scan_result)
 
         # Merge nearby flags into candidate windows
         candidates = merge_flags(
@@ -292,6 +315,11 @@ class DualPassDetector:
             model_path=self._cfg.tier2_model_path,
             tier="tier2",
         )
+
+        # ── Canary 3: Model swap health ping ──────────────────────────
+        if self._cfg.canary_enabled and self._cfg.swap_canary_enabled:
+            self._check_swap_canary()
+
         _progress(0.50)
 
         # ── Phase 4: 32B classification of each candidate window ───────
@@ -302,16 +330,30 @@ class DualPassDetector:
         self._canary_sub_total = 0
         self._canary_sub_nonempty = 0
         self._canary_checked = False
+        self._classify_latencies: list[float] = []
+        self._diversity_checked = False
 
         for idx, window in enumerate(candidates):
             events = self._classify_window(window)
             all_events.extend(events)
 
-            # Classify canary: check after enough sub-windows
+            # Canary 1: Classify empty-response check after N sub-windows
             if (self._cfg.canary_enabled
                     and not self._canary_checked
                     and self._canary_sub_total >= self._cfg.canary_window_count):
                 self._check_classify_canary()
+
+            # Canary 4: Event type diversity (after enough events detected)
+            if (self._cfg.canary_enabled
+                    and not self._diversity_checked
+                    and len(all_events) >= self._cfg.diversity_canary_check_after):
+                self._check_diversity_canary(all_events)
+
+            # Canary 5: vLLM latency tracking (log every 50 sub-windows)
+            if (self._cfg.canary_enabled
+                    and self._canary_sub_total > 0
+                    and self._canary_sub_total % 50 == 0):
+                self._check_latency_canary()
 
             _progress(0.50 + 0.45 * (idx + 1) / len(candidates))
 
@@ -430,6 +472,7 @@ class DualPassDetector:
     ) -> list[Event]:
         """Send a single sub-window to the 32B model for classification."""
         import httpx
+        import time
 
         duration = end_sec - start_sec
         frames = self._sampler.sample_range(
@@ -477,11 +520,15 @@ class DualPassDetector:
         }
 
         try:
+            t0 = time.monotonic()
             r = httpx.post(
                 f"{self._cfg.vllm_url}/v1/chat/completions",
                 json=payload,
                 timeout=120,
             )
+            elapsed = time.monotonic() - t0
+            self._classify_latencies.append(elapsed)
+
             if r.status_code != 200:
                 log.warning("dual_pass.classify_error",
                             status=r.status_code, body=r.text[:200],
@@ -666,6 +713,179 @@ class DualPassDetector:
             log.info("dual_pass.post_filtered",
                      dropped=dropped, kept=len(kept))
         return kept
+
+    # ── Canary methods ──────────────────────────────────────────────────
+
+    def _check_triage_canary(self, result: TriageScanResult) -> None:
+        """Canary 2: Validate triage label distribution is sane.
+
+        Fires after triage completes, before model swap. Detects:
+        - Degenerate distributions (>92% single label = broken triage prompt)
+        - Too few active flags (<3% = triage too conservative, nothing for 32B)
+        """
+        total = result.total_windows
+        if total == 0:
+            return
+
+        counts = result.label_counts
+        active_count = sum(counts.get(l, 0) for l in ACTIVE_LABELS)
+        active_pct = active_count / total
+
+        # Check single-label dominance
+        for label, count in counts.items():
+            pct = count / total
+            if pct > self._cfg.triage_canary_max_single_label_pct:
+                msg = (
+                    f"Triage canary: label '{label}' accounts for "
+                    f"{pct:.1%} of {total} windows (threshold: "
+                    f"{self._cfg.triage_canary_max_single_label_pct:.0%}). "
+                    f"Distribution: {counts}. Likely 8B prompt regression."
+                )
+                if self._cfg.canary_action == "fail":
+                    log.critical("dual_pass.triage_canary_failed",
+                                 dominant_label=label, pct=f"{pct:.1%}",
+                                 counts=counts)
+                    raise CanaryFailure(msg)
+                else:
+                    log.critical("dual_pass.triage_canary_warning", msg=msg)
+
+        # Check minimum active fraction
+        if active_pct < self._cfg.triage_canary_min_active_pct:
+            msg = (
+                f"Triage canary: only {active_pct:.1%} of {total} windows "
+                f"are active (threshold: "
+                f"{self._cfg.triage_canary_min_active_pct:.0%}). "
+                f"Distribution: {counts}. Triage is too conservative."
+            )
+            if self._cfg.canary_action == "fail":
+                log.critical("dual_pass.triage_canary_failed",
+                             active_pct=f"{active_pct:.1%}", counts=counts)
+                raise CanaryFailure(msg)
+            else:
+                log.critical("dual_pass.triage_canary_warning", msg=msg)
+
+        log.info("dual_pass.triage_canary_passed",
+                 active_pct=f"{active_pct:.1%}",
+                 total_windows=total, counts=counts)
+
+    def _check_swap_canary(self) -> None:
+        """Canary 3: Verify the 32B model responds coherently after swap.
+
+        Sends a minimal text-only prompt to the 32B and checks for a valid
+        JSON response. Catches model load failures, OOM, or wrong model.
+        """
+        import httpx
+
+        test_payload = {
+            "model": self._cfg.tier2_model_name,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": (
+                    "Respond with ONLY this exact JSON: "
+                    '[{"event_type": "test", "status": "ok"}]'
+                )},
+            ]}],
+            "max_tokens": 50,
+            "temperature": 0,
+        }
+
+        try:
+            r = httpx.post(
+                f"{self._cfg.vllm_url}/v1/chat/completions",
+                json=test_payload,
+                timeout=30,
+            )
+            if r.status_code != 200:
+                msg = (
+                    f"Swap canary: 32B health ping returned HTTP {r.status_code}. "
+                    f"Body: {r.text[:200]}. Model may not have loaded correctly."
+                )
+                log.critical("dual_pass.swap_canary_failed",
+                             status=r.status_code)
+                if self._cfg.canary_action == "fail":
+                    raise CanaryFailure(msg)
+                else:
+                    log.critical("dual_pass.swap_canary_warning", msg=msg)
+                return
+
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            # Just verify we got some response — don't require exact JSON
+            if len(text) < 2:
+                msg = f"Swap canary: 32B returned empty response: '{text}'"
+                log.critical("dual_pass.swap_canary_failed", text=text)
+                if self._cfg.canary_action == "fail":
+                    raise CanaryFailure(msg)
+            else:
+                model_id = r.json().get("model", "unknown")
+                log.info("dual_pass.swap_canary_passed",
+                         model=model_id, response=text[:100])
+
+        except httpx.TimeoutException:
+            msg = "Swap canary: 32B health ping timed out after 30s"
+            log.critical("dual_pass.swap_canary_timeout")
+            if self._cfg.canary_action == "fail":
+                raise CanaryFailure(msg)
+
+    def _check_diversity_canary(self, events: list[Event]) -> None:
+        """Canary 4: Check that detected events aren't all the same type.
+
+        Fires once after diversity_canary_check_after events. If the 32B
+        is always returning the same event type, the classify prompt is
+        likely biased or broken.
+        """
+        self._diversity_checked = True
+        type_counts: dict[str, int] = {}
+        for e in events:
+            t = e.event_type.value
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+        n_types = len(type_counts)
+        if n_types >= self._cfg.diversity_canary_min_types:
+            log.info("dual_pass.diversity_canary_passed",
+                     n_types=n_types, counts=type_counts,
+                     total_events=len(events))
+            return
+
+        # Check if a single type dominates >90%
+        dominant = max(type_counts, key=type_counts.get)  # type: ignore[arg-type]
+        dominant_pct = type_counts[dominant] / len(events)
+        msg = (
+            f"Diversity canary: only {n_types} event type(s) in first "
+            f"{len(events)} events. '{dominant}' = {dominant_pct:.0%}. "
+            f"Distribution: {type_counts}."
+        )
+        # This is a warning, not a failure — some games legitimately have
+        # concentrated event types early on.
+        log.warning("dual_pass.diversity_canary_warning",
+                    n_types=n_types, counts=type_counts, msg=msg)
+
+    def _check_latency_canary(self) -> None:
+        """Canary 5: Monitor vLLM response latencies for anomalies.
+
+        Logs p50/p95/max latency stats every 50 sub-windows. Warns if
+        p95 exceeds the threshold (GPU throttling, OOM pressure, etc.).
+        """
+        if not self._classify_latencies:
+            return
+
+        latencies = sorted(self._classify_latencies)
+        n = len(latencies)
+        p50 = latencies[n // 2]
+        p95 = latencies[int(n * 0.95)]
+        p_max = latencies[-1]
+
+        log.info("dual_pass.latency_stats",
+                 n_calls=n, p50=f"{p50:.1f}s", p95=f"{p95:.1f}s",
+                 max=f"{p_max:.1f}s")
+
+        if p95 > self._cfg.latency_canary_max_p95_sec:
+            log.warning("dual_pass.latency_canary_warning",
+                        p95=f"{p95:.1f}s",
+                        threshold=f"{self._cfg.latency_canary_max_p95_sec:.0f}s",
+                        msg=(
+                            f"vLLM p95 latency {p95:.1f}s exceeds "
+                            f"{self._cfg.latency_canary_max_p95_sec:.0f}s threshold. "
+                            f"Check GPU health / memory pressure."
+                        ))
 
     def _check_classify_canary(self) -> None:
         """Check if the 32B classify phase is producing reasonable results.

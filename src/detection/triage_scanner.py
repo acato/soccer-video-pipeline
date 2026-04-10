@@ -47,6 +47,14 @@ class TriageFlag:
 
 
 @dataclass
+class TriageScanResult:
+    """Full triage scan output including diagnostics."""
+    flags: list[TriageFlag]
+    label_counts: dict  # str -> int, e.g. {"SET_PIECE": 315, "PLAY": 200, ...}
+    total_windows: int  # Total windows scanned (active + inactive)
+
+
+@dataclass
 class CandidateWindow:
     """Merged candidate window for 32B review."""
     start_sec: float
@@ -184,7 +192,7 @@ class TriageScanner:
         progress_callback: Optional[Callable[[float], None]] = None,
         start_sec: float = 0.0,
         end_sec: Optional[float] = None,
-    ) -> list[TriageFlag]:
+    ) -> TriageScanResult:
         """Scan the game with sliding windows, returning triage flags.
 
         Args:
@@ -193,7 +201,8 @@ class TriageScanner:
             end_sec: Stop scanning at this timestamp (default: video end).
 
         Returns:
-            List of TriageFlag for windows classified as active events.
+            TriageScanResult containing flags, label distribution, and total
+            window count.
         """
         if end_sec is None:
             end_sec = self._video_duration
@@ -272,7 +281,11 @@ class TriageScanner:
                  total_windows=window_idx, flags=len(flags),
                  restart_flags=len(restart_flags),
                  label_distribution=dict(label_counts))
-        return flags
+        return TriageScanResult(
+            flags=flags,
+            label_counts=dict(label_counts),
+            total_windows=window_idx,
+        )
 
     def _classify_window(self, frames: list[SampledFrame]) -> tuple[str, str]:
         """Send a multi-frame window to the 8B model for classification.
