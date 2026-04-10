@@ -1,32 +1,40 @@
 {
   "$schema_version": 1,
-  "run_number": 9,
-  "run_label": "run_9",
-  "job_id": "351a6518-2ed6-4a18-8d6a-e659ac475655",
-  "commit_sha": "c3f399f",
-  "submitted_at": "2026-04-09T19:57:14Z",
+  "run_number": 10,
+  "run_label": "run_10",
+  "job_id": "PENDING",
+  "commit_sha": "2823264",
+  "submitted_at": "PENDING",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": ["--tolerance", "30"],
   "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
+  "job_payload": {
+    "nas_path": "2026-02-07 - Rush - GA2008.mp4",
+    "reel_types": ["corner_kick", "goal_kick"],
+    "match_config": {
+      "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
+      "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
+    }
+  },
   "baseline": {
-    "run": "7c",
-    "f1": 0.28,
-    "notes": "Run #8 regressed to F1=0.238; still targeting Run #7c's 0.28 as the floor to beat"
+    "run": "9",
+    "f1": 0.302,
+    "notes": "Run #9 = new baseline. F1=0.302 (50 TP / 106 FN / 125 FP). Beat Run #7c (0.28) and Run #8 (0.238). Wins: throw_in 7->17 TP, corner_kick 3->5 TP, shot_on_target 15->22 TP. Regressions: catch 1->0 TP (self-inflicted), goal_kick 3->1 TP (stolen by corner_kick + ATTACK-window defaults)."
   },
   "targets": {
     "f1": 0.35,
-    "goal_kick_tp_min": 10,
+    "goal_kick_tp_min": 6,
     "throw_in_tp_min": 18,
-    "corner_kick_tp_min": 3,
-    "catch_tp_min": 4,
-    "shot_on_target_tp_min": 20,
-    "free_kick_shot_fp_max": 10,
-    "kickoff_fp_max": 0
+    "corner_kick_tp_min": 5,
+    "catch_tp_min": 3,
+    "shot_on_target_tp_min": 22,
+    "goal_fp_max": 6,
+    "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #9 - fixes 8B triage ATTACK-mislabel (15/20 goal_kick misses were flagged ATTACK not SET_PIECE). Hard-override rule in triage prompt: GK in own box / player at touchline / corner flag -> SET_PIECE. Flipped PLAY<->ATTACK tiebreaker to prefer PLAY. 32B: goal_kick requires ball ON GROUND (walks back over-rotation), catch vs goal_kick disambig, set-piece tiebreaker block making FKS last resort, shot_stop_diving requires visible shot+rebound, kickoff re-added as magnet type with post-filter drop. max_candidates 150->220.",
+  "notes": "Run #10 - fixes Run #9 catch regression (walked back 'requires visible shot' rule; added shot-then-catch=catch tiebreaker), goal_kick stealing (corner_kick now requires visible flag/arc; goal_kick has explicit OVERRIDE priority). Raised max_candidates 220->300 (user approved compute bump). Tightened goal detection to require ball-in-net OR multi-player celebration (cut 11 FPs). Expanded triage HARD OVERRIDE with explicit bulleted list naming goal_kick under-flagging as 'THE MOST COMMON ERROR'.",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
