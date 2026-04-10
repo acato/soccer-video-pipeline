@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 10,
-  "run_label": "run_10",
+  "run_number": 11,
+  "run_label": "run_11",
   "job_id": "351a6518-2ed6-4a18-8d6a-e659ac475655",
-  "commit_sha": "2823264",
-  "submitted_at": "2026-04-10T01:25:32Z",
+  "commit_sha": "c8b9dc0",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -22,7 +22,7 @@
   "baseline": {
     "run": "9",
     "f1": 0.302,
-    "notes": "Run #9 = new baseline. F1=0.302 (50 TP / 106 FN / 125 FP). Beat Run #7c (0.28) and Run #8 (0.238). Wins: throw_in 7->17 TP, corner_kick 3->5 TP, shot_on_target 15->22 TP. Regressions: catch 1->0 TP (self-inflicted), goal_kick 3->1 TP (stolen by corner_kick + ATTACK-window defaults)."
+    "notes": "Run #9 baseline (Run #10 killed by 4h Celery timeout at 54%). F1=0.302 (50 TP / 106 FN / 125 FP)."
   },
   "targets": {
     "f1": 0.35,
@@ -34,7 +34,7 @@
     "goal_fp_max": 6,
     "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #10 - fixes Run #9 catch regression (walked back 'requires visible shot' rule; added shot-then-catch=catch tiebreaker), goal_kick stealing (corner_kick now requires visible flag/arc; goal_kick has explicit OVERRIDE priority). Raised max_candidates 220->300 (user approved compute bump). Tightened goal detection to require ball-in-net OR multi-player celebration (cut 11 FPs). Expanded triage HARD OVERRIDE with explicit bulleted list naming goal_kick under-flagging as 'THE MOST COMMON ERROR'.",
+  "notes": "Run #11 - includes all Run #10 classify fixes (catch walkback, corner_kick-requires-flag, goal_kick OVERRIDE, goal tightening) PLUS: uncapped candidates (9999), 7-frame triage (was 5), 4s triage step (was 6), 32B empty-list license (triage is noisy, return [] for routine play). Celery time limit raised 4h->24h (Run #10 timeout fix). Expected longer runtime (8-12h).",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
