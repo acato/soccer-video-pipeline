@@ -34,6 +34,11 @@ from src.detection.triage_scanner import (
 
 log = structlog.get_logger(__name__)
 
+
+class CanaryFailure(RuntimeError):
+    """Raised when a canary check detects a likely pipeline regression."""
+    pass
+
 # 32B classification prompt — sent with dense frames from a candidate window
 _CLASSIFY_PROMPT = """\
 You are analyzing a soccer match from a sideline camera. \
@@ -168,6 +173,12 @@ class DualPassConfig:
     swap_script: str = ""  # Path to swap_vllm_model.sh
     swap_timeout_sec: int = 180
 
+    # Classify canary — detect all-empty 32B responses early
+    canary_enabled: bool = True
+    canary_window_count: int = 20           # Check after this many sub-windows
+    canary_min_nonempty_fraction: float = 0.05  # Fail if < 5% produced events
+    canary_action: str = "fail"             # "fail" or "warn"
+
 
 class DualPassDetector:
     """Orchestrates the 8B triage → swap → 32B classification pipeline."""
@@ -288,9 +299,19 @@ class DualPassDetector:
                  job_id=self._job_id, windows=len(candidates))
 
         all_events: list[Event] = []
+        self._canary_sub_total = 0
+        self._canary_sub_nonempty = 0
+        self._canary_checked = False
+
         for idx, window in enumerate(candidates):
             events = self._classify_window(window)
             all_events.extend(events)
+
+            # Classify canary: check after enough sub-windows
+            if (self._cfg.canary_enabled
+                    and not self._canary_checked
+                    and self._canary_sub_total >= self._cfg.canary_window_count):
+                self._check_classify_canary()
 
             _progress(0.50 + 0.45 * (idx + 1) / len(candidates))
 
@@ -475,11 +496,19 @@ class DualPassDetector:
                 start_sec=start_sec, end_sec=end_sec,
                 labels=triage_labels, flags=[],
             )
-            return self._parse_classify_response(text, tmp_window)
+            events = self._parse_classify_response(text, tmp_window)
+
+            # Track canary counters
+            self._canary_sub_total += 1
+            if events:
+                self._canary_sub_nonempty += 1
+
+            return events
 
         except Exception as exc:
             log.warning("dual_pass.classify_exception",
                         error=str(exc), sub_start=start_sec)
+            self._canary_sub_total += 1
             return []
 
     def _parse_classify_response(
@@ -637,6 +666,42 @@ class DualPassDetector:
             log.info("dual_pass.post_filtered",
                      dropped=dropped, kept=len(kept))
         return kept
+
+    def _check_classify_canary(self) -> None:
+        """Check if the 32B classify phase is producing reasonable results.
+
+        Fires once after canary_window_count sub-windows. If the fraction
+        of non-empty responses is below the threshold, the run is likely
+        broken (e.g., prompt regression causing all-empty returns).
+        """
+        self._canary_checked = True
+        total = self._canary_sub_total
+        nonempty = self._canary_sub_nonempty
+        frac = nonempty / total if total > 0 else 0.0
+        threshold = self._cfg.canary_min_nonempty_fraction
+
+        if frac >= threshold:
+            log.info("dual_pass.canary_passed",
+                     nonempty=nonempty, total=total,
+                     fraction=f"{frac:.1%}",
+                     threshold=f"{threshold:.1%}")
+            return
+
+        msg = (
+            f"Classify canary FAILED: only {nonempty}/{total} "
+            f"({frac:.1%}) sub-windows returned events "
+            f"(threshold: {threshold:.1%}). "
+            f"Likely 32B prompt regression — aborting to save compute."
+        )
+        if self._cfg.canary_action == "fail":
+            log.critical("dual_pass.canary_failed",
+                         nonempty=nonempty, total=total,
+                         fraction=f"{frac:.1%}")
+            raise CanaryFailure(msg)
+        else:
+            log.critical("dual_pass.canary_warning",
+                         nonempty=nonempty, total=total,
+                         fraction=f"{frac:.1%}", msg=msg)
 
     def _save_triage_diagnostics(
         self, flags: list, candidates: list[CandidateWindow]

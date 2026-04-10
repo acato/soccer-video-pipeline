@@ -316,7 +316,13 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
     def on_detect_progress(pct: float):
         store.update_status(job_id, JobStatus.DETECTING, progress=5.0 + pct * 55.0)
 
-    all_events = detector.detect(progress_callback=on_detect_progress)
+    from src.detection.dual_pass_detector import CanaryFailure
+    try:
+        all_events = detector.detect(progress_callback=on_detect_progress)
+    except CanaryFailure as exc:
+        log.critical("pipeline.canary_failure", job_id=job_id, error=str(exc))
+        store.update_status(job_id, JobStatus.FAILED, error=str(exc))
+        raise
 
     # Write events to event log
     event_log = EventLog(working / "events.jsonl")
