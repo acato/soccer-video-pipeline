@@ -4,7 +4,7 @@
   "run_label": "run_11",
   "job_id": "351a6518-2ed6-4a18-8d6a-e659ac475655",
   "commit_sha": "c8b9dc0",
-  "submitted_at": null,
+  "submitted_at": "2026-04-10T13:37:30Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
