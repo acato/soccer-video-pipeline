@@ -61,19 +61,29 @@ if [ ! -f "$WORKER_COMMIT_FILE" ]; then
   exit 1
 fi
 
-WORKER_SHA="$(head -1 "$WORKER_COMMIT_FILE")"
+WORKER_SHA_SHORT="$(head -1 "$WORKER_COMMIT_FILE")"
+WORKER_SHA_FULL="$(sed -n 2p "$WORKER_COMMIT_FILE")"
 EXPECTED_SHORT="${EXPECTED_SHA:0:7}"
-WORKER_SHORT="${WORKER_SHA:0:7}"
+WORKER_SHORT="${WORKER_SHA_SHORT:0:7}"
 
-if [ "$WORKER_SHORT" != "$EXPECTED_SHORT" ]; then
+# Use ancestor check rather than strict equality. The manifest commit_sha
+# points to the commit that introduced the CODE changes, but the worker is
+# typically running a later commit (HEAD at restart time) that includes
+# the manifest update itself. As long as the expected commit is reachable
+# from the worker commit, the code is live in the worker's memory.
+if [ "$WORKER_SHORT" = "$EXPECTED_SHORT" ]; then
+  echo "[submit] worker commit OK ($WORKER_SHORT == $EXPECTED_SHORT)"
+elif git merge-base --is-ancestor "$EXPECTED_SHA" "${WORKER_SHA_FULL:-$WORKER_SHA_SHORT}" 2>/dev/null; then
+  echo "[submit] worker commit OK ($WORKER_SHORT is descendant of $EXPECTED_SHORT)"
+else
   cat >&2 <<EOF
-[submit] FAIL: worker commit mismatch
-  expected (manifest): $EXPECTED_SHORT
-  running  (worker):   $WORKER_SHORT
+[submit] FAIL: worker commit does not include manifest commit
+  expected (manifest): $EXPECTED_SHORT ($EXPECTED_SHA)
+  running  (worker):   $WORKER_SHORT ($WORKER_SHA_FULL)
 
-The Celery worker has Python modules from a different commit loaded in
-memory. Python imports are cached per-process — 'git pull' does NOT
-reload code in a running worker.
+The worker's loaded code does not include the commit the manifest says
+we want to test. Either the worker was restarted from a stale checkout
+or someone force-pushed over the branch.
 
 Fix with:
   bash scripts/restart_pipeline.sh
@@ -83,8 +93,6 @@ Or in one shot:
 EOF
   exit 1
 fi
-
-echo "[submit] worker commit OK ($WORKER_SHORT == $EXPECTED_SHORT)"
 
 # Check the repo's current HEAD matches too (we're on the committed manifest)
 REPO_SHA="$(git rev-parse --short HEAD)"

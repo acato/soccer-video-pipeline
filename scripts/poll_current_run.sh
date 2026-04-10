@@ -120,20 +120,22 @@ fi
 # Run #9 post-mortem: a stale worker (started hours before the code push)
 # silently burned a 2-hour run. This check prevents a repeat.
 MANIFEST_SHA=$("$PY" -c "import json,sys;d=json.load(open(sys.argv[1]));print(d.get('commit_sha',''))" "$MANIFEST")
+MISMATCH_FLAG=0
 if [[ -f "$WORKER_COMMIT_FILE" && -n "$MANIFEST_SHA" ]]; then
-  WORKER_SHA=$(head -1 "$WORKER_COMMIT_FILE" 2>/dev/null || echo "")
-  # Normalize to 7 chars for comparison
+  WORKER_SHA_SHORT=$(head -1 "$WORKER_COMMIT_FILE" 2>/dev/null || echo "")
+  WORKER_SHA_FULL=$(sed -n 2p "$WORKER_COMMIT_FILE" 2>/dev/null || echo "$WORKER_SHA_SHORT")
   M_SHORT="${MANIFEST_SHA:0:7}"
-  W_SHORT="${WORKER_SHA:0:7}"
+  W_SHORT="${WORKER_SHA_SHORT:0:7}"
   if [[ -n "$W_SHORT" && "$W_SHORT" != "$M_SHORT" ]]; then
-    log "WARN: worker_commit=$W_SHORT != manifest_commit=$M_SHORT — run may be on stale code"
-    # Record the mismatch in the status snapshot so it's visible to operators.
-    MISMATCH_FLAG=1
-  else
-    MISMATCH_FLAG=0
+    # Ancestor check: if manifest_sha is an ancestor of worker_sha, the
+    # worker's loaded code includes it, so no mismatch.
+    if (cd "$REPO" && git merge-base --is-ancestor "$MANIFEST_SHA" "$WORKER_SHA_FULL" 2>/dev/null); then
+      :  # ok — worker is a descendant of the manifest commit
+    else
+      log "WARN: worker_commit=$W_SHORT does not contain manifest_commit=$M_SHORT — run may be on stale code"
+      MISMATCH_FLAG=1
+    fi
   fi
-else
-  MISMATCH_FLAG=0
 fi
 
 # ── Query the API ──────────────────────────────────────────────────────────
