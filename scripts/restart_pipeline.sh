@@ -40,6 +40,11 @@ sleep 1
 echo "[restart] loading env..."
 set -a; source infra/.env; set +a
 export PYTHONPATH="$(pwd)"
+# Ensure homebrew binaries (ffmpeg/ffprobe) are on PATH. A bare 'nohup'
+# from an ssh shell inherits a minimal PATH that does NOT include
+# /opt/homebrew/bin, and the API fails any job with
+#   "Failed to extract metadata: [Errno 2] No such file or directory: 'ffprobe'"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
 
 echo "[restart] starting uvicorn on :$API_PORT..."
 nohup .venv/bin/uvicorn src.api.app:app \
