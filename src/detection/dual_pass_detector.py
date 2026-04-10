@@ -40,12 +40,12 @@ You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames from a {duration:.0f}-second window \
 where our triage model flagged potential events: {triage_labels}.
 
-The triage system has already filtered for likely events, but the triage \
-model is intentionally noisy — it flags aggressively and many windows will \
-contain NO real event. Return an EMPTY list [] when the frames show routine \
-play, midfield passing, or no clear event. False positives are costly; only \
-emit events you can clearly see. Typical windows with a real event contain \
-1-2 events.
+The triage system has already filtered for likely events, so this window \
+likely contains at least one event. Identify every event you can see in \
+these frames — typical windows contain 1-3 events. Be specific about what \
+you observe. You may return an empty list [] if the frames clearly show \
+nothing but routine midfield play with no event near either goal, but do \
+not default to empty — most flagged windows do contain a real event.
 
 Valid event types (choose ONLY from this list):
 {valid_types_block}
