@@ -1,9 +1,9 @@
 {
   "$schema_version": 1,
-  "run_number": 11,
-  "run_label": "run_11b",
-  "job_id": "7c7fd5cd-e5f4-446d-8135-51f2db6619db",
-  "commit_sha": "32c722e",
+  "run_number": 12,
+  "run_label": "run_12",
+  "job_id": "16baaf24-ef6e-4c4a-a385-43ff83a8bb58",
+  "commit_sha": "6f2595c",
   "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
@@ -22,7 +22,7 @@
   "baseline": {
     "run": "9",
     "f1": 0.302,
-    "notes": "Run #9 baseline (Run #10 killed by 4h Celery timeout at 54%). F1=0.302 (50 TP / 106 FN / 125 FP)."
+    "notes": "Run #9 baseline. F1=0.302 (50 TP / 106 FN / 125 FP)."
   },
   "targets": {
     "f1": 0.35,
@@ -34,7 +34,7 @@
     "goal_fp_max": 6,
     "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #11b - same as Run #11 but REVERTED empty-list license (caused 0 events in 605 calls). Balanced prompt: 'most flagged windows do contain a real event, may return [] for clearly routine midfield'. Added classify canary (fails after 20 sub-windows if <5% non-empty). Keeps: uncapped candidates (9999), 7-frame triage, 4s step, 24h time limit.",
+  "notes": "Run #12 — removed all [] mentions from classify prompt (root cause: 32B latches onto [] as easiest valid response). Full 6-canary system active. Keeps: uncapped candidates (9999), 7-frame triage, 4s step, 24h time limit.",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
