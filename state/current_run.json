@@ -2,8 +2,8 @@
   "$schema_version": 1,
   "run_number": 12,
   "run_label": "run_12",
-  "job_id": "f2d846a8-5351-4e1f-bae0-958923a7ee66",
-  "commit_sha": "bfbd8ac",
+  "job_id": "ee09b49a-a191-46c0-a287-e37682ae3934",
+  "commit_sha": "39379b1",
   "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
@@ -34,7 +34,7 @@
     "goal_fp_max": 6,
     "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #12 — two fixes: (1) removed [] from classify prompt (32B latches onto it), (2) classify_max_frames 45→2 (32B degrades with 3+ images). Full 6-canary system active. Keeps: uncapped candidates (9999), 7-frame triage, 4s step, 24h time limit.",
+  "notes": "Run #12 — three fixes: (1) removed [] from prompt, (2) max_frames 45→2, (3) shortened prompt 6748→1339 chars (32B returns [] when prompt+images exceed ~2000 chars). Verified on 32B before deploy. Full 6-canary system active.",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
