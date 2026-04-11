@@ -167,7 +167,7 @@ class DualPassConfig:
     max_window_sec: float = 60.0
 
     # 32B classification
-    classify_max_frames: int = 45  # Max frames per 32B call
+    classify_max_frames: int = 2  # Max frames per 32B call (32B degrades beyond 2-3 images)
     sub_window_sec: float = 20.0  # Sub-window size for chunking
     sub_window_overlap_sec: float = 5.0  # Overlap between sub-windows
     max_candidates: int = 9999  # Effectively uncapped — user trades time for quality
