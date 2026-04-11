@@ -41,7 +41,10 @@ class CanaryFailure(RuntimeError):
     """Raised when a canary check detects a likely pipeline regression."""
     pass
 
-# 32B classification prompt — sent with dense frames from a candidate window
+# 32B classification prompt — sent with dense frames from a candidate window.
+# CRITICAL: Do NOT mention "[]" or "empty list" anywhere in this prompt.
+# Qwen3-VL-32B latches onto "[]" as the easiest valid response and returns it
+# for EVERY window, even when clear events are visible (confirmed 2026-04-11).
 _CLASSIFY_PROMPT = """\
 You are analyzing a soccer match from a sideline camera. \
 Here are {n_frames} frames from a {duration:.0f}-second window \
@@ -50,9 +53,7 @@ where our triage model flagged potential events: {triage_labels}.
 The triage system has already filtered for likely events, so this window \
 likely contains at least one event. Identify every event you can see in \
 these frames — typical windows contain 1-3 events. Be specific about what \
-you observe. You may return an empty list [] if the frames clearly show \
-nothing but routine midfield play with no event near either goal, but do \
-not default to empty — most flagged windows do contain a real event.
+you observe.
 
 Valid event types (choose ONLY from this list):
 {valid_types_block}
