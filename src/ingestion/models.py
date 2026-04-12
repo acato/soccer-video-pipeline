@@ -87,8 +87,11 @@ REEL_PRESETS: dict[str, ReelSpec] = {
     "goalkeeper": ReelSpec(name="goalkeeper", event_types=_ALL_GK_EVENT_TYPES),
     "highlights": ReelSpec(name="highlights", event_types=_ALL_HIGHLIGHTS_EVENT_TYPES),
     "goal_kicks": ReelSpec(name="goal_kicks", event_types=["goal_kick"]),
+    "goal_kick": ReelSpec(name="goal_kick", event_types=["goal_kick"]),
     "corner_kicks": ReelSpec(name="corner_kicks", event_types=["corner_kick"]),
+    "corner_kick": ReelSpec(name="corner_kick", event_types=["corner_kick"]),
     "goals": ReelSpec(name="goals", event_types=["goal"]),
+    "goal": ReelSpec(name="goal", event_types=["goal"]),
 }
 
 
