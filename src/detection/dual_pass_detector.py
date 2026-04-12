@@ -1,14 +1,19 @@
 """
-Dual-pass VLM detector: 8B triage → model swap → 32B classification.
+Three-step VLM detector: 8B triage → 8B observe → 32B classify (text-only).
 
 Phase 1: Fast 8B model scans entire game with multi-frame sliding windows.
           Produces candidate time windows where events might be occurring.
-Phase 2: Model swap — stop 8B, start 32B (requires both GPUs for TP=2).
-Phase 3: 32B model classifies each candidate window with dense frame sampling.
-          Produces precise event boundaries and types.
+Phase 2: 8B observe — send frames to the 8B, get free-text description of what's
+          happening.  The 8B handles many frames + longer prompts reliably.
+Phase 3: Model swap — stop 8B, start 32B (requires both GPUs for TP=2).
+Phase 4: 32B classify — send the TEXT description (no images) to the 32B with the
+          full detailed prompt including all disambiguation rules.  Text-only means
+          no prompt-length limit, no frame limit, no degradation.
 
-This replaces the audio-first candidate generation with visual-first triage,
-solving the core recall problem (audio misses ~80% of set pieces).
+Key insight: the 32B under current vLLM config (TP=2, FP8) degrades badly when
+sent images — returns [] for long prompts, times out with 3+ images.  By having
+the 8B do all image analysis and the 32B only process text, both models operate
+in their sweet spot.
 """
 from __future__ import annotations
 
@@ -41,53 +46,91 @@ class CanaryFailure(RuntimeError):
     """Raised when a canary check detects a likely pipeline regression."""
     pass
 
-# 32B classification prompt — sent with dense frames from a candidate window.
-# CRITICAL CONSTRAINTS (confirmed empirically 2026-04-11):
-#   1. Do NOT mention "[]" or "empty list" — 32B latches onto it as default.
-#   2. Keep total prompt under ~1000 chars — 32B returns [] with long prompts
-#      when images are present (6748 chars = always empty; 779 chars = works).
-#   3. Type descriptions must be SHORT — verbose _ALL_TYPES bloated to 4000+ chars.
+# ── 8B Observe prompt ──────────────────────────────────────────────────
+# Sent to 8B WITH images.  The 8B handles many frames + long prompts fine.
+# Asks for free-text description focused on the signals that matter for
+# event classification downstream.
+_OBSERVE_PROMPT = """\
+You are analyzing frames from a soccer match recorded by a sideline camera.
+These {n_frames} frames span a {duration:.0f}-second window ({start:.0f}s – {end:.0f}s).
+Triage flagged this window as: {triage_labels}.
+
+Describe EXACTLY what you see. Focus on:
+1. Where is the ball? Is it moving toward a goal, stationary, or out of play?
+2. Is the goalkeeper involved? Diving, catching, punching, kicking from 6-yard box?
+3. Are players celebrating? Arms raised, group hugs, running to teammates, sliding on knees?
+4. Is there a set-piece setup? Ball at corner flag, player at touchline with ball overhead, \
+ball on penalty spot, defensive wall of 3+ players?
+5. Are players walking back to the center circle (kickoff restart after a goal)?
+6. Is the ball in the net or has it just crossed the goal line?
+7. What happens AFTER the main action — what restart follows? (goal kick, corner, throw-in, kickoff)
+
+Include timestamps where possible (e.g., "at t=45s the goalkeeper dives left").
+Be specific about what you SEE, not what you infer. If you cannot tell, say so."""
+
+# ── 32B Classify prompt — TEXT-ONLY, no images ─────────────────────────
+# Sent to 32B with ONLY the 8B observation text.  No image constraints means
+# we can use the full detailed prompt with all disambiguation rules.
+# CRITICAL: Do NOT mention "[]" or "empty list" anywhere — 32B latches on it.
 _CLASSIFY_PROMPT = """\
-You are analyzing a soccer match from a sideline camera. \
-Here are {n_frames} frames from a {duration:.0f}s window. \
-Triage flagged: {triage_labels}.
+You are a soccer event classifier. An observation model has analyzed video frames \
+from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) of a soccer match and \
+produced this description:
 
-List every event visible. Valid types:
-{valid_types_block}
+---
+{observation}
+---
 
-Key rules:
-- GK holds ball = catch (not shot_on_target). Ball rebounds = shot_stop_diving.
-- Shot then catch in same window = catch only.
-- Corner flag visible = corner_kick. Touchline + hands = throw_in. 6-yard box = goal_kick.
-- goal needs ball in net OR group celebration (2+ players). Prefer shot_on_target if unsure.
-- start_sec = the action moment (kick/throw/contact), end_sec = start + 3-5s.
+Based on this description, classify every distinct event in this window.
+
+Valid event types and when to use them:
+
+SHOTS & GOALS:
+- shot_on_target: A player strikes the ball toward goal. Use when a shot is taken \
+but you are NOT certain it resulted in a goal. Default to this over "goal" if unsure.
+- goal: Ball crosses the goal line into the net. STRICT RULE: You MUST see at least one \
+of: (a) players celebrating (arms raised, group hugs, sliding), (b) teams walking to \
+center circle for kickoff restart, or (c) ball clearly in the net. A shot toward goal \
+alone is NEVER enough — classify as shot_on_target instead.
+- free_kick_shot: Ball placed on ground with a defensive wall of 3+ players lined up. \
+The key signal is the WALL — without a visible wall, it is not a free kick shot.
+
+GOALKEEPER ACTIONS:
+- catch: GK holds/secures the ball in both hands against chest/stomach. Key signal: GK \
+standing or kneeling WITH the ball, then distributes it. If you see a shot followed by \
+the GK holding the ball, classify as catch ONLY (not shot_on_target + catch).
+- shot_stop_diving: GK dives/parries the ball — visible rebound or deflection. The ball \
+bounces AWAY from the GK (they did NOT hold it). Often followed by a corner kick restart.
+- punch: GK punches the ball away with fist(s), usually on a cross or corner. Ball goes \
+upward/outward, not caught.
+
+SET PIECES:
+- corner_kick: Ball placed at the corner flag/arc. One player at the corner, many players \
+gathered in the penalty area waiting for the cross. Corner flag clearly visible.
+- goal_kick: Stationary ball in the 6-yard box (small rectangle near goal). GK or defender \
+kicks it upfield. Opposing players are far away, outside the penalty area.
+- throw_in: Player standing at the touchline (sideline), holding the ball overhead with \
+both hands, then throws it into play. Key signal: ball held overhead at the sideline.
+- penalty: Ball on the penalty spot, one shooter facing the GK, all other players standing \
+outside the penalty area. Very distinctive formation.
+- kickoff: Ball at center spot, both teams lined up in their own halves. Happens at start \
+of each half or after a goal.
+
+TIEBREAKER RULES:
+- Shot → GK catches → classify as "catch" only (not shot_on_target)
+- Shot → GK dives, ball rebounds → classify as "shot_stop_diving"
+- Shot → ball in net or celebration → classify as "goal"
+- Shot → goal kick restart → "shot_on_target" (shot went wide/over bar, GK didn't touch it)
+- Shot → corner kick restart → shot_on_target + corner_kick (GK parried it out)
+- Cannot tell if goal or save → classify as "shot_on_target"
+
+For each event, provide start_sec (moment of action: kick/throw/contact) and \
+end_sec (start + 3-5 seconds typically).
 
 Reply with ONLY a JSON array:
 [{{"event_type": "goal_kick", "start_sec": 30.0, "end_sec": 35.0, \
 "confidence": 0.85, "reasoning": "GK kicks from 6-yard box at t=30s"}}]
 """
-
-# Short event type catalog — kept terse to stay under prompt length budget.
-# Verbose descriptions caused 32B to return [] for every window.
-_ALL_TYPES = [
-    ("shot_on_target", "open-play shot at goal"),
-    ("goal", "ball crosses goal line into net, or group celebration"),
-    ("catch", "GK holds/secures ball in hands"),
-    ("shot_stop_diving", "GK parries ball — visible rebound"),
-    ("punch", "GK punches ball with fist"),
-    ("corner_kick", "ball at corner flag/arc, player about to kick"),
-    ("goal_kick", "stationary ball in 6-yard box, GK/defender kicks upfield"),
-    ("free_kick_shot", "stationary ball + defensive wall of 3+ players"),
-    ("throw_in", "player at touchline, ball in both hands overhead"),
-    ("penalty", "ball on penalty spot, players outside area"),
-    ("kickoff", "ball on center circle, both teams in own halves"),
-]
-
-
-def _build_valid_types_block(triage_labels: list[str]) -> str:
-    """Build the valid event types section — always offer the full catalog."""
-    lines = [f"- {name}: {desc}" for name, desc in _ALL_TYPES]
-    return "\n".join(lines)
 
 
 @dataclass
@@ -115,8 +158,12 @@ class DualPassConfig:
     merge_pad_sec: float = 6.0  # Run #5: extra post-event context for goal celebrations
     max_window_sec: float = 60.0
 
-    # 32B classification
-    classify_max_frames: int = 2  # Max frames per 32B call (32B degrades beyond 2-3 images)
+    # 8B observe — frames → text description (while 8B still loaded)
+    observe_max_frames: int = 10  # 8B handles many frames well
+    observe_timeout_sec: int = 90  # 8B is fast, but 10 images take a moment
+
+    # 32B classification — text-only (no images sent to 32B)
+    classify_max_frames: int = 2  # Legacy — only used if observe is skipped
     sub_window_sec: float = 20.0  # Sub-window size for chunking
     sub_window_overlap_sec: float = 5.0  # Overlap between sub-windows
     max_candidates: int = 9999  # Effectively uncapped — user trades time for quality
@@ -170,13 +217,14 @@ class DualPassDetector:
         self,
         progress_callback: Optional[Callable[[float], None]] = None,
     ) -> list[Event]:
-        """Run the full dual-pass detection pipeline.
+        """Run the full three-step detection pipeline.
 
         Progress allocation:
             0.00 - 0.02: Model swap to 8B
-            0.02 - 0.45: 8B triage scan
-            0.45 - 0.50: Model swap to 32B
-            0.50 - 0.95: 32B classification
+            0.02 - 0.40: 8B triage scan
+            0.40 - 0.55: 8B observe (images → text descriptions)
+            0.55 - 0.60: Model swap to 32B
+            0.60 - 0.95: 32B classification (text-only)
             0.95 - 1.00: Post-processing
 
         Returns:
@@ -211,7 +259,7 @@ class DualPassDetector:
         )
 
         def on_triage_progress(pct: float):
-            _progress(0.02 + pct * 0.43)
+            _progress(0.02 + pct * 0.38)
 
         scan_result = scanner.scan(progress_callback=on_triage_progress)
         flags = scan_result.flags
@@ -256,10 +304,29 @@ class DualPassDetector:
             _progress(1.0)
             return []
 
-        _progress(0.45)
+        _progress(0.40)
 
-        # ── Phase 3: Model swap to 32B ─────────────────────────────────
-        log.info("dual_pass.phase3_swap_to_32b", job_id=self._job_id)
+        # ── Phase 3: 8B observe — images → text descriptions ──────────
+        # Still on the 8B model.  Send frames and collect free-text
+        # descriptions that the 32B will classify without seeing images.
+        log.info("dual_pass.phase3_observe",
+                 job_id=self._job_id, windows=len(candidates))
+
+        observations: dict[int, str] = {}  # candidate index → description
+        for idx, window in enumerate(candidates):
+            obs_text = self._observe_window(window)
+            observations[idx] = obs_text
+            _progress(0.40 + 0.15 * (idx + 1) / len(candidates))
+
+        log.info("dual_pass.observe_complete",
+                 job_id=self._job_id,
+                 windows=len(candidates),
+                 nonempty=sum(1 for v in observations.values() if v))
+
+        _progress(0.55)
+
+        # ── Phase 4: Model swap to 32B ─────────────────────────────────
+        log.info("dual_pass.phase4_swap_to_32b", job_id=self._job_id)
         self._swap_model(
             model_name=self._cfg.tier2_model_name,
             model_path=self._cfg.tier2_model_path,
@@ -270,10 +337,10 @@ class DualPassDetector:
         if self._cfg.canary_enabled and self._cfg.swap_canary_enabled:
             self._check_swap_canary()
 
-        _progress(0.50)
+        _progress(0.60)
 
-        # ── Phase 4: 32B classification of each candidate window ───────
-        log.info("dual_pass.phase4_classify",
+        # ── Phase 5: 32B classification — text-only ────────────────────
+        log.info("dual_pass.phase5_classify",
                  job_id=self._job_id, windows=len(candidates))
 
         all_events: list[Event] = []
@@ -284,7 +351,14 @@ class DualPassDetector:
         self._diversity_checked = False
 
         for idx, window in enumerate(candidates):
-            events = self._classify_window(window)
+            observation = observations.get(idx, "")
+            if not observation:
+                log.info("dual_pass.skip_empty_observation",
+                         window_start=window.start_sec)
+                self._canary_sub_total += 1
+                continue
+
+            events = self._classify_window(window, observation)
             all_events.extend(events)
 
             # Canary 1: Classify empty-response check after N sub-windows
@@ -305,7 +379,7 @@ class DualPassDetector:
                     and self._canary_sub_total % 50 == 0):
                 self._check_latency_canary()
 
-            _progress(0.50 + 0.45 * (idx + 1) / len(candidates))
+            _progress(0.60 + 0.35 * (idx + 1) / len(candidates))
 
         # Deduplicate events that overlap significantly
         all_events = self._deduplicate_events(all_events)
@@ -364,89 +438,80 @@ class DualPassDetector:
             log.error("dual_pass.swap_timeout", timeout=self._cfg.swap_timeout_sec)
             raise RuntimeError("Model swap timed out")
 
-    def _classify_window(self, window: CandidateWindow) -> list[Event]:
-        """Classify a candidate window using sub-window chunking.
+    # ── 8B Observe methods ──────────────────────────────────────────────
 
-        Windows >sub_window_sec are split into overlapping sub-windows,
-        each classified independently. Results are deduplicated.
+    def _observe_window(self, window: CandidateWindow) -> str:
+        """Send frames from a candidate window to the 8B and get a text description.
 
-        Frame density adapts to sub-window size:
-          - ≤30s: 1fps (every frame)
-          - >30s: 1 frame per 2s
+        For long windows (>sub_window_sec), splits into sub-windows and
+        concatenates descriptions.  Uses more frames than classify since
+        the 8B handles them well.
         """
         sub_size = self._cfg.sub_window_sec
         overlap = self._cfg.sub_window_overlap_sec
 
-        # Build sub-window boundaries
         if window.duration_sec <= sub_size + overlap:
-            # Small enough — single call
-            sub_windows = [(window.start_sec, window.end_sec)]
-        else:
-            step = sub_size - overlap
-            sub_windows = []
-            t = window.start_sec
-            while t < window.end_sec:
-                end = min(t + sub_size, window.end_sec)
-                sub_windows.append((t, end))
-                t += step
-                if end >= window.end_sec:
-                    break
-
-        log.info("dual_pass.classify_sub_windows",
-                 window_start=window.start_sec,
-                 window_dur=window.duration_sec,
-                 n_sub=len(sub_windows))
-
-        all_events: list[Event] = []
-        for sw_start, sw_end in sub_windows:
-            sw_dur = sw_end - sw_start
-            # Adaptive frame interval
-            interval = 1.0 if sw_dur <= 30 else 2.0
-
-            events = self._classify_sub_window(
-                start_sec=sw_start,
-                end_sec=sw_end,
-                interval_sec=interval,
+            return self._observe_sub_window(
+                start_sec=window.start_sec,
+                end_sec=window.end_sec,
                 triage_labels=list(set(window.labels)),
             )
-            all_events.extend(events)
 
-        return all_events
+        # Split into overlapping sub-windows
+        step = sub_size - overlap
+        parts: list[str] = []
+        t = window.start_sec
+        while t < window.end_sec:
+            end = min(t + sub_size, window.end_sec)
+            obs = self._observe_sub_window(
+                start_sec=t,
+                end_sec=end,
+                triage_labels=list(set(window.labels)),
+            )
+            if obs:
+                parts.append(f"[{t:.0f}s–{end:.0f}s]: {obs}")
+            t += step
+            if end >= window.end_sec:
+                break
 
-    def _classify_sub_window(
+        return "\n\n".join(parts)
+
+    def _observe_sub_window(
         self,
         start_sec: float,
         end_sec: float,
-        interval_sec: float,
         triage_labels: list[str],
-    ) -> list[Event]:
-        """Send a single sub-window to the 32B model for classification."""
+    ) -> str:
+        """Send frames from a sub-window to the 8B for observation."""
         import httpx
         import time
 
         duration = end_sec - start_sec
+        # Sample more frames — 8B handles 8-10 well
+        interval = max(1.0, duration / self._cfg.observe_max_frames)
+
         frames = self._sampler.sample_range(
             center_sec=(start_sec + end_sec) / 2,
             window_sec=duration / 2,
-            interval_sec=interval_sec,
+            interval_sec=interval,
             duration_sec=self._video_duration,
         )
 
         if not frames:
-            return []
+            return ""
 
-        # Limit frame count
-        if len(frames) > self._cfg.classify_max_frames:
-            step = len(frames) / self._cfg.classify_max_frames
-            indices = [int(i * step) for i in range(self._cfg.classify_max_frames)]
+        # Cap to observe_max_frames
+        if len(frames) > self._cfg.observe_max_frames:
+            step = len(frames) / self._cfg.observe_max_frames
+            indices = [int(i * step) for i in range(self._cfg.observe_max_frames)]
             frames = [frames[i] for i in indices]
 
-        valid_types_block = _build_valid_types_block(triage_labels)
-        prompt = _CLASSIFY_PROMPT.format(
+        prompt = _OBSERVE_PROMPT.format(
             n_frames=len(frames),
             duration=duration,
+            start=start_sec,
+            end=end_sec,
             triage_labels=", ".join(triage_labels),
-            valid_types_block=valid_types_block,
         )
 
         content: list[dict] = []
@@ -463,9 +528,82 @@ class DualPassDetector:
         content.append({"type": "text", "text": prompt})
 
         payload = {
-            "model": self._cfg.tier2_model_name,
+            "model": self._cfg.tier1_model_name,  # 8B — handles images well
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": 1000,
+            "max_tokens": 500,
+            "temperature": 0,
+        }
+
+        try:
+            t0 = time.monotonic()
+            r = httpx.post(
+                f"{self._cfg.vllm_url}/v1/chat/completions",
+                json=payload,
+                timeout=self._cfg.observe_timeout_sec,
+            )
+            elapsed = time.monotonic() - t0
+
+            if r.status_code != 200:
+                log.warning("dual_pass.observe_error",
+                            status=r.status_code, body=r.text[:200],
+                            sub_start=start_sec)
+                return ""
+
+            text = r.json()["choices"][0]["message"]["content"].strip()
+            log.info("dual_pass.observe_result",
+                     sub_start=start_sec, elapsed=f"{elapsed:.1f}s",
+                     n_frames=len(frames), text_len=len(text),
+                     text=text[:300])
+            return text
+
+        except Exception as exc:
+            log.warning("dual_pass.observe_exception",
+                        error=str(exc), sub_start=start_sec)
+            return ""
+
+    # ── 32B Classify methods (text-only) ───────────────────────────────
+
+    def _classify_window(
+        self, window: CandidateWindow, observation: str
+    ) -> list[Event]:
+        """Classify a candidate window using the 32B with text-only input.
+
+        The observation text from the 8B is sent to the 32B along with the
+        full detailed classify prompt.  No images are sent to the 32B.
+        """
+        events = self._classify_from_observation(
+            start_sec=window.start_sec,
+            end_sec=window.end_sec,
+            observation=observation,
+            triage_labels=list(set(window.labels)),
+        )
+        return events
+
+    def _classify_from_observation(
+        self,
+        start_sec: float,
+        end_sec: float,
+        observation: str,
+        triage_labels: list[str],
+    ) -> list[Event]:
+        """Send observation text to the 32B model for classification (no images)."""
+        import httpx
+        import time
+
+        duration = end_sec - start_sec
+
+        prompt = _CLASSIFY_PROMPT.format(
+            duration=duration,
+            start=start_sec,
+            end=end_sec,
+            observation=observation,
+        )
+
+        # Text-only — no images, no length constraints
+        payload = {
+            "model": self._cfg.tier2_model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1500,
             "temperature": 0,
         }
 
@@ -483,12 +621,14 @@ class DualPassDetector:
                 log.warning("dual_pass.classify_error",
                             status=r.status_code, body=r.text[:200],
                             sub_start=start_sec)
+                self._canary_sub_total += 1
                 return []
 
             text = r.json()["choices"][0]["message"]["content"].strip()
             log.info("dual_pass.raw_32b_response",
-                     sub_start=start_sec, text=text[:300])
-            # Create a temporary CandidateWindow for parsing
+                     sub_start=start_sec, elapsed=f"{elapsed:.1f}s",
+                     text=text[:300])
+
             tmp_window = CandidateWindow(
                 start_sec=start_sec, end_sec=end_sec,
                 labels=triage_labels, flags=[],
