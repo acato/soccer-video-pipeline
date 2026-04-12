@@ -55,33 +55,38 @@ You are analyzing frames from a soccer match recorded by a sideline camera.
 These {n_frames} frames span a {duration:.0f}-second window ({start:.0f}s – {end:.0f}s).
 Triage flagged this window as: {triage_labels}.
 
-Describe EXACTLY what you see. You MUST cover ALL of these, even if brief:
+IMPORTANT: Only report what you can DIRECTLY SEE in the frames. \
+If you cannot see a corner flag, do NOT mention corner kicks. \
+If you cannot see the ball in the net, do NOT mention goals. \
+Do NOT infer or guess — describe only visible evidence.
 
-RESTARTS (critical — do NOT skip):
-- Is a player holding the ball OVERHEAD at the SIDELINE? (= throw-in)
-- Is the ball at a CORNER FLAG with players in the box? (= corner kick)
-- Is the ball STATIONARY in the 6-YARD BOX with the GK about to kick? (= goal kick)
-- Is there a DEFENSIVE WALL of 3+ players near a stationary ball? (= free kick)
-- Is the ball at the CENTER SPOT with teams in their halves? (= kickoff)
+Answer EACH question below. Write "no" if you do not see it.
 
-GOALKEEPER:
-- Is the GK HOLDING the ball in their hands? (= catch)
-- Is the GK DIVING and the ball REBOUNDING away? (= save/parry)
-- Is the GK PUNCHING the ball with a fist?
+FIELD POSITION — Where is the ball in each key frame?
+Choose: corner_flag, 6yard_box, penalty_area, center_circle, sideline/touchline, in_play, not_visible
 
-GOAL SIGNALS:
-- Are players CELEBRATING — arms raised, group hugs, running to teammates?
-- Are teams WALKING BACK to the center circle?
-- Is the ball IN THE NET (net visibly disturbed)?
+RESTART CHECKLIST:
+1. THROW-IN: Is a player standing at the SIDELINE/TOUCHLINE holding the ball OVERHEAD with BOTH HANDS? (yes/no, timestamp)
+2. CORNER KICK: Is the ball on the ground AT or TOUCHING a CORNER FLAG? Can you SEE the corner flag in the frame? (yes/no, timestamp)
+3. GOAL KICK: Is the ball stationary on the ground INSIDE the 6-YARD BOX (small box nearest the goal)? Is the GK or a defender about to kick it? Are opponents far away? (yes/no, timestamp)
+4. FREE KICK: Is there a DEFENSIVE WALL of 3+ players standing shoulder-to-shoulder? (yes/no, timestamp)
+5. KICKOFF: Is the ball at the CENTER SPOT with teams lined up in own halves? (yes/no, timestamp)
 
-SHOTS:
-- Does a player STRIKE the ball toward goal?
+GOALKEEPER CHECKLIST:
+6. CATCH: Is the GK HOLDING the ball securely in BOTH HANDS? (yes/no, timestamp)
+7. DIVING SAVE: Is the GK mid-DIVE with the ball REBOUNDING away (not caught)? (yes/no, timestamp)
+8. PUNCH: Is the GK hitting the ball with a CLOSED FIST? (yes/no, timestamp)
 
-WHAT HAPPENS AFTER the main action — does a restart follow? \
-(A shot followed by a goal kick is TWO events. Describe BOTH.)
+GOAL EVIDENCE — be STRICT, do not guess:
+9. Is the ball VISIBLY INSIDE THE NET with the net pushed back/disturbed? (yes/no, timestamp)
+10. Are multiple players CELEBRATING — arms raised, group hugs, running together? (yes/no, describe exactly what you see)
+11. Are teams WALKING BACK toward the center circle? (yes/no)
 
-Include timestamps (e.g., "at t=45s the GK dives, at t=50s a goal kick is taken").
-Be specific about what you SEE, not what you infer."""
+SHOT:
+12. Does a player STRIKE the ball toward the goal? (yes/no, timestamp)
+
+SEQUENCE: What happens AFTER the main action? \
+(e.g., "shot at t=45s, then goal kick at t=50s" = two events)"""
 
 # ── 32B Classify prompt — TEXT-ONLY, no images ─────────────────────────
 # Sent to 32B with ONLY the 8B observation text.  No image constraints means
@@ -92,56 +97,59 @@ Be specific about what you SEE, not what you infer."""
 # 75/84 FNs were absorbed by shot_on_target.  Fix: hierarchical decision tree
 # that checks set pieces and GK actions BEFORE falling back to shot_on_target.
 _CLASSIFY_PROMPT = """\
-You are a soccer event classifier. An observation model analyzed video frames \
-from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) and produced this description:
+You are a soccer event classifier. An observer analyzed video frames \
+from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) and answered \
+a visual checklist:
 
 ---
 {observation}
 ---
 
-Classify events using this DECISION TREE. Work through each step IN ORDER. \
-Return ALL events that apply (a window can contain a shot AND a restart).
+Use the observer's answers to classify events. The observer answered \
+yes/no to specific visual questions — TRUST those answers. If the \
+observer said "no" to a question, do NOT classify that event.
 
-STEP 1 — CHECK FOR SET PIECES (restarts). These are the most distinctive:
-- throw_in: Player at TOUCHLINE/SIDELINE, ball held OVERHEAD with both hands. \
-Key: ball above head + sideline location. Very common (expect ~1 per 2 minutes).
-- corner_kick: Ball at CORNER FLAG/ARC. Player standing at corner, others \
-gathered in penalty area. Key: corner flag visible, ball at field corner.
-- goal_kick: Ball STATIONARY in 6-YARD BOX. GK or defender about to kick upfield. \
-Key: ball on ground near goal, opposing players far away.
-- free_kick_shot: Ball STATIONARY on ground + DEFENSIVE WALL of 3+ players. \
-Key: the wall formation. Without a visible wall, this is NOT a free kick.
-- penalty: Ball on PENALTY SPOT, one shooter vs GK, everyone else outside box.
-- kickoff: Ball at CENTER SPOT, both teams in own halves.
+RULES (check in this order, return ALL that apply):
 
-If ANY set piece is described, INCLUDE it. Do not skip it in favor of a shot.
+1. CORNER KICK: Observer Q2 answered YES (ball at corner flag, flag visible). \
+   → corner_kick. Do NOT confuse with goal kick (Q3) — corner flag ≠ 6-yard box.
 
-STEP 2 — CHECK FOR GOALKEEPER ACTIONS:
-- catch: GK HOLDS/SECURES ball in hands, then distributes. Key: ball IN hands. \
-If a shot preceded it, classify ONLY as catch (not shot + catch).
-- shot_stop_diving: GK DIVES, ball REBOUNDS/DEFLECTS away. Ball is NOT held. \
-Often followed by corner kick (include both if so).
-- punch: GK PUNCHES ball with FIST. Ball goes up/outward, not caught.
+2. THROW-IN: Observer Q1 answered YES (ball overhead at sideline). \
+   → throw_in. Very common (~1 per 2 minutes).
 
-If a GK action is described, INCLUDE it.
+3. GOAL KICK: Observer Q3 answered YES (ball in 6-yard box, GK about to kick, \
+   opponents far away). → goal_kick. Do NOT confuse with corner kick (Q2).
 
-STEP 3 — CHECK FOR GOAL:
-- goal: STRICT — requires at least one of: (a) players CELEBRATING (arms raised, \
-group hugs, sliding), (b) teams WALKING BACK to center circle for kickoff, \
-(c) ball CLEARLY IN THE NET with net disturbance. A shot toward goal ALONE \
-is never enough. If unsure → shot_on_target, not goal.
+4. FREE KICK: Observer Q4 answered YES (defensive wall of 3+ players). \
+   → free_kick_shot. Without a visible wall, this is NOT a free kick.
 
-STEP 4 — SHOT (fallback only):
-- shot_on_target: A player strikes ball toward goal. Use ONLY if none of the \
-above steps produced a more specific classification. If the description \
-mentions a restart AFTER the shot (goal kick, corner, throw-in), classify \
-the restart too — do not report just the shot.
+5. KICKOFF: Observer Q5 answered YES (ball at center, teams in own halves). \
+   → kickoff.
 
-For each event: start_sec = moment of action, end_sec = start + 3-5s.
+6. CATCH: Observer Q6 answered YES (GK holds ball in both hands). → catch. \
+   If a shot preceded it, classify ONLY as catch (not shot + catch).
+
+7. DIVING SAVE: Observer Q7 answered YES (GK diving, ball rebounds). \
+   → shot_stop_diving. Often followed by corner kick — include both.
+
+8. PUNCH: Observer Q8 answered YES (GK punches with fist). → punch.
+
+9. GOAL: Observer answered YES to Q9 (ball in net) AND YES to Q10 \
+   (celebrating) or Q11 (walking back to center). BOTH conditions needed. \
+   Ball in net alone is NOT enough. If unsure → shot_on_target.
+
+10. SHOT (fallback only): Observer Q12 answered YES and NONE of rules 1-9 \
+    matched. → shot_on_target. If a restart follows the shot (goal kick, \
+    corner, throw-in), classify the restart too.
+
+CONFIDENCE: If the observer answered "yes" clearly → 0.85-0.95. \
+If the observer was uncertain or qualified → 0.65-0.75.
+
+For each event: start_sec = timestamp from observer, end_sec = start + 3-5s.
 
 Reply with ONLY a JSON array:
-[{{"event_type": "goal_kick", "start_sec": 30.0, "end_sec": 35.0, \
-"confidence": 0.85, "reasoning": "GK kicks from 6-yard box at t=30s"}}]
+[{{"event_type": "corner_kick", "start_sec": 30.0, "end_sec": 35.0, \
+"confidence": 0.90, "reasoning": "Q2=yes: ball at corner flag at t=30s"}}]
 """
 
 
@@ -390,6 +398,9 @@ class DualPassDetector:
                  windows=len(candidates),
                  nonempty=sum(1 for v in observations.values() if v))
 
+        # Save observation diagnostics for debugging
+        self._save_observation_diagnostics(candidates, observations)
+
         _progress(0.55)
 
         # ── Phase 4: Model swap to 32B ─────────────────────────────────
@@ -597,7 +608,7 @@ class DualPassDetector:
         payload = {
             "model": self._cfg.tier1_model_name,  # 8B — handles images well
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": 500,
+            "max_tokens": 800,  # Structured checklist needs more space than free-form
             "temperature": 0,
         }
 
@@ -1148,6 +1159,26 @@ class DualPassDetector:
             log.critical("dual_pass.canary_warning",
                          nonempty=nonempty, total=total,
                          fraction=f"{frac:.1%}", msg=msg)
+
+    def _save_observation_diagnostics(
+        self, candidates: list[CandidateWindow],
+        observations: dict[int, str],
+    ) -> None:
+        """Save 8B observation texts for post-run debugging."""
+        diag_dir = self._working_dir / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(diag_dir / "observations.jsonl", "w") as f:
+            for idx, window in enumerate(candidates):
+                obs = observations.get(idx, "")
+                json.dump({
+                    "window_idx": idx,
+                    "start_sec": window.start_sec,
+                    "end_sec": window.end_sec,
+                    "triage_labels": list(set(window.labels)),
+                    "observation": obs,
+                }, f)
+                f.write("\n")
 
     def _save_triage_diagnostics(
         self, flags: list, candidates: list[CandidateWindow]
