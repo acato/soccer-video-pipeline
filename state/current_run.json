@@ -1,9 +1,9 @@
 {
   "$schema_version": 1,
-  "run_number": 13,
-  "run_label": "run_13",
-  "job_id": "31100618-e65c-4654-81ed-36ccaa4f166f",
-  "commit_sha": "fef5b73",
+  "run_number": 14,
+  "run_label": "run_14",
+  "job_id": "e4728f36-394b-45ce-9852-d7887c5838ae",
+  "commit_sha": "d67dfdb",
   "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
@@ -34,7 +34,7 @@
     "goal_fp_max": 6,
     "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #13 — 8B observe + 32B text-only classify. 8B sends 10 frames → free-text description. 32B classifies from text only (3077-char prompt, full rules). No images to 32B.",
+  "notes": "Run #14 — 4 precision fixes on Run #13 arch: goal keyword gate (regex, no negation), 30s temporal clustering, single-event prompt, conf floor 0.65. Simulated: goals 93->10, shots 165->75, corners 12->9.",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
