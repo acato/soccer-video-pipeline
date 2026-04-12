@@ -55,79 +55,89 @@ You are analyzing frames from a soccer match recorded by a sideline camera.
 These {n_frames} frames span a {duration:.0f}-second window ({start:.0f}s – {end:.0f}s).
 Triage flagged this window as: {triage_labels}.
 
-Describe EXACTLY what you see. Focus on:
-1. Where is the ball? Is it moving toward a goal, stationary, or out of play?
-2. Is the goalkeeper involved? Diving, catching, punching, kicking from 6-yard box?
-3. Are players celebrating? Arms raised, group hugs, running to teammates, sliding on knees?
-4. Is there a set-piece setup? Ball at corner flag, player at touchline with ball overhead, \
-ball on penalty spot, defensive wall of 3+ players?
-5. Are players walking back to the center circle (kickoff restart after a goal)?
-6. Is the ball in the net or has it just crossed the goal line?
-7. What happens AFTER the main action — what restart follows? (goal kick, corner, throw-in, kickoff)
+Describe EXACTLY what you see. You MUST cover ALL of these, even if brief:
 
-Include timestamps where possible (e.g., "at t=45s the goalkeeper dives left").
-Be specific about what you SEE, not what you infer. If you cannot tell, say so."""
+RESTARTS (critical — do NOT skip):
+- Is a player holding the ball OVERHEAD at the SIDELINE? (= throw-in)
+- Is the ball at a CORNER FLAG with players in the box? (= corner kick)
+- Is the ball STATIONARY in the 6-YARD BOX with the GK about to kick? (= goal kick)
+- Is there a DEFENSIVE WALL of 3+ players near a stationary ball? (= free kick)
+- Is the ball at the CENTER SPOT with teams in their halves? (= kickoff)
+
+GOALKEEPER:
+- Is the GK HOLDING the ball in their hands? (= catch)
+- Is the GK DIVING and the ball REBOUNDING away? (= save/parry)
+- Is the GK PUNCHING the ball with a fist?
+
+GOAL SIGNALS:
+- Are players CELEBRATING — arms raised, group hugs, running to teammates?
+- Are teams WALKING BACK to the center circle?
+- Is the ball IN THE NET (net visibly disturbed)?
+
+SHOTS:
+- Does a player STRIKE the ball toward goal?
+
+WHAT HAPPENS AFTER the main action — does a restart follow? \
+(A shot followed by a goal kick is TWO events. Describe BOTH.)
+
+Include timestamps (e.g., "at t=45s the GK dives, at t=50s a goal kick is taken").
+Be specific about what you SEE, not what you infer."""
 
 # ── 32B Classify prompt — TEXT-ONLY, no images ─────────────────────────
 # Sent to 32B with ONLY the 8B observation text.  No image constraints means
 # we can use the full detailed prompt with all disambiguation rules.
 # CRITICAL: Do NOT mention "[]" or "empty list" anywhere — 32B latches on it.
+#
+# Run #14 lesson: a flat 11-way prompt defaults to shot_on_target for everything.
+# 75/84 FNs were absorbed by shot_on_target.  Fix: hierarchical decision tree
+# that checks set pieces and GK actions BEFORE falling back to shot_on_target.
 _CLASSIFY_PROMPT = """\
-You are a soccer event classifier. An observation model has analyzed video frames \
-from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) of a soccer match and \
-produced this description:
+You are a soccer event classifier. An observation model analyzed video frames \
+from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) and produced this description:
 
 ---
 {observation}
 ---
 
-Based on this description, classify the SINGLE most significant event in this window. \
-If the description clearly shows two sequential events (e.g. a shot followed by a \
-distinct corner kick restart), you may return up to two, but NEVER more than two.
+Classify events using this DECISION TREE. Work through each step IN ORDER. \
+Return ALL events that apply (a window can contain a shot AND a restart).
 
-Valid event types and when to use them:
+STEP 1 — CHECK FOR SET PIECES (restarts). These are the most distinctive:
+- throw_in: Player at TOUCHLINE/SIDELINE, ball held OVERHEAD with both hands. \
+Key: ball above head + sideline location. Very common (expect ~1 per 2 minutes).
+- corner_kick: Ball at CORNER FLAG/ARC. Player standing at corner, others \
+gathered in penalty area. Key: corner flag visible, ball at field corner.
+- goal_kick: Ball STATIONARY in 6-YARD BOX. GK or defender about to kick upfield. \
+Key: ball on ground near goal, opposing players far away.
+- free_kick_shot: Ball STATIONARY on ground + DEFENSIVE WALL of 3+ players. \
+Key: the wall formation. Without a visible wall, this is NOT a free kick.
+- penalty: Ball on PENALTY SPOT, one shooter vs GK, everyone else outside box.
+- kickoff: Ball at CENTER SPOT, both teams in own halves.
 
-SHOTS & GOALS:
-- shot_on_target: A player strikes the ball toward goal. Use when a shot is taken \
-but you are NOT certain it resulted in a goal. Default to this over "goal" if unsure.
-- goal: Ball crosses the goal line into the net. STRICT RULE: You MUST see at least one \
-of: (a) players celebrating (arms raised, group hugs, sliding), (b) teams walking to \
-center circle for kickoff restart, or (c) ball clearly in the net. A shot toward goal \
-alone is NEVER enough — classify as shot_on_target instead.
-- free_kick_shot: Ball placed on ground with a defensive wall of 3+ players lined up. \
-The key signal is the WALL — without a visible wall, it is not a free kick shot.
+If ANY set piece is described, INCLUDE it. Do not skip it in favor of a shot.
 
-GOALKEEPER ACTIONS:
-- catch: GK holds/secures the ball in both hands against chest/stomach. Key signal: GK \
-standing or kneeling WITH the ball, then distributes it. If you see a shot followed by \
-the GK holding the ball, classify as catch ONLY (not shot_on_target + catch).
-- shot_stop_diving: GK dives/parries the ball — visible rebound or deflection. The ball \
-bounces AWAY from the GK (they did NOT hold it). Often followed by a corner kick restart.
-- punch: GK punches the ball away with fist(s), usually on a cross or corner. Ball goes \
-upward/outward, not caught.
+STEP 2 — CHECK FOR GOALKEEPER ACTIONS:
+- catch: GK HOLDS/SECURES ball in hands, then distributes. Key: ball IN hands. \
+If a shot preceded it, classify ONLY as catch (not shot + catch).
+- shot_stop_diving: GK DIVES, ball REBOUNDS/DEFLECTS away. Ball is NOT held. \
+Often followed by corner kick (include both if so).
+- punch: GK PUNCHES ball with FIST. Ball goes up/outward, not caught.
 
-SET PIECES:
-- corner_kick: Ball placed at the corner flag/arc. One player at the corner, many players \
-gathered in the penalty area waiting for the cross. Corner flag clearly visible.
-- goal_kick: Stationary ball in the 6-yard box (small rectangle near goal). GK or defender \
-kicks it upfield. Opposing players are far away, outside the penalty area.
-- throw_in: Player standing at the touchline (sideline), holding the ball overhead with \
-both hands, then throws it into play. Key signal: ball held overhead at the sideline.
-- penalty: Ball on the penalty spot, one shooter facing the GK, all other players standing \
-outside the penalty area. Very distinctive formation.
-- kickoff: Ball at center spot, both teams lined up in their own halves. Happens at start \
-of each half or after a goal.
+If a GK action is described, INCLUDE it.
 
-TIEBREAKER RULES:
-- Shot → GK catches → classify as "catch" only (not shot_on_target)
-- Shot → GK dives, ball rebounds → classify as "shot_stop_diving"
-- Shot → ball in net or celebration → classify as "goal"
-- Shot → goal kick restart → "shot_on_target" (shot went wide/over bar, GK didn't touch it)
-- Shot → corner kick restart → shot_on_target + corner_kick (GK parried it out)
-- Cannot tell if goal or save → classify as "shot_on_target"
+STEP 3 — CHECK FOR GOAL:
+- goal: STRICT — requires at least one of: (a) players CELEBRATING (arms raised, \
+group hugs, sliding), (b) teams WALKING BACK to center circle for kickoff, \
+(c) ball CLEARLY IN THE NET with net disturbance. A shot toward goal ALONE \
+is never enough. If unsure → shot_on_target, not goal.
 
-For each event, provide start_sec (moment of action: kick/throw/contact) and \
-end_sec (start + 3-5 seconds typically).
+STEP 4 — SHOT (fallback only):
+- shot_on_target: A player strikes ball toward goal. Use ONLY if none of the \
+above steps produced a more specific classification. If the description \
+mentions a restart AFTER the shot (goal kick, corner, throw-in), classify \
+the restart too — do not report just the shot.
+
+For each event: start_sec = moment of action, end_sec = start + 3-5s.
 
 Reply with ONLY a JSON array:
 [{{"event_type": "goal_kick", "start_sec": 30.0, "end_sec": 35.0, \
