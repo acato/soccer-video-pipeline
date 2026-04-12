@@ -1,9 +1,9 @@
 {
   "$schema_version": 1,
-  "run_number": 12,
-  "run_label": "run_12",
-  "job_id": "ee09b49a-a191-46c0-a287-e37682ae3934",
-  "commit_sha": "39379b1",
+  "run_number": 13,
+  "run_label": "run_13",
+  "job_id": "31100618-e65c-4654-81ed-36ccaa4f166f",
+  "commit_sha": "fef5b73",
   "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
@@ -20,9 +20,9 @@
     }
   },
   "baseline": {
-    "run": "9",
+    "run": "12",
     "f1": 0.302,
-    "notes": "Run #9 baseline. F1=0.302 (50 TP / 106 FN / 125 FP)."
+    "notes": "Run #9 baseline F1=0.302. Run #12 regressed (269 shot_on_target vs 29 GT, 0 goals). Trying 8B observe + 32B text-only."
   },
   "targets": {
     "f1": 0.35,
@@ -34,7 +34,7 @@
     "goal_fp_max": 6,
     "free_kick_shot_fp_max": 12
   },
-  "notes": "Run #12 — three fixes: (1) removed [] from prompt, (2) max_frames 45→2, (3) shortened prompt 6748→1339 chars (32B returns [] when prompt+images exceed ~2000 chars). Verified on 32B before deploy. Full 6-canary system active.",
+  "notes": "Run #13 — 8B observe + 32B text-only classify. 8B sends 10 frames → free-text description. 32B classifies from text only (3077-char prompt, full rules). No images to 32B.",
   "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
   "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
 }
