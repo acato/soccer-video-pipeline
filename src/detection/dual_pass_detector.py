@@ -81,7 +81,9 @@ produced this description:
 {observation}
 ---
 
-Based on this description, classify every distinct event in this window.
+Based on this description, classify the SINGLE most significant event in this window. \
+If the description clearly shows two sequential events (e.g. a shot followed by a \
+distinct corner kick restart), you may return up to two, but NEVER more than two.
 
 Valid event types and when to use them:
 
@@ -131,6 +133,61 @@ Reply with ONLY a JSON array:
 [{{"event_type": "goal_kick", "start_sec": 30.0, "end_sec": 35.0, \
 "confidence": 0.85, "reasoning": "GK kicks from 6-yard box at t=30s"}}]
 """
+
+
+import re
+
+# ── Goal evidence checker ──────────────────────────────────────────────
+# Run #13 showed 79/93 "goal" detections match "celebrat" because the 32B
+# writes "no celebration is seen, but ball is in the net" — the word
+# appears in NEGATION.  This helper requires POSITIVE evidence.
+
+# Patterns that indicate real celebration (not negated)
+_POSITIVE_CELEB_RE = re.compile(
+    r"(?:players?|team(?:mates)?|(?:he|she|they))\s+"
+    r"(?:are |is |were |was |begin |start )?"
+    r"(?:celebrat|hugging|embracing|sliding)",
+    re.IGNORECASE,
+)
+_ARMS_RAISED_RE = re.compile(
+    r"(?:with |raising |raises? |raised )"
+    r"(?:his |her |their )?"
+    r"arms?\s*(?:raised|up|in the air|aloft)",
+    re.IGNORECASE,
+)
+_KICKOFF_RESTART_RE = re.compile(
+    r"(?:walking|walk|return|returning|headed|heading|moving)\s+"
+    r"(?:back\s+)?(?:to|toward)\s+(?:the\s+)?center\s+circle",
+    re.IGNORECASE,
+)
+_CENTER_CIRCLE_KICKOFF_RE = re.compile(
+    r"center\s+circle.*(?:kickoff|kick-off|kick off|restart)",
+    re.IGNORECASE,
+)
+
+
+def _has_positive_goal_evidence(reasoning: str) -> bool:
+    """Check if the 32B reasoning contains POSITIVE goal evidence.
+
+    Returns True only if celebration, kickoff restart, or similar
+    post-goal signals are mentioned affirmatively (not negated).
+    "Ball in the net" alone is NOT sufficient — the 8B/32B describe
+    many saves as ball near/in goal.
+    """
+    if _POSITIVE_CELEB_RE.search(reasoning):
+        return True
+    if _ARMS_RAISED_RE.search(reasoning):
+        return True
+    if _KICKOFF_RESTART_RE.search(reasoning):
+        return True
+    if _CENTER_CIRCLE_KICKOFF_RE.search(reasoning):
+        return True
+    # Explicit positive phrases
+    for phrase in ["fist pump", "group hug", "sliding on knees",
+                   "running to teammates", "jumping in celebration"]:
+        if phrase in reasoning:
+            return True
+    return False
 
 
 @dataclass
@@ -685,7 +742,9 @@ class DualPassDetector:
                 reasoning = str(item.get("reasoning", ""))
 
                 # G2-5: Confidence floor — drop low-confidence events
-                if conf < 0.4:
+                # Run #13: raised from 0.4 → 0.65 (32B is confidently wrong
+                # on many false positives, but this still helps at the margin)
+                if conf < 0.65:
                     log.info("dual_pass.low_confidence_dropped",
                              event_type=event_type_str, conf=conf,
                              start=start)
@@ -730,31 +789,52 @@ class DualPassDetector:
         return events
 
     def _deduplicate_events(
-        self, events: list[Event], overlap_threshold: float = 0.5
+        self, events: list[Event], cluster_gap_sec: float = 30.0
     ) -> list[Event]:
-        """Remove duplicate events that overlap significantly."""
+        """Temporal clustering: merge same-type events within cluster_gap_sec.
+
+        Groups events of the same type that are within cluster_gap_sec of
+        each other, then keeps only the highest-confidence event per cluster.
+        This collapses overlapping sub-window detections of the same real
+        event into a single detection.
+
+        Run #13 analysis: 93 goals → 61 clusters (30s gap).  The old
+        overlap-based dedup only caught exact overlaps, missing events
+        from adjacent sub-windows that describe the same moment.
+        """
         if len(events) <= 1:
             return events
 
-        # Sort by start time
-        sorted_events = sorted(events, key=lambda e: e.timestamp_start)
-        kept: list[Event] = [sorted_events[0]]
+        # Group by event type
+        by_type: dict[EventType, list[Event]] = {}
+        for e in events:
+            by_type.setdefault(e.event_type, []).append(e)
 
-        for event in sorted_events[1:]:
-            prev = kept[-1]
-            # Check overlap with previous event of same type
-            if event.event_type == prev.event_type:
-                overlap_start = max(event.timestamp_start, prev.timestamp_start)
-                overlap_end = min(event.timestamp_end, prev.timestamp_end)
-                if overlap_end > overlap_start:
-                    overlap = overlap_end - overlap_start
-                    shorter = min(event.duration_sec, prev.duration_sec)
-                    if shorter > 0 and overlap / shorter >= overlap_threshold:
-                        # Keep the one with higher confidence
-                        if event.confidence > prev.confidence:
-                            kept[-1] = event
-                        continue
-            kept.append(event)
+        kept: list[Event] = []
+        for etype, typed_events in by_type.items():
+            # Sort by start time
+            typed_events.sort(key=lambda e: e.timestamp_start)
+
+            # Cluster events within gap
+            clusters: list[list[Event]] = []
+            for e in typed_events:
+                if not clusters or e.timestamp_start - clusters[-1][-1].timestamp_start > cluster_gap_sec:
+                    clusters.append([])
+                clusters[-1].append(e)
+
+            # Keep highest-confidence event per cluster
+            for cluster in clusters:
+                best = max(cluster, key=lambda e: e.confidence)
+                kept.append(best)
+
+            if len(clusters) < len(typed_events):
+                log.info("dual_pass.clustered",
+                         event_type=etype.value,
+                         before=len(typed_events),
+                         clusters=len(clusters))
+
+        # Re-sort by time
+        kept.sort(key=lambda e: e.timestamp_start)
 
         if len(kept) < len(events):
             log.info("dual_pass.deduplicated",
@@ -764,11 +844,14 @@ class DualPassDetector:
     def _post_filter_events(self, events: list[Event]) -> list[Event]:
         """Apply contextual post-filters.
 
-        - shot_stop_standing → catch promotion: standing GK blocks are often
-          catches; reclassify since GT doesn't have shot_stop_standing.
+        - goal keyword gate: demote goal → shot_on_target unless observation
+          text contains celebration/kickoff/net evidence.
+        - kickoff suppression: GT doesn't score kickoffs.
+        - shot_stop_standing → catch promotion.
         """
         kept: list[Event] = []
         dropped = 0
+        goal_demoted = 0
         for event in events:
             # Run #9: kickoff is offered to the 32B as a magnet so it stops
             # mislabeling mid-pitch stationary-ball scenes as free_kick_shot,
@@ -776,6 +859,48 @@ class DualPassDetector:
             if event.event_type == EventType.KICKOFF:
                 dropped += 1
                 continue
+
+            # ── Goal keyword gate (Run #13 precision fix) ─────────────
+            # The 32B claims to follow strict goal rules but doesn't —
+            # it sees "ball near goal" in the 8B observation and calls it
+            # a goal.  Enforce in code: require POSITIVE celebration or
+            # kickoff-restart evidence in the reasoning.
+            #
+            # IMPORTANT: "ball in the net" alone is NOT enough — the 8B
+            # describes many saves as "ball near/inside goal" and the 32B
+            # promotes these.  We require human-reaction evidence.
+            #
+            # Also: many false goals say "no celebration is seen, but..."
+            # so we must check for POSITIVE mentions, not just keyword
+            # presence.  The _has_positive_evidence helper handles this.
+            if event.event_type == EventType.GOAL:
+                reasoning_lower = event.metadata.get("vlm_reasoning", "").lower()
+                has_evidence = _has_positive_goal_evidence(reasoning_lower)
+                if not has_evidence:
+                    # Demote to shot_on_target — preserve the detection but
+                    # reduce the impact of the misclassification.
+                    log.info("dual_pass.goal_demoted",
+                             start=event.timestamp_start,
+                             reasoning=reasoning_lower[:150])
+                    event = Event(
+                        event_id=event.event_id,
+                        job_id=event.job_id,
+                        source_file=event.source_file,
+                        event_type=EventType.SHOT_ON_TARGET,
+                        timestamp_start=event.timestamp_start,
+                        timestamp_end=event.timestamp_end,
+                        confidence=event.confidence,
+                        reel_targets=event.reel_targets,
+                        is_goalkeeper_event=False,
+                        frame_start=event.frame_start,
+                        frame_end=event.frame_end,
+                        reviewed=event.reviewed,
+                        review_override=event.review_override,
+                        metadata={**event.metadata,
+                                  "goal_demoted": True,
+                                  "original_event_type": "goal"},
+                    )
+                    goal_demoted += 1
 
             # Reclassify shot_stop_standing → catch
             # (GT never has shot_stop_standing; these are usually catches)
@@ -799,9 +924,10 @@ class DualPassDetector:
 
             kept.append(event)
 
-        if dropped:
+        if dropped or goal_demoted:
             log.info("dual_pass.post_filtered",
-                     dropped=dropped, kept=len(kept))
+                     dropped=dropped, goal_demoted=goal_demoted,
+                     kept=len(kept))
         return kept
 
     # ── Canary methods ──────────────────────────────────────────────────
