@@ -38,6 +38,7 @@ class EventType(str, Enum):
     # ── Structural / restart events ──────────────────────────────────────
     KICKOFF             = "kickoff"
     THROW_IN            = "throw_in"
+    SET_PIECE           = "set_piece"  # merged corner_kick + free_kick_shot
 
 
 # Map each event type to which reels it contributes to.
@@ -63,6 +64,7 @@ EVENT_REEL_MAP: dict[EventType, list[str]] = {
     EventType.FREE_KICK_SHOT:     ["highlights"],
     EventType.KICKOFF:            [],
     EventType.THROW_IN:           [],
+    EventType.SET_PIECE:          ["highlights"],  # merged corner + free kick
 }
 
 # Valid keeper reel type
@@ -107,6 +109,7 @@ EVENT_CONFIDENCE_THRESHOLDS: dict[EventType, float] = {
     EventType.CORNER_KICK:        0.50,   # Lowered — distinctive but VLM uncertain at distance
     EventType.KICKOFF:            0.50,
     EventType.THROW_IN:           0.50,
+    EventType.SET_PIECE:          0.50,   # Merged corner + free kick
 }
 
 
@@ -223,6 +226,11 @@ EVENT_TYPE_CONFIG: dict[EventType, EventTypeConfig] = {
     EventType.THROW_IN: EventTypeConfig(
         label="Throw-in", category="highlights",
         pre_pad_sec=1.0, post_pad_sec=2.0, max_clip_sec=10.0,
+        min_confidence=0.50, is_gk_event=False,
+    ),
+    EventType.SET_PIECE: EventTypeConfig(
+        label="Set Piece", category="highlights",
+        pre_pad_sec=3.0, post_pad_sec=5.0, max_clip_sec=30.0,
         min_confidence=0.50, is_gk_event=False,
     ),
 }

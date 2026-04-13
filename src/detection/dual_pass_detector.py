@@ -50,110 +50,115 @@ class CanaryFailure(RuntimeError):
 # Sent to 8B WITH images.  The 8B handles many frames + long prompts fine.
 # Asks for free-text description focused on the signals that matter for
 # event classification downstream.
+# Run #16 lesson: structured yes/no checklist made 8B ultra-conservative —
+# it answered "no" to ALL restart questions for every GT corner, free kick,
+# and throw-in.  Free-form narrative (Run #15) produced richer descriptions.
+#
+# Run #16 fix: revert to free-form but add explicit DEAD BALL detection.
+# Merge corner_kick + free_kick_shot → "set_piece" since the 8B can't
+# distinguish them visually (corner flag too small at 960px).
 _OBSERVE_PROMPT = """\
 You are analyzing frames from a soccer match recorded by a sideline camera.
 These {n_frames} frames span a {duration:.0f}-second window ({start:.0f}s – {end:.0f}s).
 Triage flagged this window as: {triage_labels}.
 
-IMPORTANT: Only report what you can DIRECTLY SEE in the frames. \
-If you cannot see a corner flag, do NOT mention corner kicks. \
-If you cannot see the ball in the net, do NOT mention goals. \
-Do NOT infer or guess — describe only visible evidence.
+Describe EXACTLY what you see. Cover ALL of these topics:
 
-Answer EACH question below. Write "no" if you do not see it.
+1. DEAD BALL / RESTART — This is the MOST IMPORTANT question. \
+Is play STOPPED at any point? Look for these signs:
+   - The ball is STATIONARY on the ground while players stand around it
+   - Players are LINED UP or GATHERED in a formation, waiting
+   - A player is STANDING OVER the ball, about to kick it
+   - A player at the SIDELINE holds the ball OVERHEAD (= throw-in)
+   - The ball is on the ground near a CORNER of the field
+   - The ball is on the ground in the GOAL AREA with the GK about to kick
+   - Players form a WALL (3+ standing shoulder to shoulder)
+   If you see ANY of these, describe the LOCATION (which part of the \
+   field — corner, sideline, goal area, center, or elsewhere) and \
+   what the players are doing. Even if you are unsure what type of \
+   restart it is, describe the scene.
 
-FIELD POSITION — Where is the ball in each key frame?
-Choose: corner_flag, 6yard_box, penalty_area, center_circle, sideline/touchline, in_play, not_visible
+2. GOALKEEPER — Is the GK:
+   - HOLDING the ball in their hands? (= catch)
+   - DIVING and the ball REBOUNDING away? (= save/parry)
+   - PUNCHING the ball with a fist?
 
-RESTART CHECKLIST:
-1. THROW-IN: Is a player standing at the SIDELINE/TOUCHLINE holding the ball OVERHEAD with BOTH HANDS? (yes/no, timestamp)
-2. CORNER KICK: Is the ball on the ground AT or TOUCHING a CORNER FLAG? Can you SEE the corner flag in the frame? (yes/no, timestamp)
-3. GOAL KICK: Is the ball stationary on the ground INSIDE the 6-YARD BOX (small box nearest the goal)? Is the GK or a defender about to kick it? Are opponents far away? (yes/no, timestamp)
-4. FREE KICK: Is there a DEFENSIVE WALL of 3+ players standing shoulder-to-shoulder? (yes/no, timestamp)
-5. KICKOFF: Is the ball at the CENTER SPOT with teams lined up in own halves? (yes/no, timestamp)
+3. GOAL SIGNALS:
+   - Are players CELEBRATING — arms raised, group hugs, running to teammates?
+   - Are teams WALKING BACK to the center circle?
+   - Is the ball IN THE NET (net visibly disturbed)?
 
-GOALKEEPER CHECKLIST:
-6. CATCH: Is the GK HOLDING the ball securely in BOTH HANDS? (yes/no, timestamp)
-7. DIVING SAVE: Is the GK mid-DIVE with the ball REBOUNDING away (not caught)? (yes/no, timestamp)
-8. PUNCH: Is the GK hitting the ball with a CLOSED FIST? (yes/no, timestamp)
+4. SHOTS — Does a player STRIKE the ball toward goal?
 
-GOAL EVIDENCE — be STRICT, do not guess:
-9. Is the ball VISIBLY INSIDE THE NET with the net pushed back/disturbed? (yes/no, timestamp)
-10. Are multiple players CELEBRATING — arms raised, group hugs, running together? (yes/no, describe exactly what you see)
-11. Are teams WALKING BACK toward the center circle? (yes/no)
+5. SEQUENCE — What happens AFTER the main action? \
+   (A shot followed by a restart is TWO events. Describe BOTH.)
 
-SHOT:
-12. Does a player STRIKE the ball toward the goal? (yes/no, timestamp)
-
-SEQUENCE: What happens AFTER the main action? \
-(e.g., "shot at t=45s, then goal kick at t=50s" = two events)"""
+Include timestamps (e.g., "at t=45s play stops, ball is stationary \
+near the corner, a player stands over it ready to kick at t=48s").
+Be specific about what you SEE, not what you infer."""
 
 # ── 32B Classify prompt — TEXT-ONLY, no images ─────────────────────────
 # Sent to 32B with ONLY the 8B observation text.  No image constraints means
 # we can use the full detailed prompt with all disambiguation rules.
 # CRITICAL: Do NOT mention "[]" or "empty list" anywhere — 32B latches on it.
 #
-# Run #14 lesson: a flat 11-way prompt defaults to shot_on_target for everything.
-# 75/84 FNs were absorbed by shot_on_target.  Fix: hierarchical decision tree
-# that checks set pieces and GK actions BEFORE falling back to shot_on_target.
+# Run #16 lesson: merged corner_kick + free_kick_shot → set_piece.
+# The 8B can't distinguish them visually.  We detect the dead-ball pattern
+# (stationary ball, players gathered/lined up) and classify as set_piece.
+# Also: free-form observe is back — structured yes/no made 8B too conservative.
 _CLASSIFY_PROMPT = """\
-You are a soccer event classifier. An observer analyzed video frames \
-from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) and answered \
-a visual checklist:
+You are a soccer event classifier. An observation model analyzed video frames \
+from a {duration:.0f}s window ({start:.0f}s – {end:.0f}s) and produced this description:
 
 ---
 {observation}
 ---
 
-Use the observer's answers to classify events. The observer answered \
-yes/no to specific visual questions — TRUST those answers. If the \
-observer said "no" to a question, do NOT classify that event.
+Classify events using this DECISION TREE. Work through each step IN ORDER. \
+Return ALL events that apply (a window can contain a shot AND a restart).
 
-RULES (check in this order, return ALL that apply):
+STEP 1 — DEAD BALL / SET PIECE (check first — these are distinctive):
+- throw_in: Player at SIDELINE/TOUCHLINE, ball held OVERHEAD with both hands. \
+  Very common (~1 per 2 minutes of play).
+- goal_kick: Ball STATIONARY in GOAL AREA / 6-YARD BOX. GK or defender \
+  about to kick upfield. Opponents far away.
+- set_piece: Ball STATIONARY on the ground with players gathered around it, \
+  OR a player standing over the ball ready to kick, OR a defensive wall \
+  of 3+ players. This covers corner kicks AND free kicks — do not try to \
+  distinguish between them. Location can be anywhere: corner of field, \
+  edge of penalty area, midfield, etc. Key signal: PLAY IS STOPPED, \
+  ball on the ground, players waiting.
+- kickoff: Ball at CENTER SPOT, both teams in own halves.
 
-1. CORNER KICK: Observer Q2 answered YES (ball at corner flag, flag visible). \
-   → corner_kick. Do NOT confuse with goal kick (Q3) — corner flag ≠ 6-yard box.
+If the description mentions play stopping, ball stationary, or players \
+lining up — it is likely a set piece. INCLUDE it.
 
-2. THROW-IN: Observer Q1 answered YES (ball overhead at sideline). \
-   → throw_in. Very common (~1 per 2 minutes).
+STEP 2 — GOALKEEPER ACTIONS:
+- catch: GK HOLDS/SECURES ball in hands, then distributes. Ball IN hands. \
+  If a shot preceded it, classify ONLY as catch (not shot + catch).
+- shot_stop_diving: GK DIVES, ball REBOUNDS/DEFLECTS away. Ball NOT held. \
+  Often followed by a set piece — include both if described.
+- punch: GK PUNCHES ball with FIST. Ball goes up/outward, not caught.
 
-3. GOAL KICK: Observer Q3 answered YES (ball in 6-yard box, GK about to kick, \
-   opponents far away). → goal_kick. Do NOT confuse with corner kick (Q2).
+STEP 3 — GOAL (strict):
+- goal: Requires CELEBRATION (arms raised, group hugs, sliding) OR teams \
+  WALKING BACK to center circle OR ball CLEARLY IN NET with net disturbed. \
+  A shot toward goal alone is NEVER enough. If unsure → shot_on_target.
 
-4. FREE KICK: Observer Q4 answered YES (defensive wall of 3+ players). \
-   → free_kick_shot. Without a visible wall, this is NOT a free kick.
+STEP 4 — SHOT (fallback only):
+- shot_on_target: A player strikes ball toward goal. Use ONLY if Steps 1-3 \
+  did not produce a more specific classification. If a restart follows \
+  (goal kick, set piece, throw-in), classify the restart TOO.
 
-5. KICKOFF: Observer Q5 answered YES (ball at center, teams in own halves). \
-   → kickoff.
+For each event: start_sec = moment of action, end_sec = start + 3-5s.
 
-6. CATCH: Observer Q6 answered YES (GK holds ball in both hands). → catch. \
-   If a shot preceded it, classify ONLY as catch (not shot + catch).
+Reply as a JSON array. Each element needs: event_type, start_sec, \
+end_sec, confidence, reasoning. Example element: \
+{{"event_type": "set_piece", "start_sec": 30.0, "end_sec": 35.0, \
+"confidence": 0.85, "reasoning": "play stopped, ball stationary near corner"}}
 
-7. DIVING SAVE: Observer Q7 answered YES (GK diving, ball rebounds). \
-   → shot_stop_diving. Often followed by corner kick — include both.
-
-8. PUNCH: Observer Q8 answered YES (GK punches with fist). → punch.
-
-9. GOAL: Observer answered YES to Q9 (ball in net) AND YES to Q10 \
-   (celebrating) or Q11 (walking back to center). BOTH conditions needed. \
-   Ball in net alone is NOT enough. If unsure → shot_on_target.
-
-10. SHOT (fallback only): Observer Q12 answered YES and NONE of rules 1-9 \
-    matched. → shot_on_target. If a restart follows the shot (goal kick, \
-    corner, throw-in), classify the restart too.
-
-CONFIDENCE: If the observer answered "yes" clearly → 0.85-0.95. \
-If the observer was uncertain or qualified → 0.65-0.75.
-
-For each event: start_sec = timestamp from observer, end_sec = start + 3-5s.
-
-Reply with a JSON array. Each element must have these keys: \
-event_type, start_sec, end_sec, confidence, reasoning. \
-Example element: {{"event_type": "corner_kick", "start_sec": 30.0, \
-"end_sec": 35.0, "confidence": 0.90, "reasoning": "Q2=yes: ball at corner flag"}}
-
-If the observer answered YES to any question, you MUST return at least \
-one event. Do NOT return an empty response when positive observations exist.
+If the observation describes any notable action, you MUST return at \
+least one event. Do NOT return empty when the description contains events.
 """
 
 
@@ -612,7 +617,7 @@ class DualPassDetector:
         payload = {
             "model": self._cfg.tier1_model_name,  # 8B — handles images well
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": 800,  # Structured checklist needs more space than free-form
+            "max_tokens": 600,  # Free-form with dead-ball focus
             "temperature": 0,
         }
 
