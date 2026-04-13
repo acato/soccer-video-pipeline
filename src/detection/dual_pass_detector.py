@@ -147,9 +147,13 @@ If the observer was uncertain or qualified → 0.65-0.75.
 
 For each event: start_sec = timestamp from observer, end_sec = start + 3-5s.
 
-Reply with ONLY a JSON array:
-[{{"event_type": "corner_kick", "start_sec": 30.0, "end_sec": 35.0, \
-"confidence": 0.90, "reasoning": "Q2=yes: ball at corner flag at t=30s"}}]
+Reply with a JSON array. Each element must have these keys: \
+event_type, start_sec, end_sec, confidence, reasoning. \
+Example element: {{"event_type": "corner_kick", "start_sec": 30.0, \
+"end_sec": 35.0, "confidence": 0.90, "reasoning": "Q2=yes: ball at corner flag"}}
+
+If the observer answered YES to any question, you MUST return at least \
+one event. Do NOT return an empty response when positive observations exist.
 """
 
 
