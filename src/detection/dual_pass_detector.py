@@ -83,14 +83,23 @@ Is play STOPPED at any point? Look for these signs:
    - DIVING and the ball REBOUNDING away? (= save/parry)
    - PUNCHING the ball with a fist?
 
-3. GOAL SIGNALS:
-   - Are players CELEBRATING — arms raised, group hugs, running to teammates?
-   - Are teams WALKING BACK to the center circle?
+3. GOAL SIGNALS — after a shot, look carefully for these:
+   - Do players CELEBRATE — arms raised, group hugs, running to teammates?
+   - Do teams WALK BACK / RETURN toward the CENTER CIRCLE? \
+     (Even subtle movement — players jogging away from the goal toward \
+     midfield is a strong signal)
+   - Do players from BOTH teams gather near the CENTER SPOT? \
+     (= kickoff setup, always follows a goal)
    - Is the ball IN THE NET (net visibly disturbed)?
+   The camera is far away — celebrations may look like small figures \
+   with arms up. Look for the PATTERN: action near goal, then general \
+   movement toward the center of the field.
 
 4. SHOTS — Does a player STRIKE the ball toward goal?
 
-5. SEQUENCE — What happens AFTER the main action? \
+5. SEQUENCE — What happens AFTER the main action? This is CRITICAL. \
+   Describe what players do in the 20-30 seconds after a shot: \
+   do they set up for a goal kick? Walk to center? Continue playing? \
    (A shot followed by a restart is TWO events. Describe BOTH.)
 
 Include timestamps (e.g., "at t=45s play stops, ball is stationary \
@@ -120,14 +129,16 @@ Return ALL events that apply (a window can contain a shot AND a restart).
 STEP 1 — DEAD BALL / SET PIECE (check first — these are distinctive):
 - throw_in: Player at SIDELINE/TOUCHLINE, ball held OVERHEAD with both hands. \
   Very common (~1 per 2 minutes of play).
-- goal_kick: Ball STATIONARY in GOAL AREA / 6-YARD BOX. GK or defender \
-  about to kick upfield. Opponents far away.
+- goal_kick: Ball STATIONARY in GOAL AREA / near the GOAL. GK or defender \
+  about to kick upfield. Key: the GOALKEEPER is the one kicking, and \
+  opponents are far away / retreating. Check BEFORE set_piece.
 - set_piece: Ball STATIONARY on the ground with players gathered around it, \
   OR a player standing over the ball ready to kick, OR a defensive wall \
   of 3+ players. This covers corner kicks AND free kicks — do not try to \
   distinguish between them. Location can be anywhere: corner of field, \
   edge of penalty area, midfield, etc. Key signal: PLAY IS STOPPED, \
-  ball on the ground, players waiting.
+  ball on the ground, players waiting. \
+  NOTE: if the GK is the one kicking from the goal area → goal_kick, not set_piece.
 - kickoff: Ball at CENTER SPOT, both teams in own halves.
 
 If the description mentions play stopping, ball stationary, or players \
@@ -140,10 +151,18 @@ STEP 2 — GOALKEEPER ACTIONS:
   Often followed by a set piece — include both if described.
 - punch: GK PUNCHES ball with FIST. Ball goes up/outward, not caught.
 
-STEP 3 — GOAL (strict):
-- goal: Requires CELEBRATION (arms raised, group hugs, sliding) OR teams \
-  WALKING BACK to center circle OR ball CLEARLY IN NET with net disturbed. \
-  A shot toward goal alone is NEVER enough. If unsure → shot_on_target.
+STEP 3 — GOAL (look for post-goal signals):
+- goal: A shot toward goal FOLLOWED by any of these post-goal signals:
+  (a) Players CELEBRATING — arms raised, group hugs, sliding, fist pumps
+  (b) Teams WALKING BACK / RETURNING toward the center circle
+  (c) Players from BOTH TEAMS gathering near the CENTER SPOT / center circle \
+      (this is the KICKOFF setup that always follows a goal)
+  (d) Ball CLEARLY IN NET with net disturbed
+  (e) A KICKOFF restart — ball at center spot, teams in own halves
+  ANY of these signals after a shot = GOAL. The camera is far away, so \
+  celebrations may look subtle (small figures with arms up, players jogging \
+  toward center). Look for the overall pattern: action near goal THEN \
+  movement toward center of the field.
 
 STEP 4 — SHOT (fallback only):
 - shot_on_target: A player strikes ball toward goal. Use ONLY if Steps 1-3 \
@@ -232,19 +251,19 @@ class DualPassConfig:
     tier2_model_path: str = "Qwen/Qwen3-VL-32B-Instruct-FP8"
 
     # Triage scanner settings
-    frame_width: int = 960
+    frame_width: int = 1280  # Run #16: up from 960 — need to see celebrations/kickoffs
     frames_per_window: int = 7
     window_span_sec: float = 10.0
     step_sec: float = 4.0  # Tighter step = more overlap = fewer boundary misses
 
     # Candidate merging (tight — ball_zone + gap splitting)
     merge_gap_sec: float = 4.0
-    merge_pad_sec: float = 6.0  # Run #5: extra post-event context for goal celebrations
-    max_window_sec: float = 60.0
+    merge_pad_sec: float = 30.0  # Run #16: up from 6 — must capture post-goal kickoff
+    max_window_sec: float = 90.0  # Run #16: up from 60 — longer windows for goal context
 
     # 8B observe — frames → text description (while 8B still loaded)
-    observe_max_frames: int = 10  # 8B handles many frames well
-    observe_timeout_sec: int = 90  # 8B is fast, but 10 images take a moment
+    observe_max_frames: int = 15  # Run #16: up from 10 — more temporal coverage
+    observe_timeout_sec: int = 120  # More frames = slightly longer
 
     # 32B classification — text-only (no images sent to 32B)
     classify_max_frames: int = 2  # Legacy — only used if observe is skipped
