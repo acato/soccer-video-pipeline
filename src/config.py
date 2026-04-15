@@ -122,7 +122,7 @@ VLLM_ENABLED: bool = _bool("VLLM_ENABLED", False)
 VLLM_URL: str = _opt("VLLM_URL", "http://10.10.2.222:8000")
 """Base URL of the vLLM OpenAI-compatible server."""
 
-VLLM_MODEL: str = _opt("VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct-FP8")
+VLLM_MODEL: str = _opt("VLLM_MODEL", "qwen3-vl-32b")
 """Model name served by vLLM (must match --served-model-name)."""
 
 VLLM_MIN_CONFIDENCE: float = _float("VLLM_MIN_CONFIDENCE", 0.5)
@@ -190,6 +190,18 @@ DUAL_PASS_TRIAGE_STEP: float = _float("DUAL_PASS_TRIAGE_STEP", 6.0)
 
 DUAL_PASS_SWAP_SCRIPT: str = _opt("DUAL_PASS_SWAP_SCRIPT", "")
 """Path to model swap script (defaults to scripts/swap_vllm_model.sh)."""
+
+SINGLE_PASS_32B: bool = _bool("SINGLE_PASS_32B", False)
+"""Single-pass mode: 32B classifies directly from frames (no triage/observe split)."""
+
+SINGLE_PASS_STEP_SEC: float = _float("SINGLE_PASS_STEP_SEC", 10.0)
+"""Seconds between sliding window steps in single-pass mode."""
+
+SINGLE_PASS_WINDOW_SEC: float = _float("SINGLE_PASS_WINDOW_SEC", 15.0)
+"""Window duration in seconds for single-pass classification."""
+
+SINGLE_PASS_FRAMES: int = _int("SINGLE_PASS_FRAMES", 5)
+"""Number of frames per window in single-pass mode."""
 
 # ---------------------------------------------------------------------------
 # Output

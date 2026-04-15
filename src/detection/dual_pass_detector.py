@@ -1,19 +1,16 @@
 """
-Three-step VLM detector: 8B triage → 8B observe → 32B classify (text-only).
+VLM event detector with two modes:
 
-Phase 1: Fast 8B model scans entire game with multi-frame sliding windows.
-          Produces candidate time windows where events might be occurring.
-Phase 2: 8B observe — send frames to the 8B, get free-text description of what's
-          happening.  The 8B handles many frames + longer prompts reliably.
-Phase 3: Model swap — stop 8B, start 32B (requires both GPUs for TP=2).
-Phase 4: 32B classify — send the TEXT description (no images) to the 32B with the
-          full detailed prompt including all disambiguation rules.  Text-only means
-          no prompt-length limit, no frame limit, no degradation.
+SINGLE-PASS MODE (single_pass=True, recommended with 32B + NVLink):
+  Slides a window across the entire game, sends frames directly to the 32B
+  with the full classification prompt.  No triage, no observe, no text
+  intermediary.  The 32B sees images and classifies events in one step.
 
-Key insight: the 32B under current vLLM config (TP=2, FP8) degrades badly when
-sent images — returns [] for long prompts, times out with 3+ images.  By having
-the 8B do all image analysis and the 32B only process text, both models operate
-in their sweet spot.
+DUAL-PASS MODE (single_pass=False, legacy for 8B+32B with model swap):
+  Phase 1: 8B triage scan (coarse labels)
+  Phase 2: 8B observe (images → text descriptions)
+  Phase 3: Model swap to 32B
+  Phase 4: 32B classify (text-only, no images)
 """
 from __future__ import annotations
 
@@ -181,6 +178,51 @@ least one event. Do NOT return empty when the description contains events.
 """
 
 
+# ── Single-pass prompt — frames + classification in one shot ──────────
+# Sent to 32B WITH images.  Combines the observe and classify steps into
+# a single VLM call.  Requires a model that handles images well (32B FP8
+# with TP=2 NVLink).
+_DIRECT_CLASSIFY_PROMPT = """\
+You are analyzing {n_frames} frames from a soccer match ({start:.0f}s – {end:.0f}s).
+
+For each DISTINCT event you see, classify it. Work through this decision tree:
+
+STEP 1 — DEAD BALL / SET PIECE (check first):
+- throw_in: Player at SIDELINE, ball held OVERHEAD with both hands.
+- goal_kick: Ball STATIONARY in GOAL AREA, GK or defender about to kick \
+  upfield, opponents retreated.
+- set_piece: Ball STATIONARY on ground, players gathered/waiting, OR a \
+  player standing over the ball, OR a defensive wall of 3+ players. \
+  Covers corner kicks AND free kicks. If at a CORNER FLAG = corner kick \
+  variant. If GK kicking from goal area = goal_kick instead.
+- kickoff: Ball at CENTER SPOT, both teams in own halves.
+
+STEP 2 — GOALKEEPER ACTIONS:
+- catch: GK HOLDS ball in hands, then distributes.
+- shot_stop_diving: GK DIVES, ball REBOUNDS away. Not caught.
+- punch: GK PUNCHES ball with FIST.
+
+STEP 3 — GOAL (requires post-goal signals):
+- goal: Shot toward goal FOLLOWED BY celebration (arms raised, group hugs), \
+  OR teams walking back toward center circle, OR kickoff setup. \
+  Requires POSITIVE evidence — "ball near goal" alone is NOT a goal.
+
+STEP 4 — SHOT (fallback only):
+- shot_on_target: Player strikes ball toward goal. Only if Steps 1-3 \
+  don't apply. If a restart follows, classify the restart TOO.
+
+A window can contain MULTIPLE events (e.g., a shot + goal kick after).
+Throw-ins and goal kicks are VERY common — expect many across a game.
+
+For each event: start_sec and end_sec should be the actual timestamps.
+
+Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
+"end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
+
+If you see only normal open play with no notable event, return: {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, "confidence": 0.9, "reasoning": "open play"}}
+"""
+
+
 import re
 
 # ── Goal evidence checker ──────────────────────────────────────────────
@@ -241,6 +283,15 @@ class DualPassConfig:
     """Configuration for the dual-pass detector."""
     # vLLM server
     vllm_url: str = "http://10.10.2.222:8000"
+
+    # Single-pass mode: 32B classifies directly from frames (no triage/observe split)
+    single_pass: bool = False
+
+    # Single-pass settings
+    single_pass_step_sec: float = 10.0   # Slide step (10s = ~684 windows for 114 min game)
+    single_pass_window_sec: float = 15.0  # Each window spans 15s (5s overlap)
+    single_pass_frames: int = 5           # Frames per window (one every 3s)
+    single_pass_timeout_sec: int = 60     # Per-window timeout
 
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
@@ -320,7 +371,202 @@ class DualPassDetector:
         self,
         progress_callback: Optional[Callable[[float], None]] = None,
     ) -> list[Event]:
-        """Run the full three-step detection pipeline.
+        """Run the detection pipeline.
+
+        Routes to single-pass (32B direct) or dual-pass (triage→observe→classify)
+        based on config.single_pass.
+        """
+        if self._cfg.single_pass:
+            return self._single_pass_detect(progress_callback)
+        return self._dual_pass_detect(progress_callback)
+
+    def _single_pass_detect(
+        self,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> list[Event]:
+        """Single-pass: slide frames across the game, 32B classifies directly.
+
+        Progress allocation:
+            0.00 - 0.95: Sliding window classification
+            0.95 - 1.00: Post-processing
+        """
+        import httpx
+        import time
+
+        def _progress(pct: float):
+            if progress_callback:
+                progress_callback(min(1.0, pct))
+
+        _progress(0.0)
+
+        step = self._cfg.single_pass_step_sec
+        window = self._cfg.single_pass_window_sec
+        n_frames = self._cfg.single_pass_frames
+        model = self._cfg.tier2_model_name  # 32B
+
+        total_windows = int(self._video_duration / step) + 1
+        log.info("single_pass.start",
+                 job_id=self._job_id,
+                 total_windows=total_windows,
+                 step=step, window=window, n_frames=n_frames,
+                 model=model)
+
+        all_events: list[Event] = []
+        latencies: list[float] = []
+        n_nonempty = 0
+        diag_dir = self._working_dir / "diagnostics"
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        diag_file = open(diag_dir / "single_pass_windows.jsonl", "w")
+
+        t = 0.0
+        win_idx = 0
+        while t < self._video_duration:
+            win_start = max(0.0, t - (window - step) / 2)
+            win_end = min(self._video_duration, win_start + window)
+
+            # Sample frames
+            center = (win_start + win_end) / 2
+            half_span = (win_end - win_start) / 2
+            interval = max(1.0, (win_end - win_start) / n_frames)
+            frames = self._sampler.sample_range(
+                center_sec=center,
+                window_sec=half_span,
+                interval_sec=interval,
+                duration_sec=self._video_duration,
+            )
+            if not frames:
+                t += step
+                win_idx += 1
+                continue
+
+            # Cap frames
+            if len(frames) > n_frames:
+                s = len(frames) / n_frames
+                indices = [int(i * s) for i in range(n_frames)]
+                frames = [frames[i] for i in indices]
+
+            # Build prompt with images
+            prompt = _DIRECT_CLASSIFY_PROMPT.format(
+                n_frames=len(frames),
+                start=win_start,
+                end=win_end,
+            )
+
+            content: list[dict] = []
+            for frame in frames:
+                b64 = base64.b64encode(frame.jpeg_bytes).decode()
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                })
+                content.append({
+                    "type": "text",
+                    "text": f"t={frame.timestamp_sec:.1f}s",
+                })
+            content.append({"type": "text", "text": prompt})
+
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 800,
+                "temperature": 0,
+            }
+
+            events_this_window: list[Event] = []
+            try:
+                t0 = time.monotonic()
+                r = httpx.post(
+                    f"{self._cfg.vllm_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=self._cfg.single_pass_timeout_sec,
+                )
+                elapsed = time.monotonic() - t0
+                latencies.append(elapsed)
+
+                if r.status_code == 200:
+                    text = r.json()["choices"][0]["message"]["content"].strip()
+
+                    # Parse into events
+                    tmp_window = CandidateWindow(
+                        start_sec=win_start, end_sec=win_end,
+                        labels=["DIRECT"], flags=[],
+                    )
+                    events_this_window = self._parse_classify_response(
+                        text, tmp_window
+                    )
+                    # Filter out "none" events
+                    events_this_window = [
+                        e for e in events_this_window
+                        if e.event_type.value != "none"
+                    ]
+                    if events_this_window:
+                        n_nonempty += 1
+                    all_events.extend(events_this_window)
+
+                    log.info("single_pass.window",
+                             idx=win_idx, start=win_start, end=win_end,
+                             elapsed=f"{elapsed:.1f}s",
+                             events=len(events_this_window),
+                             text=text[:200])
+                else:
+                    log.warning("single_pass.api_error",
+                                status=r.status_code, body=r.text[:200])
+
+            except Exception as exc:
+                log.warning("single_pass.exception",
+                            error=str(exc), start=win_start)
+
+            # Diagnostics
+            json.dump({
+                "window_idx": win_idx,
+                "start_sec": win_start,
+                "end_sec": win_end,
+                "n_frames": len(frames),
+                "n_events": len(events_this_window),
+                "event_types": [e.event_type.value for e in events_this_window],
+                "latency": latencies[-1] if latencies else None,
+            }, diag_file)
+            diag_file.write("\n")
+
+            # Progress
+            _progress(0.95 * (win_idx + 1) / total_windows)
+
+            # Log latency stats periodically
+            if win_idx > 0 and win_idx % 50 == 0:
+                p50 = sorted(latencies)[len(latencies) // 2]
+                log.info("single_pass.progress",
+                         windows=win_idx, total=total_windows,
+                         events=len(all_events), nonempty=n_nonempty,
+                         p50_latency=f"{p50:.1f}s")
+
+            t += step
+            win_idx += 1
+
+        diag_file.close()
+
+        log.info("single_pass.scan_complete",
+                 job_id=self._job_id,
+                 windows=win_idx, events_raw=len(all_events),
+                 nonempty_windows=n_nonempty)
+
+        # Deduplicate and post-filter (reuse existing methods)
+        all_events = self._deduplicate_events(all_events)
+        all_events = self._post_filter_events(all_events)
+
+        # Save final events
+        self._save_classify_diagnostics([], all_events)
+
+        log.info("single_pass.complete",
+                 job_id=self._job_id, events=len(all_events))
+
+        _progress(1.0)
+        return all_events
+
+    def _dual_pass_detect(
+        self,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> list[Event]:
+        """Legacy dual-pass: triage → observe → classify.
 
         Progress allocation:
             0.00 - 0.02: Model swap to 8B
