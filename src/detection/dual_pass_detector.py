@@ -187,39 +187,58 @@ You are analyzing {n_frames} frames from a soccer match ({start:.0f}s – {end:.
 
 For each DISTINCT event you see, classify it. Work through this decision tree:
 
-STEP 1 — DEAD BALL / SET PIECE (check first):
-- throw_in: Player at SIDELINE, ball held OVERHEAD with both hands.
-- goal_kick: Ball STATIONARY in GOAL AREA, GK or defender about to kick \
-  upfield, opponents retreated.
-- set_piece: Ball STATIONARY on ground, players gathered/waiting, OR a \
-  player standing over the ball, OR a defensive wall of 3+ players. \
-  Covers corner kicks AND free kicks. If at a CORNER FLAG = corner kick \
-  variant. If GK kicking from goal area = goal_kick instead.
+STEP 1 — DEAD BALL / RESTART (check first — these are the most common events):
+- throw_in: Player standing near the SIDELINE/TOUCHLINE with ball held \
+  OVERHEAD or at chest height preparing to throw. Both hands on ball. \
+  This is the MOST COMMON event (~1 every 2 minutes). Look for ANY player \
+  near the sideline holding or about to hold the ball — even the setup \
+  (walking to the line, picking up the ball) counts. Flag aggressively.
+- goal_kick: Ball STATIONARY in the 6-YARD BOX or GOAL AREA, GK or \
+  defender about to kick upfield, opponents retreated. The kicker is \
+  INSIDE or very near the small box closest to the goal.
+- corner_kick: Ball STATIONARY at or near a CORNER FLAG / corner arc. \
+  A player is standing at the corner of the field ready to kick. Look \
+  for the distinctive corner flag and the curved corner arc marking.
+- free_kick_shot: Ball STATIONARY anywhere on the pitch OUTSIDE the \
+  goal area and away from corners, with a player standing over it ready \
+  to kick. Often a defensive WALL of 3+ players forms nearby. Can be \
+  anywhere: midfield, edge of penalty area, defensive third.
 - kickoff: Ball at CENTER SPOT, both teams in own halves.
 
-STEP 2 — GOALKEEPER ACTIONS:
-- catch: GK HOLDS ball in hands, then distributes.
-- shot_stop_diving: GK DIVES, ball REBOUNDS away. Not caught.
-- punch: GK PUNCHES ball with FIST.
+STEP 2 — GOALKEEPER ACTIONS (look for the GK specifically):
+- catch: GK HOLDS or SECURES ball in their HANDS. Ball is IN the GK's \
+  hands/arms, not bouncing away. GK then typically distributes (throws \
+  or kicks) the ball. This is VERY COMMON (~12 per game). If you see \
+  the GK standing with the ball in their hands, that is a catch.
+- shot_stop_diving: GK DIVES or LUNGES and the ball REBOUNDS/deflects \
+  AWAY. The key difference from catch: the ball is NOT held — it bounces \
+  off the GK or goes wide. The GK's body hits the ground.
+- punch: GK PUNCHES ball with a closed FIST, usually on a cross/corner.
 
 STEP 3 — GOAL (requires post-goal signals):
-- goal: Shot toward goal FOLLOWED BY celebration (arms raised, group hugs), \
-  OR teams walking back toward center circle, OR kickoff setup. \
-  Requires POSITIVE evidence — "ball near goal" alone is NOT a goal.
+- goal: Shot toward goal FOLLOWED BY celebration (arms raised, group \
+  hugs, running), OR teams walking back toward center circle, OR \
+  kickoff setup. Requires POSITIVE evidence — "ball near goal" alone \
+  is NOT a goal.
 
 STEP 4 — SHOT (fallback only):
-- shot_on_target: Player strikes ball toward goal. Only if Steps 1-3 \
-  don't apply. If a restart follows, classify the restart TOO.
+- shot_on_target: Player strikes ball toward goal. Use ONLY if Steps 1-3 \
+  did not produce a more specific classification. If a GK action follows \
+  the shot, classify the GK action (catch or shot_stop_diving), not the \
+  shot. If a restart follows, classify the restart TOO.
 
-A window can contain MULTIPLE events (e.g., a shot + goal kick after).
-Throw-ins and goal kicks are VERY common — expect many across a game.
+A window can contain MULTIPLE events (e.g., shot_on_target + goal_kick).
+Throw-ins and goal kicks are the MOST COMMON events — flag aggressively.
+Catches are common too — whenever the GK has the ball in their hands.
 
 For each event: start_sec and end_sec should be the actual timestamps.
 
 Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
 "end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 
-If you see only normal open play with no notable event, return: {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, "confidence": 0.9, "reasoning": "open play"}}
+If you see only normal open play with no notable event, return: \
+{{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
+"confidence": 0.9, "reasoning": "open play"}}
 """
 
 
