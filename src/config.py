@@ -333,6 +333,11 @@ class _Config:
             "DUAL_PASS_TIER2_PATH": ("DUAL_PASS_TIER2_PATH", "Qwen/Qwen3-VL-32B-Instruct-FP8"),
             "DUAL_PASS_TRIAGE_STEP": ("DUAL_PASS_TRIAGE_STEP", "6.0"),
             "DUAL_PASS_SWAP_SCRIPT": ("DUAL_PASS_SWAP_SCRIPT", ""),
+            # Single-pass 32B
+            "SINGLE_PASS_32B": ("SINGLE_PASS_32B", "false"),
+            "SINGLE_PASS_STEP_SEC": ("SINGLE_PASS_STEP_SEC", "10.0"),
+            "SINGLE_PASS_WINDOW_SEC": ("SINGLE_PASS_WINDOW_SEC", "15.0"),
+            "SINGLE_PASS_FRAMES": ("SINGLE_PASS_FRAMES", "5"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
