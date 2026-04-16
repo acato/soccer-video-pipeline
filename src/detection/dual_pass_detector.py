@@ -1158,23 +1158,29 @@ class DualPassDetector:
     def _post_filter_events(self, events: list[Event]) -> list[Event]:
         """Apply contextual post-filters.
 
-        - goal keyword gate: demote goal → shot_on_target unless observation
-          text contains celebration/kickoff/net evidence.
+        - kickoff-based goal inference: kickoff within 60s after a shot → goal
+        - goal keyword gate (dual-pass only): demote goal without evidence
         - kickoff suppression: GT doesn't score kickoffs.
         - shot_stop_standing → catch promotion.
         """
+        # ── Pass 1: Collect kickoff timestamps for goal inference ──────
+        kickoff_times = sorted(
+            e.timestamp_start for e in events
+            if e.event_type == EventType.KICKOFF
+        )
+
+        # ── Pass 2: Apply filters ─────────────────────────────────────
         kept: list[Event] = []
         dropped = 0
         goal_demoted = 0
+        goal_inferred = 0
         for event in events:
-            # Run #9: kickoff is offered to the 32B as a magnet so it stops
-            # mislabeling mid-pitch stationary-ball scenes as free_kick_shot,
-            # but GT does not score kickoffs — drop them after classification.
+            # Drop kickoffs from output (GT doesn't score them)
             if event.event_type == EventType.KICKOFF:
                 dropped += 1
                 continue
 
-            # ── Goal keyword gate (Run #13 precision fix) ─────────────
+            # ── Goal keyword gate (dual-pass only) ────────────────────
             # In dual-pass mode, the 32B only sees text from the 8B and
             # hallucinates goals from "ball near goal" descriptions.
             # In single-pass mode, the 32B sees actual frames — trust it.
@@ -1182,8 +1188,6 @@ class DualPassDetector:
                 reasoning_lower = event.metadata.get("vlm_reasoning", "").lower()
                 has_evidence = _has_positive_goal_evidence(reasoning_lower)
                 if not has_evidence:
-                    # Demote to shot_on_target — preserve the detection but
-                    # reduce the impact of the misclassification.
                     log.info("dual_pass.goal_demoted",
                              start=event.timestamp_start,
                              reasoning=reasoning_lower[:150])
@@ -1207,8 +1211,44 @@ class DualPassDetector:
                     )
                     goal_demoted += 1
 
+            # ── Kickoff-based goal inference ──────────────────────────
+            # A kickoff ALWAYS follows a goal. If a shot/save is detected
+            # and a kickoff appears 10-90s later, upgrade to goal.
+            _SHOT_TYPES = {
+                EventType.SHOT_ON_TARGET,
+                EventType.SHOT_STOP_DIVING,
+                EventType.SHOT_STOP_STANDING,
+            }
+            if event.event_type in _SHOT_TYPES:
+                t = event.timestamp_start
+                has_kickoff_after = any(
+                    10 <= (kt - t) <= 90 for kt in kickoff_times
+                )
+                if has_kickoff_after:
+                    log.info("dual_pass.goal_inferred_from_kickoff",
+                             start=t, original_type=event.event_type.value)
+                    event = Event(
+                        event_id=event.event_id,
+                        job_id=event.job_id,
+                        source_file=event.source_file,
+                        event_type=EventType.GOAL,
+                        timestamp_start=event.timestamp_start,
+                        timestamp_end=event.timestamp_end,
+                        confidence=min(event.confidence + 0.1, 1.0),
+                        reel_targets=event.reel_targets,
+                        is_goalkeeper_event=False,
+                        frame_start=event.frame_start,
+                        frame_end=event.frame_end,
+                        reviewed=event.reviewed,
+                        review_override=event.review_override,
+                        metadata={**event.metadata,
+                                  "goal_inferred": True,
+                                  "kickoff_signal": True,
+                                  "original_event_type": event.event_type.value},
+                    )
+                    goal_inferred += 1
+
             # Reclassify shot_stop_standing → catch
-            # (GT never has shot_stop_standing; these are usually catches)
             if event.event_type == EventType.SHOT_STOP_STANDING:
                 event = Event(
                     event_id=event.event_id,
@@ -1229,10 +1269,10 @@ class DualPassDetector:
 
             kept.append(event)
 
-        if dropped or goal_demoted:
+        if dropped or goal_demoted or goal_inferred:
             log.info("dual_pass.post_filtered",
                      dropped=dropped, goal_demoted=goal_demoted,
-                     kept=len(kept))
+                     goal_inferred=goal_inferred, kept=len(kept))
         return kept
 
     # ── Canary methods ──────────────────────────────────────────────────
