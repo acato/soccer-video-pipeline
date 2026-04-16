@@ -11,13 +11,57 @@ available at module level (as a stub when Celery is absent).
 from __future__ import annotations
 
 import os
+import subprocess
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import structlog
 
 log = structlog.get_logger(__name__)
+
+
+# Repo root is two levels above this file: src/api/worker.py -> repo root
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _stamp_worker_commit() -> None:
+    """Write worker_commit.txt stamped with the git HEAD of the repo the worker
+    just loaded from. Called on Celery worker_ready so every worker restart
+    refreshes the file automatically — no need to run restart_pipeline.sh
+    to keep the poller's mismatch guardrail honest.
+
+    Writes to $SOCCER_STATE_DIR/worker_commit.txt (default ~/soccer-runs/state).
+    Format matches scripts/restart_pipeline.sh so downstream readers are
+    unchanged: short SHA, full SHA, UTC timestamp, pid lines.
+    """
+    state_dir = Path(os.getenv("SOCCER_STATE_DIR", str(Path.home() / "soccer-runs" / "state")))
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        short_sha = subprocess.check_output(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        full_sha = subprocess.check_output(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        log.warning("worker.commit_stamp_failed", error=str(exc), repo_root=str(_REPO_ROOT))
+        return
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    target = state_dir / "worker_commit.txt"
+    tmp = target.with_suffix(".txt.tmp")
+    body = f"{short_sha}\n{full_sha}\n{ts}\ncelery_pid={os.getpid()}\n"
+    try:
+        tmp.write_text(body)
+        os.replace(tmp, target)
+    except OSError as exc:
+        log.warning("worker.commit_stamp_write_failed", error=str(exc), target=str(target))
+        return
+    log.info("worker.commit_stamped", short_sha=short_sha, target=str(target))
 
 
 class PipelinePaused(Exception):
@@ -119,6 +163,15 @@ try:
     process_match_task = _make_real_task()
     # Expose Celery app at module level for `celery -A src.api.worker worker`
     app = _celery_app
+
+    # Stamp worker_commit.txt whenever a worker boots, so the poller's
+    # mismatch guardrail reflects the actual loaded code — not whatever
+    # restart_pipeline.sh last wrote.
+    from celery.signals import worker_ready
+
+    @worker_ready.connect
+    def _on_worker_ready(sender=None, **_kwargs):
+        _stamp_worker_commit()
 except ImportError:
     log.warning("worker.celery_not_installed", fallback="stub task (tests only)")
     process_match_task = _StubTask()
