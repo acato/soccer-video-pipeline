@@ -297,6 +297,44 @@ def _has_positive_goal_evidence(reasoning: str) -> bool:
     return False
 
 
+# ── Save-language goal gate ────────────────────────────────────────────
+# Run #22: 32B single-pass labels saves as "goal" because it sees a shot
+# toward goal.  The reasoning text itself describes the save — goalkeeper
+# diving, ball rebounding away, "does not enter the net" — contradicting
+# the goal label.  Demote these to shot_on_target.
+
+_SAVE_ACTION_RE = re.compile(
+    r"(?:goalkeeper|gk|keeper)\s+"
+    r"(?:dives?|saves?|parr(?:ies|y|ied)|stops?|deflects?"
+    r"|catches|punches|tips|blocks?)",
+    re.IGNORECASE,
+)
+_BALL_REBOUND_RE = re.compile(
+    r"(?:ball|it)\s+"
+    r"(?:deflects?|rebounds?|goes?\s+wide|bounces?)\s+away",
+    re.IGNORECASE,
+)
+_NO_GOAL_RE = re.compile(
+    r"does not enter the net|"
+    r"ball is deflected away from the goal|"
+    r"saved|cleared off the line",
+    re.IGNORECASE,
+)
+
+
+def _has_save_language(reasoning: str) -> bool:
+    """Return True if the VLM reasoning describes a save, not a goal.
+
+    When the reasoning says the keeper dived/saved/deflected or the ball
+    rebounded away, the event is a shot that was stopped — not a goal.
+    """
+    return bool(
+        _SAVE_ACTION_RE.search(reasoning)
+        or _BALL_REBOUND_RE.search(reasoning)
+        or _NO_GOAL_RE.search(reasoning)
+    )
+
+
 @dataclass
 class DualPassConfig:
     """Configuration for the dual-pass detector."""
@@ -1158,6 +1196,8 @@ class DualPassDetector:
     def _post_filter_events(self, events: list[Event]) -> list[Event]:
         """Apply contextual post-filters.
 
+        - save-language goal gate: goal whose reasoning describes a save
+          (keeper diving, ball rebounding) → demote to shot_on_target
         - kickoff-based goal inference: kickoff within 60s after a shot → goal
         - goal keyword gate (dual-pass only): demote goal without evidence
         - kickoff suppression: GT doesn't score kickoffs.
@@ -1174,6 +1214,7 @@ class DualPassDetector:
         dropped = 0
         goal_demoted = 0
         goal_inferred = 0
+        goal_suppressed = 0
         for event in events:
             # Drop kickoffs from output (GT doesn't score them)
             if event.event_type == EventType.KICKOFF:
@@ -1267,12 +1308,44 @@ class DualPassDetector:
                     metadata=event.metadata,
                 )
 
+            # ── Save-language goal gate ─────────────────────────────────
+            # If the VLM's own reasoning describes a save (keeper diving,
+            # ball rebounding away), the event is a shot — not a goal.
+            # Applies to both single-pass and dual-pass modes.
+            if event.event_type == EventType.GOAL:
+                reasoning = event.metadata.get("vlm_reasoning", "")
+                if _has_save_language(reasoning):
+                    log.info("dual_pass.goal_suppressed_save_language",
+                             start=event.timestamp_start,
+                             reasoning=reasoning[:150])
+                    event = Event(
+                        event_id=event.event_id,
+                        job_id=event.job_id,
+                        source_file=event.source_file,
+                        event_type=EventType.SHOT_ON_TARGET,
+                        timestamp_start=event.timestamp_start,
+                        timestamp_end=event.timestamp_end,
+                        confidence=event.confidence,
+                        reel_targets=event.reel_targets,
+                        is_goalkeeper_event=False,
+                        frame_start=event.frame_start,
+                        frame_end=event.frame_end,
+                        reviewed=event.reviewed,
+                        review_override=event.review_override,
+                        metadata={**event.metadata,
+                                  "goal_suppressed": True,
+                                  "suppression_reason": "save_language",
+                                  "original_event_type": "goal"},
+                    )
+                    goal_suppressed += 1
+
             kept.append(event)
 
-        if dropped or goal_demoted or goal_inferred:
+        if dropped or goal_demoted or goal_inferred or goal_suppressed:
             log.info("dual_pass.post_filtered",
                      dropped=dropped, goal_demoted=goal_demoted,
-                     goal_inferred=goal_inferred, kept=len(kept))
+                     goal_inferred=goal_inferred,
+                     goal_suppressed=goal_suppressed, kept=len(kept))
         return kept
 
     # ── Canary methods ──────────────────────────────────────────────────
