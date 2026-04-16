@@ -1175,19 +1175,10 @@ class DualPassDetector:
                 continue
 
             # ── Goal keyword gate (Run #13 precision fix) ─────────────
-            # The 32B claims to follow strict goal rules but doesn't —
-            # it sees "ball near goal" in the 8B observation and calls it
-            # a goal.  Enforce in code: require POSITIVE celebration or
-            # kickoff-restart evidence in the reasoning.
-            #
-            # IMPORTANT: "ball in the net" alone is NOT enough — the 8B
-            # describes many saves as "ball near/inside goal" and the 32B
-            # promotes these.  We require human-reaction evidence.
-            #
-            # Also: many false goals say "no celebration is seen, but..."
-            # so we must check for POSITIVE mentions, not just keyword
-            # presence.  The _has_positive_evidence helper handles this.
-            if event.event_type == EventType.GOAL:
+            # In dual-pass mode, the 32B only sees text from the 8B and
+            # hallucinates goals from "ball near goal" descriptions.
+            # In single-pass mode, the 32B sees actual frames — trust it.
+            if event.event_type == EventType.GOAL and not self._cfg.single_pass:
                 reasoning_lower = event.metadata.get("vlm_reasoning", "").lower()
                 has_evidence = _has_positive_goal_evidence(reasoning_lower)
                 if not has_evidence:
