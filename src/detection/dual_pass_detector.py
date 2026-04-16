@@ -236,9 +236,33 @@ For each event: start_sec and end_sec should be the actual timestamps.
 Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
 "end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 
+BEFORE you conclude "open play" and return none, CHECK EACH OF THESE — \
+these events are routinely missed when the pose is only briefly visible:
+
+  (a) THROW-IN check — scan the SIDELINES (top and bottom edges of the \
+      frame) in EVERY frame: is any player near the touchline holding a \
+      ball, reaching down to pick one up, walking toward the line with a \
+      ball, or mid-throw? The throw-in pose (ball overhead, both hands) \
+      is brief — you may only see the pre- or post-throw posture. Any of \
+      these = throw_in. Do NOT require a clear "ball overhead" pose.
+
+  (b) CATCH check — is the goalkeeper visible with a ball in their \
+      hands/arms, even briefly? Even if they are walking, bouncing the \
+      ball, or preparing to distribute — that is catch. If a shot or \
+      save preceded and the GK now has the ball = catch.
+
+  (c) CORNER check — is the ball anywhere near a CORNER FLAG, or is a \
+      player standing at the corner arc? Corner kicks are often shot \
+      from wide, so look at the four corners of the pitch specifically.
+
+Only return "none" if ALL THREE checks are clearly negative AND the \
+frames show continuous open play (ball in motion mid-field, no stoppage). \
+If in doubt on any check, emit the event with confidence 0.5-0.7 rather \
+than skipping.
+
 If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
-"confidence": 0.9, "reasoning": "open play"}}
+"confidence": 0.9, "reasoning": "open play (throw-in/catch/corner checks negative)"}}
 """
 
 
