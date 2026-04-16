@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 23,
-  "run_label": "run_23",
-  "job_id": "ce2736e4-f01c-4f7a-8e25-3f0a522c9ca1",
-  "commit_sha": "7cee021",
-  "submitted_at": "2026-04-16T14:53:00Z",
+  "run_number": 24,
+  "run_label": "run_24",
+  "job_id": null,
+  "commit_sha": "1618aaf",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -20,15 +20,15 @@
     }
   },
   "baseline": {
-    "run": "22",
-    "f1": 0.32,
-    "notes": "Run #22 F1=0.32, goal 4TP/4GT (100% recall) but 22 FP goals (26 detected)"
+    "run": "23",
+    "f1": 0.369,
+    "notes": "Run #23 F1=0.369, goal 4TP/12det (save-lang gate kept 4 TP, cut 14 FP). Throw-in recall 23/48 (only 26 detected, 75% of windows returned 0 events). Catch 0/12, corner_kick 0/9."
   },
   "targets": {
-    "f1": 0.35,
+    "f1": 0.40,
+    "throw_in_recall_min": 0.65,
     "goal_tp_min": 4,
-    "goal_recall_min": 1.0,
-    "goal_detected_max": 8
+    "goal_recall_min": 1.0
   },
-  "notes": "Run #23 — Save-language goal gate: demote goal→shot_on_target when VLM reasoning describes keeper diving/ball rebounding. Expect 26→~10 goals. Target: 150-200% of GT (6-8 goals)."
+  "notes": "Run #24 — Pre-none checklist in single-pass prompt. Before VLM returns none, require explicit check for (a) throw-in on sidelines (accept pre/post-throw pose), (b) GK with ball (catch), (c) ball at corner (corner_kick). Instructed to emit with confidence 0.5-0.7 if uncertain instead of skipping. Expected to lift throw_in recall and unblock catch/corner detection which are currently 0 TP."
 }
