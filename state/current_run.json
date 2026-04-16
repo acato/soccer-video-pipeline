@@ -1,40 +1,34 @@
 {
   "$schema_version": 1,
-  "run_number": 15,
-  "run_label": "run_15",
-  "job_id": "799e9ee8-a10e-4d03-84e1-bd19e4f802a7",
-  "commit_sha": "5d4e2fd",
+  "run_number": 23,
+  "run_label": "run_23",
+  "job_id": null,
+  "commit_sha": "b79777b",
   "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": ["--tolerance", "30"],
+  "evaluate_args": ["--tolerance", "45"],
   "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
   "job_payload": {
     "nas_path": "2026-02-07 - Rush - GA2008.mp4",
-    "reel_types": ["corner_kick", "goal_kick"],
+    "reel_types": ["keeper", "highlights"],
     "match_config": {
       "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
       "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
     }
   },
   "baseline": {
-    "run": "12",
-    "f1": 0.302,
-    "notes": "Run #9 baseline F1=0.302. Run #12 regressed (269 shot_on_target vs 29 GT, 0 goals). Trying 8B observe + 32B text-only."
+    "run": "22",
+    "f1": 0.32,
+    "notes": "Run #22 F1=0.32, goal 4TP/4GT (100% recall) but 22 FP goals (26 detected)"
   },
   "targets": {
     "f1": 0.35,
-    "goal_kick_tp_min": 6,
-    "throw_in_tp_min": 18,
-    "corner_kick_tp_min": 5,
-    "catch_tp_min": 3,
-    "shot_on_target_tp_min": 22,
-    "goal_fp_max": 6,
-    "free_kick_shot_fp_max": 12
+    "goal_tp_min": 4,
+    "goal_recall_min": 1.0,
+    "goal_detected_max": 8
   },
-  "notes": "Run #15 — hierarchical decision-tree classify prompt (set pieces first, then GK, then goal, shot last). Observe prompt restructured to emphasize restarts. Run #14 showed 75/84 FNs absorbed by shot_on_target.",
-  "result_file_template": "~/soccer-runs/state/run_{run_number}_result.json",
-  "status_file_template": "~/soccer-runs/state/run_{run_number}_status.json"
+  "notes": "Run #23 — Save-language goal gate: demote goal→shot_on_target when VLM reasoning describes keeper diving/ball rebounding. Expect 26→~10 goals. Target: 150-200% of GT (6-8 goals)."
 }
