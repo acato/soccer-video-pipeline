@@ -2,21 +2,35 @@
   "$schema_version": 1,
   "run_number": 24,
   "run_label": "run_24",
-  "job_id": null,
+  "job_id": "c32e0243-8c9f-4b2d-863d-99fccc014831",
   "commit_sha": "1618aaf",
-  "submitted_at": null,
+  "submitted_at": "2026-04-16T21:15:30Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": ["--tolerance", "45"],
+  "evaluate_args": [
+    "--tolerance",
+    "45"
+  ],
   "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
   "job_payload": {
     "nas_path": "2026-02-07 - Rush - GA2008.mp4",
-    "reel_types": ["keeper", "highlights"],
+    "reel_types": [
+      "keeper",
+      "highlights"
+    ],
     "match_config": {
-      "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
-      "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
+      "team": {
+        "team_name": "Rush",
+        "outfield_color": "white",
+        "gk_color": "neon_yellow"
+      },
+      "opponent": {
+        "team_name": "GA 2008",
+        "outfield_color": "blue",
+        "gk_color": "neon_green"
+      }
     }
   },
   "baseline": {
@@ -25,10 +39,10 @@
     "notes": "Run #23 F1=0.369, goal 4TP/12det (save-lang gate kept 4 TP, cut 14 FP). Throw-in recall 23/48 (only 26 detected, 75% of windows returned 0 events). Catch 0/12, corner_kick 0/9."
   },
   "targets": {
-    "f1": 0.40,
+    "f1": 0.4,
     "throw_in_recall_min": 0.65,
     "goal_tp_min": 4,
     "goal_recall_min": 1.0
   },
-  "notes": "Run #24 — Pre-none checklist in single-pass prompt. Before VLM returns none, require explicit check for (a) throw-in on sidelines (accept pre/post-throw pose), (b) GK with ball (catch), (c) ball at corner (corner_kick). Instructed to emit with confidence 0.5-0.7 if uncertain instead of skipping. Expected to lift throw_in recall and unblock catch/corner detection which are currently 0 TP."
+  "notes": "Run #24 \u2014 Pre-none checklist in single-pass prompt. Before VLM returns none, require explicit check for (a) throw-in on sidelines (accept pre/post-throw pose), (b) GK with ball (catch), (c) ball at corner (corner_kick). Instructed to emit with confidence 0.5-0.7 if uncertain instead of skipping. Expected to lift throw_in recall and unblock catch/corner detection which are currently 0 TP."
 }
