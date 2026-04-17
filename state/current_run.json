@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 26,
-  "run_label": "run_26",
-  "job_id": "58041cac-2907-46db-aec5-906106812ee3",
-  "commit_sha": "ba430f5",
-  "submitted_at": "2026-04-17T05:13:37Z",
+  "run_number": 27,
+  "run_label": "run_27",
+  "job_id": null,
+  "commit_sha": "33e4e8a",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,15 +34,16 @@
     }
   },
   "baseline": {
-    "run": "24",
-    "f1": 0.401,
-    "notes": "Run #24 best F1 to date; Run 25 regressed to 0.370 with goal-override (cannibalized shot_stop_diving). Reverting to Run 24 prompt + kickoff-gate bug fix."
+    "run": "26",
+    "f1": 0.375,
+    "notes": "Run #26: goal 4/4 (kickoff rescue worked) but gate over-fired: 10 goal FPs, shot_on_target TP 17->12. Reasoning-validated + clustered kickoff filter."
   },
   "targets": {
     "f1": 0.42,
     "goal_tp_min": 4,
     "goal_recall_min": 1.0,
-    "throw_in_recall_min": 0.45
+    "goal_fp_max": 6,
+    "shot_on_target_tp_min": 16
   },
-  "notes": "Run #26 \u2014 Two-part fix: (1) revert Run 25 goal-override prompt clause (too aggressive, cannibalized shot_stop_diving); (2) save-language gate now skips events promoted via kickoff-inference (metadata.kickoff_signal=True). Diagnosed in Run 25: all 9 kickoff-inferred goals in Run 24 were demoted back by save-language gate. Temporal evidence of kickoff-after-save trumps in-window save wording. Expected: goal 4/4 via kickoff rescue (1065s), throw-in/catch gains preserved."
+  "notes": "Run #27 \u2014 Tighten kickoff-inference gate: reasoning must contain strong kickoff markers (center spot, both teams in own halves, kickoff setup/formation) AND >=2 validated kickoffs must cluster within 30s. Run 26 over-fired because isolated VLM kickoff tags (often midfield free kicks) triggered shot->goal promotions. Expected: preserve 4/4 goal (1065s kickoff pair at 1078/1088 clusters), cut goal FPs from 10 to ~3-4, recover shot_on_target TPs."
 }
