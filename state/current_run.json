@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 24,
-  "run_label": "run_24",
-  "job_id": "c32e0243-8c9f-4b2d-863d-99fccc014831",
-  "commit_sha": "1618aaf",
-  "submitted_at": "2026-04-16T21:15:30Z",
+  "run_number": 25,
+  "run_label": "run_25",
+  "job_id": null,
+  "commit_sha": "fbb49c3",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,15 +34,15 @@
     }
   },
   "baseline": {
-    "run": "23",
-    "f1": 0.369,
-    "notes": "Run #23 F1=0.369, goal 4TP/12det (save-lang gate kept 4 TP, cut 14 FP). Throw-in recall 23/48 (only 26 detected, 75% of windows returned 0 events). Catch 0/12, corner_kick 0/9."
+    "run": "24",
+    "f1": 0.401,
+    "notes": "Run #24 F1=0.401, throw-in 22 TP (up from 17), catch 4 TP (up from 0), but goal 3/4 (lost 1 goal \u2014 checklist over-suppressed goal emission)"
   },
   "targets": {
-    "f1": 0.4,
-    "throw_in_recall_min": 0.65,
+    "f1": 0.42,
     "goal_tp_min": 4,
-    "goal_recall_min": 1.0
+    "goal_recall_min": 1.0,
+    "throw_in_recall_min": 0.5
   },
-  "notes": "Run #24 \u2014 Pre-none checklist in single-pass prompt. Before VLM returns none, require explicit check for (a) throw-in on sidelines (accept pre/post-throw pose), (b) GK with ball (catch), (c) ball at corner (corner_kick). Instructed to emit with confidence 0.5-0.7 if uncertain instead of skipping. Expected to lift throw_in recall and unblock catch/corner detection which are currently 0 TP."
+  "notes": "Run #25 \u2014 Goal override clause added after pre-none checklist. Tells VLM to emit goal aggressively (any shot into net / celebration / center-circle restart) even if GK action is described; save-language gate handles precision downstream. Preserves throw-in/catch gains from Run 24."
 }
