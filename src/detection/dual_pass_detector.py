@@ -339,36 +339,6 @@ def _has_real_kickoff_evidence(reasoning: str) -> bool:
     return False
 
 
-def _cluster_kickoff_times(
-    kickoff_events: list,
-    cluster_window_sec: float = 30.0,
-    min_cluster_size: int = 2,
-) -> list[float]:
-    """Cluster validated kickoff events; return one canonical time per
-    cluster.
-
-    A real post-goal kickoff produces multiple consecutive window tags
-    (teams take ~20-60s to regroup, so 2-3 windows of 10s stride get
-    tagged). Isolated kickoff tags are almost always false positives.
-
-    Input events must already be reasoning-validated. Returns the
-    earliest timestamp in each cluster as the canonical kickoff time.
-    """
-    if not kickoff_events:
-        return []
-    times = sorted(e.timestamp_start for e in kickoff_events)
-    clusters: list[list[float]] = []
-    current: list[float] = [times[0]]
-    for t in times[1:]:
-        if t - current[-1] <= cluster_window_sec:
-            current.append(t)
-        else:
-            clusters.append(current)
-            current = [t]
-    clusters.append(current)
-    return [c[0] for c in clusters if len(c) >= min_cluster_size]
-
-
 def _has_positive_goal_evidence(reasoning: str) -> bool:
     """Check if the 32B reasoning contains POSITIVE goal evidence.
 
@@ -1270,9 +1240,33 @@ class DualPassDetector:
                     clusters.append([])
                 clusters[-1].append(e)
 
-            # Keep highest-confidence event per cluster
+            # Keep highest-confidence event per cluster, stamping the
+            # cluster size so downstream gates can reason about density
+            # (e.g. kickoff-inference needs ≥2 merged tags to trust the
+            # signal).
             for cluster in clusters:
                 best = max(cluster, key=lambda e: e.confidence)
+                if len(cluster) > 1:
+                    best = Event(
+                        event_id=best.event_id,
+                        job_id=best.job_id,
+                        source_file=best.source_file,
+                        event_type=best.event_type,
+                        timestamp_start=best.timestamp_start,
+                        timestamp_end=best.timestamp_end,
+                        confidence=best.confidence,
+                        reel_targets=best.reel_targets,
+                        is_goalkeeper_event=best.is_goalkeeper_event,
+                        frame_start=best.frame_start,
+                        frame_end=best.frame_end,
+                        reviewed=best.reviewed,
+                        review_override=best.review_override,
+                        metadata={
+                            **best.metadata,
+                            "cluster_size": len(cluster),
+                            "cluster_span_sec": cluster[-1].timestamp_start - cluster[0].timestamp_start,
+                        },
+                    )
                 kept.append(best)
 
             if len(clusters) < len(typed_events):
@@ -1300,23 +1294,25 @@ class DualPassDetector:
         - shot_stop_standing → catch promotion.
         """
         # ── Pass 1: Collect + validate kickoff events for goal inference
-        # Run #27: earlier runs (26) over-fired the gate because the VLM
-        # tags many non-kickoff scenes as "kickoff" (center circle, free
-        # kicks, generic restarts). Two-stage filter:
-        #   (a) reasoning must contain real kickoff markers
-        #   (b) ≥2 validated kickoffs must cluster within 30s
-        # Real post-goal kickoffs produce a tight cluster of tags
-        # (teams take 20-60s to regroup); isolated tags are noise.
+        # Run #27 (broken): cluster-check failed because _deduplicate_events
+        # had already collapsed 35 window-level kickoff tags → 16 events
+        # (30s merge gap eats the very clusters we want to count).
+        # Run #28: use metadata["cluster_size"] stamped during dedup, which
+        # records the original merge density. cluster_size ≥ 2 means the
+        # kept event represents multiple raw tags within 30s — the real
+        # post-goal kickoff pattern. Isolated tags (cluster_size == 1) are
+        # the midfield-free-kick / generic-restart false positives.
         raw_kickoffs = [e for e in events if e.event_type == EventType.KICKOFF]
         validated_kickoffs = [
             e for e in raw_kickoffs
             if _has_real_kickoff_evidence(e.metadata.get("vlm_reasoning", ""))
+            and e.metadata.get("cluster_size", 1) >= 2
         ]
-        kickoff_times = _cluster_kickoff_times(validated_kickoffs)
+        kickoff_times = sorted(e.timestamp_start for e in validated_kickoffs)
         log.info("dual_pass.kickoff_filter",
                  raw=len(raw_kickoffs),
                  validated=len(validated_kickoffs),
-                 clusters=len(kickoff_times))
+                 kept_times=kickoff_times)
 
         # ── Pass 2: Apply filters ─────────────────────────────────────
         kept: list[Event] = []
