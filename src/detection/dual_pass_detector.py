@@ -260,19 +260,6 @@ frames show continuous open play (ball in motion mid-field, no stoppage). \
 If in doubt on any check, emit the event with confidence 0.5-0.7 rather \
 than skipping.
 
-GOAL OVERRIDE — the caution above must NOT suppress goal detection. \
-Goals are the single most important event class; missing one is worse \
-than emitting a false one. If you observe ANY of:
-  - a shot that enters or appears to enter the net,
-  - players celebrating (arms raised, hugs, running together, sliding),
-  - teams walking back toward the center circle,
-  - a kickoff setup (ball at center spot, both teams in own halves),
-THEN classify as "goal" — even when a GK dive/deflection is also \
-described, even without all signals present. A downstream save-language \
-gate will correctly demote false goals whose reasoning describes a \
-clean save; your job is to emit goal whenever post-goal evidence is \
-plausible. Do NOT require certainty to emit goal.
-
 If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
 "confidence": 0.9, "reasoning": "open play (throw-in/catch/corner checks negative)"}}
@@ -1349,7 +1336,16 @@ class DualPassDetector:
             # If the VLM's own reasoning describes a save (keeper diving,
             # ball rebounding away), the event is a shot — not a goal.
             # Applies to both single-pass and dual-pass modes.
-            if event.event_type == EventType.GOAL:
+            #
+            # EXCEPTION: events promoted to goal by the kickoff-inference
+            # gate above carry metadata["kickoff_signal"]=True. A kickoff
+            # only follows a goal (or a half-start, ruled out by timing).
+            # The temporal evidence trumps in-window save language — a
+            # save followed by a kickoff means the rebound went in. Without
+            # this exception the two gates fight: kickoff-inference promotes
+            # shot→goal, save-language demotes goal→shot_on_target, net zero.
+            if event.event_type == EventType.GOAL \
+                    and not event.metadata.get("kickoff_signal"):
                 reasoning = event.metadata.get("vlm_reasoning", "")
                 if _has_save_language(reasoning):
                     log.info("dual_pass.goal_suppressed_save_language",
