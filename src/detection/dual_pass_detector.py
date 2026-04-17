@@ -296,6 +296,78 @@ _CENTER_CIRCLE_KICKOFF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Real-kickoff evidence ──────────────────────────────────────────────
+# Distinguish true post-goal / post-halftime kickoffs from the VLM's
+# tendency to tag any center-field activity as "kickoff". A real kickoff
+# has visually distinctive markers: ball exactly on center spot, both
+# teams in own halves, players in formation lines.
+_CENTER_SPOT_RE = re.compile(r"center\s+spot", re.IGNORECASE)
+_BOTH_TEAMS_OWN_HALVES_RE = re.compile(
+    r"(?:both\s+teams|each\s+team|teams\s+are)\s+.{0,30}?"
+    r"(?:own\s+hal(?:f|ves)|their\s+hal(?:f|ves)|respective\s+hal)",
+    re.IGNORECASE,
+)
+_KICKOFF_SETUP_RE = re.compile(
+    r"kickoff\s+(?:setup|formation|restart|position)"
+    r"|(?:setup|formation|position)\s+for\s+(?:the\s+)?kickoff",
+    re.IGNORECASE,
+)
+
+
+def _has_real_kickoff_evidence(reasoning: str) -> bool:
+    """Distinguish real kickoffs from false VLM 'kickoff' tags.
+
+    Real kickoff markers (any one suffices):
+    - Ball at center spot
+    - Both teams in own halves
+    - Explicit kickoff setup/formation/restart language
+    - Walking/returning toward center circle (post-goal ceremony)
+
+    Reject if reasoning is vague ("kickoff", "center circle" alone) —
+    those fire on many non-kickoff scenes (e.g. free kicks at midfield).
+    """
+    if _CENTER_SPOT_RE.search(reasoning):
+        return True
+    if _BOTH_TEAMS_OWN_HALVES_RE.search(reasoning):
+        return True
+    if _KICKOFF_SETUP_RE.search(reasoning):
+        return True
+    if _KICKOFF_RESTART_RE.search(reasoning):
+        return True
+    if _CENTER_CIRCLE_KICKOFF_RE.search(reasoning):
+        return True
+    return False
+
+
+def _cluster_kickoff_times(
+    kickoff_events: list,
+    cluster_window_sec: float = 30.0,
+    min_cluster_size: int = 2,
+) -> list[float]:
+    """Cluster validated kickoff events; return one canonical time per
+    cluster.
+
+    A real post-goal kickoff produces multiple consecutive window tags
+    (teams take ~20-60s to regroup, so 2-3 windows of 10s stride get
+    tagged). Isolated kickoff tags are almost always false positives.
+
+    Input events must already be reasoning-validated. Returns the
+    earliest timestamp in each cluster as the canonical kickoff time.
+    """
+    if not kickoff_events:
+        return []
+    times = sorted(e.timestamp_start for e in kickoff_events)
+    clusters: list[list[float]] = []
+    current: list[float] = [times[0]]
+    for t in times[1:]:
+        if t - current[-1] <= cluster_window_sec:
+            current.append(t)
+        else:
+            clusters.append(current)
+            current = [t]
+    clusters.append(current)
+    return [c[0] for c in clusters if len(c) >= min_cluster_size]
+
 
 def _has_positive_goal_evidence(reasoning: str) -> bool:
     """Check if the 32B reasoning contains POSITIVE goal evidence.
@@ -1227,11 +1299,24 @@ class DualPassDetector:
         - kickoff suppression: GT doesn't score kickoffs.
         - shot_stop_standing → catch promotion.
         """
-        # ── Pass 1: Collect kickoff timestamps for goal inference ──────
-        kickoff_times = sorted(
-            e.timestamp_start for e in events
-            if e.event_type == EventType.KICKOFF
-        )
+        # ── Pass 1: Collect + validate kickoff events for goal inference
+        # Run #27: earlier runs (26) over-fired the gate because the VLM
+        # tags many non-kickoff scenes as "kickoff" (center circle, free
+        # kicks, generic restarts). Two-stage filter:
+        #   (a) reasoning must contain real kickoff markers
+        #   (b) ≥2 validated kickoffs must cluster within 30s
+        # Real post-goal kickoffs produce a tight cluster of tags
+        # (teams take 20-60s to regroup); isolated tags are noise.
+        raw_kickoffs = [e for e in events if e.event_type == EventType.KICKOFF]
+        validated_kickoffs = [
+            e for e in raw_kickoffs
+            if _has_real_kickoff_evidence(e.metadata.get("vlm_reasoning", ""))
+        ]
+        kickoff_times = _cluster_kickoff_times(validated_kickoffs)
+        log.info("dual_pass.kickoff_filter",
+                 raw=len(raw_kickoffs),
+                 validated=len(validated_kickoffs),
+                 clusters=len(kickoff_times))
 
         # ── Pass 2: Apply filters ─────────────────────────────────────
         kept: list[Event] = []
