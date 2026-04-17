@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 27,
-  "run_label": "run_27",
-  "job_id": "31392c00-4f78-409f-ad43-f0f7f388805d",
-  "commit_sha": "33e4e8a",
-  "submitted_at": "2026-04-17T13:22:06Z",
+  "run_number": 28,
+  "run_label": "run_28",
+  "job_id": null,
+  "commit_sha": "e13d1b5",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,9 +34,9 @@
     }
   },
   "baseline": {
-    "run": "26",
-    "f1": 0.375,
-    "notes": "Run #26: goal 4/4 (kickoff rescue worked) but gate over-fired: 10 goal FPs, shot_on_target TP 17->12. Reasoning-validated + clustered kickoff filter."
+    "run": "27",
+    "f1": 0.382,
+    "notes": "Run #27 cluster-check was broken (dedup collapsed clusters before filter saw them). Run 28 reads cluster_size from dedup metadata."
   },
   "targets": {
     "f1": 0.42,
@@ -45,5 +45,5 @@
     "goal_fp_max": 6,
     "shot_on_target_tp_min": 16
   },
-  "notes": "Run #27 \u2014 Tighten kickoff-inference gate: reasoning must contain strong kickoff markers (center spot, both teams in own halves, kickoff setup/formation) AND >=2 validated kickoffs must cluster within 30s. Run 26 over-fired because isolated VLM kickoff tags (often midfield free kicks) triggered shot->goal promotions. Expected: preserve 4/4 goal (1065s kickoff pair at 1078/1088 clusters), cut goal FPs from 10 to ~3-4, recover shot_on_target TPs."
+  "notes": "Run #28 \u2014 Fix Run 27 cluster-check bug. Dedup already merged kickoff tags within 30s, so re-clustering the already-merged events found nothing. Now stamping metadata.cluster_size during dedup and requiring cluster_size>=2 in kickoff filter. Predicted 8 valid kickoff clusters (incl. 1078s for 1065s goal rescue)."
 }
