@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 28,
-  "run_label": "run_28",
-  "job_id": "d199fb0c-a9d8-4a3a-bdcd-aa8e14c13357",
-  "commit_sha": "e13d1b5",
-  "submitted_at": "2026-04-17T17:10:28Z",
+  "run_number": 29,
+  "run_label": "run_29",
+  "job_id": null,
+  "commit_sha": "bea07d0",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,16 +34,15 @@
     }
   },
   "baseline": {
-    "run": "27",
+    "run": "28",
     "f1": 0.382,
-    "notes": "Run #27 cluster-check was broken (dedup collapsed clusters before filter saw them). Run 28 reads cluster_size from dedup metadata."
+    "notes": "Run 28: goal 4/4 via kickoff rescue (target met). Catch precision 0.19 (4 TP / 17 FP) \u2014 largest remaining FP pool is catch."
   },
   "targets": {
-    "f1": 0.42,
+    "f1": 0.39,
     "goal_tp_min": 4,
     "goal_recall_min": 1.0,
-    "goal_fp_max": 6,
-    "shot_on_target_tp_min": 16
+    "catch_fp_max": 8
   },
-  "notes": "Run #28 \u2014 Fix Run 27 cluster-check bug. Dedup already merged kickoff tags within 30s, so re-clustering the already-merged events found nothing. Now stamping metadata.cluster_size during dedup and requiring cluster_size>=2 in kickoff filter. Predicted 8 valid kickoff clusters (incl. 1078s for 1065s goal rescue)."
+  "notes": "Run #29 \u2014 Catch preceding-shot gate. Drop catch events lacking a preceding shot (shot_on_target/shot_stop_diving/shot_stop_standing/goal/free_kick_shot/penalty) within the last 10s. Run 28 analysis: all 4 TP catches had such a preceding shot; most FPs were VLM labeling GK-post-goal-kick or GK-clearance as catch. Predicted: catch TP 4->3, FP 17->5, F1 +0.010."
 }
