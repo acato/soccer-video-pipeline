@@ -1314,12 +1314,30 @@ class DualPassDetector:
                  validated=len(validated_kickoffs),
                  kept_times=kickoff_times)
 
+        # Shot times for catch-preceding-shot gate (Run 29). A catch in
+        # GT requires the GK to have caught an opponent's SHOT. Without a
+        # preceding shot, the "catch" is usually the GK picking up a ball
+        # after a goal kick, throw-in, or clearance — not a real catch.
+        _CATCH_SHOT_TYPES = {
+            EventType.SHOT_ON_TARGET,
+            EventType.SHOT_STOP_DIVING,
+            EventType.SHOT_STOP_STANDING,
+            EventType.GOAL,
+            EventType.FREE_KICK_SHOT,
+            EventType.PENALTY,
+        }
+        shot_times = sorted(
+            e.timestamp_start for e in events
+            if e.event_type in _CATCH_SHOT_TYPES
+        )
+
         # ── Pass 2: Apply filters ─────────────────────────────────────
         kept: list[Event] = []
         dropped = 0
         goal_demoted = 0
         goal_inferred = 0
         goal_suppressed = 0
+        catch_dropped_no_shot = 0
         for event in events:
             # Drop kickoffs from output (GT doesn't score them)
             if event.event_type == EventType.KICKOFF:
@@ -1413,6 +1431,26 @@ class DualPassDetector:
                     metadata=event.metadata,
                 )
 
+            # ── Catch preceding-shot gate (Run 29) ──────────────────────
+            # Run 28 FP analysis: catch had 4 TP / 17 FP. All 4 TPs had a
+            # preceding shot event within 10s (GK catching opponent's shot).
+            # Most FPs were the VLM labeling GK-holding-ball-after-goal-kick
+            # or GK-picking-up-ball-from-clearance as "catch" — not real
+            # catches in the GT taxonomy.
+            # Drop catches without a preceding shot/free-kick/penalty/goal
+            # in the last 10s. Predicted cut: 12 of 17 FPs at the cost of
+            # 1 TP (whose preceding shot was outside the 10s window).
+            if event.event_type == EventType.CATCH:
+                t = event.timestamp_start
+                has_preceding_shot = any(0 < t - st <= 10 for st in shot_times)
+                if not has_preceding_shot:
+                    log.info("dual_pass.catch_dropped_no_preceding_shot",
+                             start=t,
+                             reasoning=event.metadata.get("vlm_reasoning", "")[:150])
+                    catch_dropped_no_shot += 1
+                    dropped += 1
+                    continue
+
             # ── Save-language goal gate ─────────────────────────────────
             # If the VLM's own reasoning describes a save (keeper diving,
             # ball rebounding away), the event is a shot — not a goal.
@@ -1455,11 +1493,13 @@ class DualPassDetector:
 
             kept.append(event)
 
-        if dropped or goal_demoted or goal_inferred or goal_suppressed:
+        if dropped or goal_demoted or goal_inferred or goal_suppressed or catch_dropped_no_shot:
             log.info("dual_pass.post_filtered",
                      dropped=dropped, goal_demoted=goal_demoted,
                      goal_inferred=goal_inferred,
-                     goal_suppressed=goal_suppressed, kept=len(kept))
+                     goal_suppressed=goal_suppressed,
+                     catch_dropped_no_shot=catch_dropped_no_shot,
+                     kept=len(kept))
         return kept
 
     # ── Canary methods ──────────────────────────────────────────────────
