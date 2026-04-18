@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 30,
-  "run_label": "run_30",
-  "job_id": "39bf248b-25f3-4234-8f15-5be1e5d2be1a",
-  "commit_sha": "9e0a570",
-  "submitted_at": "2026-04-18T03:23:26Z",
+  "run_number": 31,
+  "run_label": "run_31",
+  "job_id": null,
+  "commit_sha": "edc7be6",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,13 +36,14 @@
   "baseline": {
     "run": "29",
     "f1": 0.392,
-    "notes": "Run 29: catch gate cut 12 FPs. Corner still 0/9 (biggest unactivated class). R8 (throw_in FP gate) shelved \u2014 TP/FP reasoning too similar."
+    "notes": "Run 29 was last stable peak. Run 30 unblocked corner (0->4 TP) but F1 regressed to 0.349 due to cascade. Run 31 softens prompt + lets corner precede catch."
   },
   "targets": {
     "f1": 0.4,
     "goal_tp_min": 4,
     "goal_recall_min": 1.0,
-    "corner_kick_tp_min": 2
+    "corner_kick_tp_min": 2,
+    "catch_tp_min": 3
   },
-  "notes": "Run #30 \u2014 Corner enablement (D\"). Strengthened corner_kick prompt: positional anchor (sideline+goal-line intersection), disambiguation vs free_kick_shot/throw_in/goal_kick, contextual tableau (crowded box + lone kicker). Target: unblock corner from 0/9 to 2+ TPs. R8 shelved \u2014 throw_in TP/FP reasoning indistinguishable."
+  "notes": "Run #31 \u2014 R12: softer corner prompt + corner-aware catch gate."
 }
