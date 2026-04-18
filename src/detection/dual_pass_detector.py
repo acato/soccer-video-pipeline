@@ -196,14 +196,9 @@ STEP 1 — DEAD BALL / RESTART (check first — these are the most common events
 - goal_kick: Ball STATIONARY in the 6-YARD BOX or GOAL AREA, GK or \
   defender about to kick upfield, opponents retreated. The kicker is \
   INSIDE or very near the small box closest to the goal.
-- corner_kick: Ball placed at the INTERSECTION of the SIDELINE and \
-  GOAL LINE — inside the small curved corner arc, usually with a \
-  CORNER FLAG POST visible. A single attacker stands at this extreme \
-  corner preparing to kick toward the penalty area, while several \
-  TEAMMATES crowd the penalty area waiting for a cross. This distinct \
-  "lone kicker at pitch corner + crowded box" tableau is the primary \
-  signal. Only classify as corner_kick when the ball is clearly at the \
-  extreme corner of the pitch — not elsewhere on the sideline.
+- corner_kick: Ball STATIONARY at or near a CORNER FLAG / corner arc. \
+  A player is standing at the corner of the field ready to kick. Look \
+  for the distinctive corner flag and the curved corner arc marking.
 - free_kick_shot: Ball STATIONARY anywhere on the pitch OUTSIDE the \
   goal area and away from corners, with a player standing over it ready \
   to kick. Often a defensive WALL of 3+ players forms nearby. Can be \
@@ -226,11 +221,21 @@ STEP 3 — GOAL (requires post-goal signals):
   kickoff setup. Requires POSITIVE evidence — "ball near goal" alone \
   is NOT a goal.
 
-STEP 4 — SHOT (fallback only):
-- shot_on_target: Player strikes ball toward goal. Use ONLY if Steps 1-3 \
-  did not produce a more specific classification. If a GK action follows \
-  the shot, classify the GK action (catch or shot_stop_diving), not the \
-  shot. If a restart follows, classify the restart TOO.
+STEP 4 — SHOT (first-class event — emit alongside related events):
+- shot_on_target: A player STRIKES the ball toward the goal. This is \
+  NOT a fallback — it is a primary event class. Emit shot_on_target \
+  WHENEVER a shot is struck, INCLUDING when: \
+  (a) the shot is SAVED by the GK (emit BOTH shot_on_target AND \
+      catch/shot_stop_diving — they are separate events); \
+  (b) the shot results in a GOAL (emit BOTH shot_on_target AND goal); \
+  (c) a RESTART follows the shot — goal kick, throw-in, corner (emit \
+      BOTH shot_on_target AND the restart); \
+  (d) the shot goes wide, hits the post, or is blocked by an outfield \
+      player. \
+  The ground truth treats every shot as a separate event from its \
+  outcome, so DO NOT collapse "shot + save" into a single catch/save \
+  event — emit both. Ball MOVING toward the goal after being struck by \
+  a player = shot_on_target, regardless of what happens after.
 
 A window can contain MULTIPLE events (e.g., shot_on_target + goal_kick).
 Throw-ins and goal kicks are the MOST COMMON events — flag aggressively.
