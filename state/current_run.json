@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 31,
-  "run_label": "run_31",
-  "job_id": "4a425d34-ff41-4935-a50f-b5c9d24a1cb4",
-  "commit_sha": "edc7be6",
-  "submitted_at": "2026-04-18T06:12:38Z",
+  "run_number": 32,
+  "run_label": "run_32",
+  "job_id": null,
+  "commit_sha": "009ddb8",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,14 +36,13 @@
   "baseline": {
     "run": "29",
     "f1": 0.392,
-    "notes": "Run 29 was last stable peak. Run 30 unblocked corner (0->4 TP) but F1 regressed to 0.349 due to cascade. Run 31 softens prompt + lets corner precede catch."
+    "notes": "Run 29 best stable F1. Runs 30-31 explored corner enablement \u2014 both regressed. Run 32 parks corner (pending YOLO hybrid) and targets shot_on_target recall (34 FN, biggest pool)."
   },
   "targets": {
-    "f1": 0.4,
+    "f1": 0.41,
     "goal_tp_min": 4,
     "goal_recall_min": 1.0,
-    "corner_kick_tp_min": 2,
-    "catch_tp_min": 3
+    "shot_on_target_tp_min": 20
   },
-  "notes": "Run #31 \u2014 R12: softer corner prompt + corner-aware catch gate."
+  "notes": "Run #32 \u2014 Shot recall fix (F\"). Step 4 rewritten: shot_on_target is first-class, emit alongside saves/goals/restarts. Corner prompt reverted to Run 29 baseline. Target: 20+ shot TPs (from 12)."
 }
