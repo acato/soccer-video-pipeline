@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 29,
-  "run_label": "run_29",
-  "job_id": "ee0b1825-b396-42d5-b46b-cda5bab9fac4",
-  "commit_sha": "bea07d0",
-  "submitted_at": "2026-04-17T20:54:48Z",
+  "run_number": 30,
+  "run_label": "run_30",
+  "job_id": null,
+  "commit_sha": "9e0a570",
+  "submitted_at": null,
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,15 +34,15 @@
     }
   },
   "baseline": {
-    "run": "28",
-    "f1": 0.382,
-    "notes": "Run 28: goal 4/4 via kickoff rescue (target met). Catch precision 0.19 (4 TP / 17 FP) \u2014 largest remaining FP pool is catch."
+    "run": "29",
+    "f1": 0.392,
+    "notes": "Run 29: catch gate cut 12 FPs. Corner still 0/9 (biggest unactivated class). R8 (throw_in FP gate) shelved \u2014 TP/FP reasoning too similar."
   },
   "targets": {
-    "f1": 0.39,
+    "f1": 0.4,
     "goal_tp_min": 4,
     "goal_recall_min": 1.0,
-    "catch_fp_max": 8
+    "corner_kick_tp_min": 2
   },
-  "notes": "Run #29 \u2014 Catch preceding-shot gate. Drop catch events lacking a preceding shot (shot_on_target/shot_stop_diving/shot_stop_standing/goal/free_kick_shot/penalty) within the last 10s. Run 28 analysis: all 4 TP catches had such a preceding shot; most FPs were VLM labeling GK-post-goal-kick or GK-clearance as catch. Predicted: catch TP 4->3, FP 17->5, F1 +0.010."
+  "notes": "Run #30 \u2014 Corner enablement (D\"). Strengthened corner_kick prompt: positional anchor (sideline+goal-line intersection), disambiguation vs free_kick_shot/throw_in/goal_kick, contextual tableau (crowded box + lone kicker). Target: unblock corner from 0/9 to 2+ TPs. R8 shelved \u2014 throw_in TP/FP reasoning indistinguishable."
 }
