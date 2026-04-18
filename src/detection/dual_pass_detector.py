@@ -197,18 +197,13 @@ STEP 1 — DEAD BALL / RESTART (check first — these are the most common events
   defender about to kick upfield, opponents retreated. The kicker is \
   INSIDE or very near the small box closest to the goal.
 - corner_kick: Ball placed at the INTERSECTION of the SIDELINE and \
-  GOAL LINE — inside the small curved corner arc. A CORNER FLAG POST \
-  is typically visible at this intersection. A single attacker stands \
-  at this extreme corner preparing to kick toward the penalty area. \
-  KEY POSITIONAL SIGNALS: (a) ball is at the VERY CORNER of the \
-  playable pitch (not midfield, not edge of penalty area — those are \
-  free_kick_shot); (b) MULTIPLE TEAMMATES are usually crowded INSIDE \
-  the penalty area waiting for a cross; (c) defenders line up to clear. \
-  If the ball is stationary at a SIDELINE but NOT at the goal-line \
-  corner → throw_in (ball held overhead) or free_kick_shot (ball on \
-  ground, not at corner). If ball is in goal area → goal_kick. \
-  Corner kicks produce the distinctive "crowded box + lone kicker at \
-  corner" tableau — flag aggressively when this pattern is visible.
+  GOAL LINE — inside the small curved corner arc, usually with a \
+  CORNER FLAG POST visible. A single attacker stands at this extreme \
+  corner preparing to kick toward the penalty area, while several \
+  TEAMMATES crowd the penalty area waiting for a cross. This distinct \
+  "lone kicker at pitch corner + crowded box" tableau is the primary \
+  signal. Only classify as corner_kick when the ball is clearly at the \
+  extreme corner of the pitch — not elsewhere on the sideline.
 - free_kick_shot: Ball STATIONARY anywhere on the pitch OUTSIDE the \
   goal area and away from corners, with a player standing over it ready \
   to kick. Often a defensive WALL of 3+ players forms nearby. Can be \
@@ -1328,6 +1323,11 @@ class DualPassDetector:
         # GT requires the GK to have caught an opponent's SHOT. Without a
         # preceding shot, the "catch" is usually the GK picking up a ball
         # after a goal kick, throw-in, or clearance — not a real catch.
+        # Run 31 (R10): also accept CORNER_KICK as a preceding event. A
+        # corner → cross → GK-catches-the-ball sequence is a real catch;
+        # Run 30 showed 3 catch TPs evaporated when shots got reclassified
+        # as corners (corner detection unblocked) and the catch gate
+        # dropped them for lacking a "preceding shot".
         _CATCH_SHOT_TYPES = {
             EventType.SHOT_ON_TARGET,
             EventType.SHOT_STOP_DIVING,
@@ -1335,6 +1335,7 @@ class DualPassDetector:
             EventType.GOAL,
             EventType.FREE_KICK_SHOT,
             EventType.PENALTY,
+            EventType.CORNER_KICK,
         }
         shot_times = sorted(
             e.timestamp_start for e in events
