@@ -196,9 +196,19 @@ STEP 1 — DEAD BALL / RESTART (check first — these are the most common events
 - goal_kick: Ball STATIONARY in the 6-YARD BOX or GOAL AREA, GK or \
   defender about to kick upfield, opponents retreated. The kicker is \
   INSIDE or very near the small box closest to the goal.
-- corner_kick: Ball STATIONARY at or near a CORNER FLAG / corner arc. \
-  A player is standing at the corner of the field ready to kick. Look \
-  for the distinctive corner flag and the curved corner arc marking.
+- corner_kick: Ball placed at the INTERSECTION of the SIDELINE and \
+  GOAL LINE — inside the small curved corner arc. A CORNER FLAG POST \
+  is typically visible at this intersection. A single attacker stands \
+  at this extreme corner preparing to kick toward the penalty area. \
+  KEY POSITIONAL SIGNALS: (a) ball is at the VERY CORNER of the \
+  playable pitch (not midfield, not edge of penalty area — those are \
+  free_kick_shot); (b) MULTIPLE TEAMMATES are usually crowded INSIDE \
+  the penalty area waiting for a cross; (c) defenders line up to clear. \
+  If the ball is stationary at a SIDELINE but NOT at the goal-line \
+  corner → throw_in (ball held overhead) or free_kick_shot (ball on \
+  ground, not at corner). If ball is in goal area → goal_kick. \
+  Corner kicks produce the distinctive "crowded box + lone kicker at \
+  corner" tableau — flag aggressively when this pattern is visible.
 - free_kick_shot: Ball STATIONARY anywhere on the pitch OUTSIDE the \
   goal area and away from corners, with a player standing over it ready \
   to kick. Often a defensive WALL of 3+ players forms nearby. Can be \
