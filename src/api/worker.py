@@ -381,6 +381,7 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         yolo_ball_class_id=int(getattr(cfg, 'YOLO_BALL_CLASS_ID', 32)),
         yolo_person_class_ids=_parse_int_csv(getattr(cfg, 'YOLO_PERSON_CLASS_IDS', '0')),
         yolo_gk_class_ids=_parse_int_csv(getattr(cfg, 'YOLO_GK_CLASS_IDS', '')),
+        yolo_gk_proximity_threshold=float(getattr(cfg, 'YOLO_GK_PROXIMITY_THRESHOLD', 0.20)),
     )
 
     detector = DualPassDetector(

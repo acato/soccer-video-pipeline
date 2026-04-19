@@ -506,6 +506,130 @@ class TestCustomClassIds:
 
 
 @pytest.mark.unit
+class TestGkProximityGate:
+    """Run #36: GK events kept only if ball comes close to a GK in-frame.
+
+    Uses the soccer-tuned class schema (ball=0, goalkeeper=1).
+    """
+
+    def _build_model(self, per_frame_boxes):
+        """per_frame_boxes: list[list[(cls, x, y, conf)]] — one list per frame."""
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+
+        def _result_for(boxes_list):
+            boxes = MagicMock()
+            if not boxes_list:
+                boxes.cls = _tensor([])
+                boxes.conf = _tensor([])
+                boxes.xywhn = _tensor(np.zeros((0, 4)))
+            else:
+                boxes.cls = _tensor([b[0] for b in boxes_list])
+                boxes.conf = _tensor([b[3] for b in boxes_list])
+                boxes.xywhn = _tensor(
+                    np.array([[b[1], b[2], 0.05, 0.05] for b in boxes_list])
+                )
+            r = MagicMock()
+            r.boxes = boxes
+            return r
+
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [
+            _result_for(per_frame_boxes[i]) for i in range(len(images))
+        ]
+        return model
+
+    def _gk_grounder(self, sampler, model, **extra):
+        return _make_grounder(
+            sampler, model,
+            ball_class_id=0,
+            person_class_ids=(1, 2, 3),
+            gk_class_ids=(1,),
+            **extra,
+        )
+
+    def test_ball_next_to_gk_kept(self, sampler_stub):
+        # Both ball and GK at (0.5, 0.5) in all 3 frames → distance = 0 → keep.
+        per_frame = [
+            [(0, 0.5, 0.5, 0.9), (1, 0.5, 0.5, 0.8)],
+        ] * 3
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(sampler_stub, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1
+
+    def test_ball_far_from_gk_rejected(self, sampler_stub):
+        # Ball at (0.9, 0.9), GK at (0.1, 0.1) → dist ≈ 1.13 > 0.20 → reject.
+        per_frame = [
+            [(0, 0.9, 0.9, 0.9), (1, 0.1, 0.1, 0.8)],
+        ] * 3
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(sampler_stub, model)
+        out = g.filter([_make_event(EventType.SHOT_STOP_DIVING)])
+        assert out == []
+
+    def test_no_gk_detected_fails_open(self, sampler_stub):
+        # Ball detected, no GK at all → fail-open keep.
+        per_frame = [
+            [(0, 0.5, 0.5, 0.9)],
+        ] * 3
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(sampler_stub, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1
+
+    def test_ball_and_gk_never_same_frame_fails_open(self, sampler_stub):
+        # Frame 1: ball only. Frame 2: GK only. Frame 3: nothing. → fail-open.
+        per_frame = [
+            [(0, 0.5, 0.5, 0.9)],           # ball only
+            [(1, 0.5, 0.5, 0.8)],           # gk only
+            [(0, 0.5, 0.5, 0.9)],           # ball only (so ball_detected=True)
+        ]
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(sampler_stub, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1
+
+    def test_multiple_gks_picks_nearest(self, sampler_stub):
+        # Ball at (0.5, 0.5). Two GKs: (0.9, 0.9) far, (0.55, 0.55) close.
+        # Nearest dist ≈ 0.071 < 0.20 → keep.
+        per_frame = [
+            [(0, 0.5, 0.5, 0.9),
+             (1, 0.9, 0.9, 0.8),
+             (1, 0.55, 0.55, 0.8)],
+        ] * 3
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(sampler_stub, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1
+
+    def test_tight_threshold_rejects_moderately_close(self, sampler_stub):
+        # Distance ≈ 0.141 — between 0.10 and 0.20. Tight threshold rejects.
+        per_frame = [
+            [(0, 0.5, 0.5, 0.9), (1, 0.6, 0.6, 0.8)],
+        ] * 3
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(
+            sampler_stub, model, gk_proximity_threshold=0.10
+        )
+        out = g.filter([_make_event(EventType.SHOT_STOP_DIVING)])
+        assert out == []
+
+    def test_non_gk_event_not_affected_by_proximity_rule(self, sampler_stub):
+        # An event that's a landmark type (throw_in) should route through
+        # the touchline rule, not the GK rule — even with GK visible.
+        per_frame = [
+            [(0, 0.5, 0.10, 0.9), (1, 0.5, 0.5, 0.8)],  # ball near top touchline
+        ] * 3
+        model = self._build_model(per_frame)
+        g = self._gk_grounder(sampler_stub, model)
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert len(out) == 1
+
+
+@pytest.mark.unit
 class TestDiagnostics:
 
     def test_writes_per_event_record(self, sampler_stub, tmp_path):

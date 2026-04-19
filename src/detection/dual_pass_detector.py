@@ -498,6 +498,9 @@ class DualPassConfig:
     yolo_ball_class_id: int = 32
     yolo_person_class_ids: tuple[int, ...] = (0,)
     yolo_gk_class_ids: tuple[int, ...] = ()
+    # Max normalized ball-to-GK distance for a GK event to be kept. Only
+    # used when gk_class_ids is configured. 0.20 is a generous first pass.
+    yolo_gk_proximity_threshold: float = 0.20
 
 
 class DualPassDetector:
@@ -1341,6 +1344,7 @@ class DualPassDetector:
             ball_class_id=self._cfg.yolo_ball_class_id,
             person_class_ids=self._cfg.yolo_person_class_ids,
             gk_class_ids=self._cfg.yolo_gk_class_ids,
+            gk_proximity_threshold=self._cfg.yolo_gk_proximity_threshold,
         )
         try:
             return grounder.filter(events)

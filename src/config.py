@@ -235,6 +235,11 @@ YOLO_GK_CLASS_IDS: str = _opt("YOLO_GK_CLASS_IDS", "")
 """Comma-separated class indices for goalkeeper-specific tracking. Empty by
 default. Soccer-tuned models set '1'. Tracked for the Run #36 GK-action gate."""
 
+YOLO_GK_PROXIMITY_THRESHOLD: float = _float("YOLO_GK_PROXIMITY_THRESHOLD", 0.20)
+"""Max normalized Euclidean ball-to-GK distance for a GK-action event
+(catch, shot_stop_*, punch) to be accepted by the grounding gate. 0.20 ≈
+20% of the frame diagonal — generous first pass."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -380,6 +385,7 @@ class _Config:
             "YOLO_BALL_CLASS_ID": ("YOLO_BALL_CLASS_ID", "32"),
             "YOLO_PERSON_CLASS_IDS": ("YOLO_PERSON_CLASS_IDS", "0"),
             "YOLO_GK_CLASS_IDS": ("YOLO_GK_CLASS_IDS", ""),
+            "YOLO_GK_PROXIMITY_THRESHOLD": ("YOLO_GK_PROXIMITY_THRESHOLD", "0.20"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

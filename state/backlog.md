@@ -21,27 +21,26 @@ diagnostics in `yolo_grounding.jsonl`. Both Run #36 and Run #37 depend on
 ball-detection rate improving from 52% (COCO) to ~75%+ in Run #35 — if
 that doesn't materialize, these runs are premature.
 
-### Run #36 — GK-proximity gate (necessary condition for GK events)
-For `catch`, `shot_stop_diving`, `shot_stop_standing`, `punch` events:
-require that the ball comes within a GK bounding box during the event
-span (or within ~1.5× GK-box diagonal, tuned from Run #35 data).
+### Run #36 — GK-proximity gate (SHIPPED; threshold calibration pending)
+Extends `_GATED_TYPES` to include `CATCH`, `SHOT_STOP_DIVING`, `PUNCH`,
+`SHOT_STOP_STANDING`. For those events, requires ball and GK to be
+co-visible in ≥1 sampled frame with normalized Euclidean distance
+≤ `gk_proximity_threshold` (default 0.20).
 
-**Why**: Run #34 shows `shot_stop_diving` at precision 0.13 (4 TP / 26 FP)
-and `catch` at 0.23 (5 TP / 17 FP). These are the top FP contributors
-after `throw_in`/`goal_kick`. A necessary-condition gate rejects events
-where the VLM hallucinated a GK save with no actual ball-GK encounter.
+**Why this scope**: Run #35 showed the gate wasn't running on GK events
+at all — no ball or GK data was being collected for `catch`/`shot_stop`.
+Run #36 does both the FP cut AND the diagnostic collection in one step.
 
-**How to apply**: Add `_verify_gk_action(features, event_type)` that
-iterates over `features.gk_detections` and `features.ball_detections`
-across frames, finds minimum ball-to-GK-box distance, and rejects if it
-never drops below threshold.
+**Threshold is provisional at 0.20** (≈ 20% of frame diagonal). This
+was picked without TP-set calibration because Run #35's gate didn't
+cover GK events. **Tune for Run #36b** from Run #36's diag:
+measure ball-GK distances on the 4 shot_stop_diving TPs + 5 catch TPs.
 
-**Expected impact**: Cut `shot_stop_diving` FPs by 50–70% (13–18 FPs),
-`catch` FPs by 30–50% (5–8 FPs). Net F1 gain ~+0.03 to +0.05.
+**Expected impact**: Cut `shot_stop_diving` FPs by 50–70% (13–18 FPs)
+and `catch` FPs by 30–50% (5–8 FPs). Net F1 gain ~+0.03 to +0.05.
 
-**Calibration note**: Distance threshold should be tuned from Run #35
-diagnostics — measure ball-GK distances for the 4 `shot_stop_diving` TPs
-(and the 5 `catch` TPs) to establish a floor.
+**Fail-open policy**: keep when ball or GK missing (preserves recall);
+only reject on active evidence they were co-observed but never close.
 
 ### Run #37 — Parry signature (additive on top of Run #36)
 For GK events that survive Run #36's proximity gate, classify the

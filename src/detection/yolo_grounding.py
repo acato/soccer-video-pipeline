@@ -44,12 +44,26 @@ _COCO_PERSON = 0
 _COCO_SPORTS_BALL = 32
 
 
-# Event types this module actively gates. All others pass through.
-_GATED_TYPES: frozenset[EventType] = frozenset({
+# Event types with *landmark* spatial prerequisites (touchline / goal line /
+# corner). The gate enforces where the ball must be relative to the field.
+_LANDMARK_TYPES: frozenset[EventType] = frozenset({
     EventType.THROW_IN,
     EventType.CORNER_KICK,
     EventType.GOAL_KICK,
 })
+
+# Event types that require ball↔goalkeeper interaction. The gate enforces
+# that ball and GK co-occur and are close in at least one sampled frame.
+# Only usable when gk_class_ids is configured (soccer-tuned model).
+_GK_ACTION_TYPES: frozenset[EventType] = frozenset({
+    EventType.CATCH,
+    EventType.SHOT_STOP_DIVING,
+    EventType.SHOT_STOP_STANDING,
+    EventType.PUNCH,
+})
+
+# Union of all event types the module runs YOLO on.
+_GATED_TYPES: frozenset[EventType] = _LANDMARK_TYPES | _GK_ACTION_TYPES
 
 
 # Spatial thresholds in normalized frame coords (0..1). These assume a
@@ -152,6 +166,7 @@ class YoloGrounder:
         ball_class_id: int = _COCO_SPORTS_BALL,
         person_class_ids: tuple[int, ...] = (_COCO_PERSON,),
         gk_class_ids: tuple[int, ...] = (),
+        gk_proximity_threshold: float = 0.20,
     ):
         self._sampler = sampler
         self._video_duration = video_duration
@@ -163,9 +178,12 @@ class YoloGrounder:
         self._ball_class_id = int(ball_class_id)
         self._person_class_ids = frozenset(int(c) for c in person_class_ids)
         # Goalkeeper class ids are also typically a subset of person_class_ids;
-        # they are tracked separately for diagnostics and the future GK-action
-        # gate (Run #36).
+        # they are tracked separately for diagnostics and the GK-action gate.
         self._gk_class_ids = frozenset(int(c) for c in gk_class_ids)
+        # Max normalized ball-to-GK Euclidean distance for a GK event to be
+        # accepted. 0.20 ≈ 20% of the frame diagonal — generous first pass;
+        # tune from Run #36 TP data for subsequent runs.
+        self._gk_proximity_threshold = float(gk_proximity_threshold)
         # Minimum span fallback when the event's own duration is too short
         # (e.g. point events with timestamp_end == timestamp_start).
         self._min_span_sec = max(0.5, frame_span_sec)
@@ -251,6 +269,8 @@ class YoloGrounder:
             return self._verify_corner_kick(features)
         if event.event_type == EventType.GOAL_KICK:
             return self._verify_goal_kick(features)
+        if event.event_type in _GK_ACTION_TYPES:
+            return self._verify_gk_action(features)
 
         # Shouldn't reach (not in _GATED_TYPES) — defensive default.
         return GroundingDecision(
@@ -290,6 +310,66 @@ class YoloGrounder:
         return GroundingDecision(
             keep=False,
             reason=f"ball_never_in_corner_xys={positions}",
+            features=f,
+        )
+
+    def _verify_gk_action(self, f: SpatialFeatures) -> GroundingDecision:
+        """Require ball to be close to a goalkeeper in at least one frame.
+
+        Fail-open policy:
+          - No GK detections at all → keep (GK might be off-camera or
+            occluded; don't punish VLM for that).
+          - Ball and GK detected in the same event but never in the same
+            *frame* → keep (sampling was too sparse to co-observe them).
+          - Ball and GK co-observed but never within the proximity
+            threshold → REJECT (active evidence they weren't interacting).
+
+        Multiple GKs per frame are handled by taking the minimum distance.
+        """
+        if not f.gk_detections:
+            return GroundingDecision(
+                keep=True,
+                reason="no_gk_detected_fail_open",
+                features=f,
+            )
+        # Group by frame timestamp (rounded to avoid float-equality issues)
+        from collections import defaultdict
+        ball_by_ts: dict[float, list[BallDetection]] = defaultdict(list)
+        for b in f.ball_detections:
+            ball_by_ts[round(b.frame_ts, 2)].append(b)
+        gk_by_ts: dict[float, list[GoalkeeperDetection]] = defaultdict(list)
+        for g in f.gk_detections:
+            gk_by_ts[round(g.frame_ts, 2)].append(g)
+
+        common_ts = sorted(set(ball_by_ts) & set(gk_by_ts))
+        if not common_ts:
+            return GroundingDecision(
+                keep=True,
+                reason="no_frame_with_both_ball_and_gk_fail_open",
+                features=f,
+            )
+
+        best_distance = float("inf")
+        best_ts: Optional[float] = None
+        for ts in common_ts:
+            for b in ball_by_ts[ts]:
+                for g in gk_by_ts[ts]:
+                    dx = b.x_norm - g.x_norm
+                    dy = b.y_norm - g.y_norm
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist < best_distance:
+                        best_distance = dist
+                        best_ts = ts
+
+        if best_distance <= self._gk_proximity_threshold:
+            return GroundingDecision(
+                keep=True,
+                reason=f"ball_near_gk_dist={best_distance:.3f}_t={best_ts:.1f}",
+                features=f,
+            )
+        return GroundingDecision(
+            keep=False,
+            reason=f"ball_never_near_gk_min_dist={best_distance:.3f}",
             features=f,
         )
 
