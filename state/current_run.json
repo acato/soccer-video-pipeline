@@ -3,7 +3,7 @@
   "run_number": 33,
   "run_label": "run_33",
   "job_id": "TBD",
-  "commit_sha": "a0273f2",
+  "commit_sha": "e433a95",
   "submitted_at": "2026-04-18T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
