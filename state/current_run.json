@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 35,
-  "run_label": "run_35",
-  "job_id": "bca58f65-7186-4a75-85dc-b9dab2220cdd",
-  "commit_sha": "e93ad34",
-  "submitted_at": "2026-04-19T19:32:37Z",
+  "run_number": 36,
+  "run_label": "run_36",
+  "job_id": "TBD",
+  "commit_sha": "9800196",
+  "submitted_at": "2026-04-19T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,16 +34,17 @@
     }
   },
   "baseline": {
-    "run": "34",
-    "f1": 0.372,
-    "notes": "Run 34 recovered only +1 TP (F1 0.369\u21920.372). Diagnostics showed 45% of gated events had no ball detection at all (COCO yolov8m is weak on small distant soccer balls), and many real TPs were rejected just outside the bands (throw_in y=0.25, goal_kick x=0.16\u20130.17)."
+    "run": "35",
+    "f1": 0.389,
+    "notes": "Run 35 recovered F1 from 0.372 → 0.389 via band widening + soccer-tuned YOLO (+3 TP, -4 FP on gated types). Ball detection rate lifted 52% → 68%. But GK events (catch P=0.23 / shot_stop_diving P=0.13) were NOT gated, so 43 combined FPs still untouched. Run 35 diag also found only 14/107 gated events had GK detections — insufficient for Run #37 parry design until GK events are themselves gated."
   },
   "targets": {
     "f1": 0.42,
-    "tp_min": 85,
-    "precision_min": 0.35,
-    "ball_detection_rate_min": 0.75,
-    "notes": "Widened bands + soccer-tuned YOLO weight (uisikdag, mAP@0.5=0.785) should lift ball-detection from ~52% to ~80%+ and recover band-edge near-misses. Beating Run 32 (F1 0.396) is the recovery target; breaking 0.42 is breakthrough. Run 35 also collects goalkeeper-position diagnostics for the Run #36 GK-action gate."
+    "tp_min": 75,
+    "precision_min": 0.38,
+    "shot_stop_diving_fp_max": 13,
+    "catch_fp_max": 12,
+    "notes": "GK-proximity gate should cut shot_stop_diving FPs from 26 → ≤13 and catch FPs from 17 → ≤12. Expected F1 lift +0.03 to +0.05 (breakthrough target 0.42). Threshold 0.20 is provisional — Run #36 diag enables calibration for #36b."
   },
-  "notes": "Run #35 \u2014 band widening + soccer-tuned YOLO (uisikdag/yolo-v8-football-players-detection). _TOUCHLINE_BAND 0.22\u21920.28, _GOAL_LINE_BAND 0.15\u21920.20. Swapped YOLO weight from COCO yolov8m to a 4-class soccer model (0=ball, 1=goalkeeper, 2=player, 3=referee); ball_class_id and person/gk_class_ids plumbed through config. GK boxes tracked in diagnostics \u2014 data-collection for Run #36 GK-action gate on catch/shot_stop_diving. Backlog B (relax goal_kick vertical band) still deferred."
+  "notes": "Run #36 — GK-proximity gate. _GATED_TYPES extended to include CATCH, SHOT_STOP_DIVING, SHOT_STOP_STANDING, PUNCH. New _verify_gk_action requires ball and GK co-visible in ≥1 sampled frame with normalized Euclidean distance ≤ 0.20 (YOLO_GK_PROXIMITY_THRESHOLD). Fail-open when ball OR GK missing (preserves recall). Multiple GKs handled by nearest-pick. This run also collects the ball+GK diagnostics on GK events needed for Run #37 parry-signature design."
 }
