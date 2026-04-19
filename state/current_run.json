@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 34,
   "run_label": "run_34",
-  "job_id": "TBD",
+  "job_id": "7058396a-2a25-4141-993e-192f6b65a90e",
   "commit_sha": "a08d32e",
-  "submitted_at": "2026-04-19T00:00:00Z",
+  "submitted_at": "2026-04-19T15:37:22Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,13 +36,13 @@
   "baseline": {
     "run": "33",
     "f1": 0.369,
-    "notes": "Run 33 regressed to F1 0.369 (TP 69 / FN 87 / FP 149) vs Run 32's 0.396. YOLO gate removed 40 events but 13 were TPs — only 67% precision on gate decisions. Root causes: (1) ±1s sampling around timestamp_start missed the fleeting landmark moment; (2) only best-confidence detection was evaluated. Run 34 applies Option A: full-event-span sampling + any-frame rule match."
+    "notes": "Run 33 regressed to F1 0.369 (TP 69 / FN 87 / FP 149) vs Run 32's 0.396. YOLO gate removed 40 events but 13 were TPs \u2014 only 67% precision on gate decisions. Root causes: (1) \u00b11s sampling around timestamp_start missed the fleeting landmark moment; (2) only best-confidence detection was evaluated. Run 34 applies Option A: full-event-span sampling + any-frame rule match."
   },
   "targets": {
-    "f1": 0.40,
+    "f1": 0.4,
     "tp_min": 78,
     "precision_min": 0.33,
-    "notes": "Recover ≥8 of the 13 TPs lost in Run 33 while keeping most of the 27 FPs dropped. Beating Run 32 (F1 0.396) counts as a breakthrough."
+    "notes": "Recover \u22658 of the 13 TPs lost in Run 33 while keeping most of the 27 FPs dropped. Beating Run 32 (F1 0.396) counts as a breakthrough."
   },
-  "notes": "Run #34 — Option A fix for Run #33 regression. _sample_event_span samples n_frames=5 evenly across [timestamp_start, timestamp_end] instead of ±1s around start. Per-type rules now iterate over every ball detection and keep event if ANY frame satisfies the landmark rule (previously: only the best-confidence detection). Backlog B (relax goal_kick vertical band) and C (soccer-ball-tuned detector) deferred."
+  "notes": "Run #34 \u2014 Option A fix for Run #33 regression. _sample_event_span samples n_frames=5 evenly across [timestamp_start, timestamp_end] instead of \u00b11s around start. Per-type rules now iterate over every ball detection and keep event if ANY frame satisfies the landmark rule (previously: only the best-confidence detection). Backlog B (relax goal_kick vertical band) and C (soccer-ball-tuned detector) deferred."
 }
