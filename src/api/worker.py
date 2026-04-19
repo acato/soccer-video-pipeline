@@ -350,6 +350,9 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
 
     single_pass = str(getattr(cfg, 'SINGLE_PASS_32B', 'false')).lower() in ("1", "true", "yes")
 
+    _truthy = lambda v: str(v).lower() in ("1", "true", "yes")
+    yolo_grounding = _truthy(getattr(cfg, 'YOLO_GROUNDING_ENABLED', 'false'))
+
     dp_config = DualPassConfig(
         vllm_url=cfg.VLLM_URL,
         single_pass=single_pass,
@@ -362,6 +365,14 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         tier2_model_path=cfg.DUAL_PASS_TIER2_PATH,
         step_sec=float(cfg.DUAL_PASS_TRIAGE_STEP),
         swap_script=cfg.DUAL_PASS_SWAP_SCRIPT or "",
+        yolo_grounding_enabled=yolo_grounding,
+        yolo_grounding_fail_open=_truthy(getattr(cfg, 'YOLO_GROUNDING_FAIL_OPEN', 'true')),
+        yolo_grounding_frames=int(getattr(cfg, 'YOLO_GROUNDING_FRAMES', 3)),
+        yolo_grounding_frame_span_sec=float(getattr(cfg, 'YOLO_GROUNDING_FRAME_SPAN_SEC', 2.0)),
+        yolo_grounding_inference_size=int(getattr(cfg, 'YOLO_GROUNDING_INFERENCE_SIZE', 640)),
+        yolo_grounding_ball_conf=float(getattr(cfg, 'YOLO_GROUNDING_BALL_CONF', 0.15)),
+        yolo_model_path=str(getattr(cfg, 'YOLO_MODEL_PATH', '')),
+        yolo_use_gpu=_truthy(getattr(cfg, 'USE_GPU', 'false')),
     )
 
     detector = DualPassDetector(

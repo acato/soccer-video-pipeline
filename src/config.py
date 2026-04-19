@@ -203,6 +203,26 @@ SINGLE_PASS_WINDOW_SEC: float = _float("SINGLE_PASS_WINDOW_SEC", 15.0)
 SINGLE_PASS_FRAMES: int = _int("SINGLE_PASS_FRAMES", 5)
 """Number of frames per window in single-pass mode."""
 
+YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
+"""Run #33 breakthrough: YOLO spatial-grounding gate on VLM events.
+Rejects throw_in/corner_kick/goal_kick detections where the ball isn't
+actually near the required field landmark."""
+
+YOLO_GROUNDING_FAIL_OPEN: bool = _bool("YOLO_GROUNDING_FAIL_OPEN", True)
+"""Keep events when YOLO can't find a ball (preserves recall)."""
+
+YOLO_GROUNDING_FRAMES: int = _int("YOLO_GROUNDING_FRAMES", 3)
+"""Frames to sample per candidate for grounding."""
+
+YOLO_GROUNDING_FRAME_SPAN_SEC: float = _float("YOLO_GROUNDING_FRAME_SPAN_SEC", 2.0)
+"""Total span of sampled frames around the event timestamp (seconds)."""
+
+YOLO_GROUNDING_INFERENCE_SIZE: int = _int("YOLO_GROUNDING_INFERENCE_SIZE", 640)
+"""YOLO input resolution for grounding inference (smaller = faster)."""
+
+YOLO_GROUNDING_BALL_CONF: float = _float("YOLO_GROUNDING_BALL_CONF", 0.15)
+"""Minimum YOLO confidence to accept a ball detection."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -338,6 +358,13 @@ class _Config:
             "SINGLE_PASS_STEP_SEC": ("SINGLE_PASS_STEP_SEC", "10.0"),
             "SINGLE_PASS_WINDOW_SEC": ("SINGLE_PASS_WINDOW_SEC", "15.0"),
             "SINGLE_PASS_FRAMES": ("SINGLE_PASS_FRAMES", "5"),
+            # YOLO spatial grounding (Run #33 breakthrough)
+            "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
+            "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),
+            "YOLO_GROUNDING_FRAMES": ("YOLO_GROUNDING_FRAMES", "3"),
+            "YOLO_GROUNDING_FRAME_SPAN_SEC": ("YOLO_GROUNDING_FRAME_SPAN_SEC", "2.0"),
+            "YOLO_GROUNDING_INFERENCE_SIZE": ("YOLO_GROUNDING_INFERENCE_SIZE", "640"),
+            "YOLO_GROUNDING_BALL_CONF": ("YOLO_GROUNDING_BALL_CONF", "0.15"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

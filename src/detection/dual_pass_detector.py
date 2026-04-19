@@ -481,6 +481,16 @@ class DualPassConfig:
     # Canary 5: vLLM latency tracking
     latency_canary_max_p95_sec: float = 180.0  # Warn if p95 > 3 min
 
+    # ── YOLO spatial grounding (Run #33 breakthrough) ──────────────────
+    yolo_grounding_enabled: bool = False
+    yolo_grounding_fail_open: bool = True
+    yolo_grounding_frames: int = 3
+    yolo_grounding_frame_span_sec: float = 2.0
+    yolo_grounding_inference_size: int = 640
+    yolo_grounding_ball_conf: float = 0.15
+    yolo_model_path: str = ""              # Path to YOLOv8 weights
+    yolo_use_gpu: bool = True
+
 
 class DualPassDetector:
     """Orchestrates the 8B triage → swap → 32B classification pipeline."""
@@ -684,6 +694,12 @@ class DualPassDetector:
 
         # Deduplicate and post-filter (reuse existing methods)
         all_events = self._deduplicate_events(all_events)
+
+        # YOLO spatial grounding (Run #33) — reject events whose spatial
+        # prerequisites are contradicted by ball/person positions.
+        if self._cfg.yolo_grounding_enabled:
+            all_events = self._apply_yolo_grounding(all_events)
+
         all_events = self._post_filter_events(all_events)
 
         # Save final events
@@ -1292,6 +1308,33 @@ class DualPassDetector:
             log.info("dual_pass.deduplicated",
                      before=len(events), after=len(kept))
         return kept
+
+    def _apply_yolo_grounding(self, events: list[Event]) -> list[Event]:
+        """Run the YOLO spatial grounding gate over detected events.
+
+        See src/detection/yolo_grounding.py for the per-type rules. This
+        is a precision gate only — fail-open by default so YOLO outages
+        don't cascade into recall loss.
+        """
+        from src.detection.yolo_grounding import YoloGrounder
+
+        diag_path = self._working_dir / "diagnostics" / "yolo_grounding.jsonl"
+        grounder = YoloGrounder(
+            sampler=self._sampler,
+            video_duration=self._video_duration,
+            model_path=self._cfg.yolo_model_path or None,
+            inference_size=self._cfg.yolo_grounding_inference_size,
+            use_gpu=self._cfg.yolo_use_gpu,
+            ball_conf_threshold=self._cfg.yolo_grounding_ball_conf,
+            n_frames=self._cfg.yolo_grounding_frames,
+            frame_span_sec=self._cfg.yolo_grounding_frame_span_sec,
+            fail_open=self._cfg.yolo_grounding_fail_open,
+            diagnostics_path=diag_path,
+        )
+        try:
+            return grounder.filter(events)
+        finally:
+            grounder.close()
 
     def _post_filter_events(self, events: list[Event]) -> list[Event]:
         """Apply contextual post-filters.
