@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 36,
   "run_label": "run_36",
-  "job_id": "TBD",
+  "job_id": "9fb8689f-6f8c-46e6-8121-cc76386e7888",
   "commit_sha": "9800196",
-  "submitted_at": "2026-04-19T00:00:00Z",
+  "submitted_at": "2026-04-19T23:04:06Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,7 +36,7 @@
   "baseline": {
     "run": "35",
     "f1": 0.389,
-    "notes": "Run 35 recovered F1 from 0.372 → 0.389 via band widening + soccer-tuned YOLO (+3 TP, -4 FP on gated types). Ball detection rate lifted 52% → 68%. But GK events (catch P=0.23 / shot_stop_diving P=0.13) were NOT gated, so 43 combined FPs still untouched. Run 35 diag also found only 14/107 gated events had GK detections — insufficient for Run #37 parry design until GK events are themselves gated."
+    "notes": "Run 35 recovered F1 from 0.372 \u2192 0.389 via band widening + soccer-tuned YOLO (+3 TP, -4 FP on gated types). Ball detection rate lifted 52% \u2192 68%. But GK events (catch P=0.23 / shot_stop_diving P=0.13) were NOT gated, so 43 combined FPs still untouched. Run 35 diag also found only 14/107 gated events had GK detections \u2014 insufficient for Run #37 parry design until GK events are themselves gated."
   },
   "targets": {
     "f1": 0.42,
@@ -44,7 +44,7 @@
     "precision_min": 0.38,
     "shot_stop_diving_fp_max": 13,
     "catch_fp_max": 12,
-    "notes": "GK-proximity gate should cut shot_stop_diving FPs from 26 → ≤13 and catch FPs from 17 → ≤12. Expected F1 lift +0.03 to +0.05 (breakthrough target 0.42). Threshold 0.20 is provisional — Run #36 diag enables calibration for #36b."
+    "notes": "GK-proximity gate should cut shot_stop_diving FPs from 26 \u2192 \u226413 and catch FPs from 17 \u2192 \u226412. Expected F1 lift +0.03 to +0.05 (breakthrough target 0.42). Threshold 0.20 is provisional \u2014 Run #36 diag enables calibration for #36b."
   },
-  "notes": "Run #36 — GK-proximity gate. _GATED_TYPES extended to include CATCH, SHOT_STOP_DIVING, SHOT_STOP_STANDING, PUNCH. New _verify_gk_action requires ball and GK co-visible in ≥1 sampled frame with normalized Euclidean distance ≤ 0.20 (YOLO_GK_PROXIMITY_THRESHOLD). Fail-open when ball OR GK missing (preserves recall). Multiple GKs handled by nearest-pick. This run also collects the ball+GK diagnostics on GK events needed for Run #37 parry-signature design."
+  "notes": "Run #36 \u2014 GK-proximity gate. _GATED_TYPES extended to include CATCH, SHOT_STOP_DIVING, SHOT_STOP_STANDING, PUNCH. New _verify_gk_action requires ball and GK co-visible in \u22651 sampled frame with normalized Euclidean distance \u2264 0.20 (YOLO_GK_PROXIMITY_THRESHOLD). Fail-open when ball OR GK missing (preserves recall). Multiple GKs handled by nearest-pick. This run also collects the ball+GK diagnostics on GK events needed for Run #37 parry-signature design."
 }
