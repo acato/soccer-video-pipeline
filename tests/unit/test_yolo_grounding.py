@@ -27,17 +27,69 @@ FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100  # Decoded-as-None in tests
 
 @pytest.fixture
 def sampler_stub():
-    """A sampler that returns 3 fake frames at the requested center."""
+    """A sampler that returns 3 fake frames around the requested center."""
     s = MagicMock()
 
     def _sample(center_sec, window_sec, interval_sec, duration_sec):
         return [
-            SampledFrame(timestamp_sec=center_sec - 1.0, jpeg_bytes=FAKE_JPEG),
-            SampledFrame(timestamp_sec=center_sec,       jpeg_bytes=FAKE_JPEG),
-            SampledFrame(timestamp_sec=center_sec + 1.0, jpeg_bytes=FAKE_JPEG),
+            SampledFrame(timestamp_sec=center_sec - window_sec, jpeg_bytes=FAKE_JPEG),
+            SampledFrame(timestamp_sec=center_sec,              jpeg_bytes=FAKE_JPEG),
+            SampledFrame(timestamp_sec=center_sec + window_sec, jpeg_bytes=FAKE_JPEG),
         ]
     s.sample_range.side_effect = _sample
     return s
+
+
+@pytest.fixture
+def sampler_stub_per_frame_positions():
+    """Sampler + model pair that lets a test specify ball position per frame."""
+    def _make(positions):
+        # positions is a list of (x, y, conf) or None per frame
+        s = MagicMock()
+
+        def _sample(center_sec, window_sec, interval_sec, duration_sec):
+            n = len(positions)
+            if n == 1:
+                return [SampledFrame(timestamp_sec=center_sec, jpeg_bytes=FAKE_JPEG)]
+            step = (2 * window_sec) / (n - 1)
+            return [
+                SampledFrame(
+                    timestamp_sec=center_sec - window_sec + i * step,
+                    jpeg_bytes=FAKE_JPEG,
+                )
+                for i in range(n)
+            ]
+        s.sample_range.side_effect = _sample
+
+        model = MagicMock()
+
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+
+        def _result_for(pos):
+            boxes = MagicMock()
+            if pos is None:
+                boxes.cls = _tensor([])
+                boxes.conf = _tensor([])
+                boxes.xywhn = _tensor(np.zeros((0, 4)))
+            else:
+                x, y, conf = pos
+                boxes.cls = _tensor([_COCO_SPORTS_BALL])
+                boxes.conf = _tensor([conf])
+                boxes.xywhn = _tensor(np.array([[x, y, 0.02, 0.02]]))
+            r = MagicMock()
+            r.boxes = boxes
+            return r
+
+        def _call(images, **kwargs):
+            # One result per input frame, in order
+            return [_result_for(p) for p in positions[: len(images)]]
+
+        model.side_effect = _call
+        return s, model
+    return _make
 
 
 def _make_yolo_model(ball_xywhn=None, ball_conf=0.9, person_boxes=()):
@@ -276,6 +328,87 @@ class TestFailOpen:
 # ---------------------------------------------------------------------------
 # Diagnostics output
 # ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+class TestAnyFrameMatches:
+    """Event is kept if ANY sampled frame satisfies the spatial rule.
+
+    This is Option A of the Run #33 post-mortem fix: the landmark moment
+    (ball at touchline / corner / goal line) is fleeting, so a single
+    frame matching is sufficient even if the others show the ball in
+    open play.
+    """
+
+    def test_throw_in_kept_if_any_frame_near_touchline(
+        self, sampler_stub_per_frame_positions
+    ):
+        # Frame 0: midfield; frame 1: midfield; frame 2: ball at touchline.
+        # Old code picked best-confidence ball (all equal here → last wins
+        # by ordering, which is touchline), but this test pins ANY-frame
+        # semantics by putting the touchline moment in a non-last frame.
+        positions = [
+            (0.50, 0.50, 0.80),   # midfield, high conf
+            (0.50, 0.10, 0.40),   # touchline, LOW conf
+            (0.50, 0.50, 0.80),   # midfield, high conf
+        ]
+        sampler, model = sampler_stub_per_frame_positions(positions)
+        g = _make_grounder(sampler, model, n_frames=3)
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert len(out) == 1
+
+    def test_goal_kick_kept_if_any_frame_near_goal_line(
+        self, sampler_stub_per_frame_positions
+    ):
+        positions = [
+            (0.50, 0.50, 0.80),   # midfield
+            (0.08, 0.50, 0.30),   # near left goal line (low conf)
+            (0.60, 0.50, 0.80),   # midfield
+        ]
+        sampler, model = sampler_stub_per_frame_positions(positions)
+        g = _make_grounder(sampler, model, n_frames=3)
+        out = g.filter([_make_event(EventType.GOAL_KICK)])
+        assert len(out) == 1
+
+    def test_throw_in_rejected_if_no_frame_near_touchline(
+        self, sampler_stub_per_frame_positions
+    ):
+        positions = [
+            (0.50, 0.50, 0.80),
+            (0.50, 0.45, 0.70),
+            (0.50, 0.60, 0.70),
+        ]
+        sampler, model = sampler_stub_per_frame_positions(positions)
+        g = _make_grounder(sampler, model, n_frames=3)
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert out == []
+
+
+@pytest.mark.unit
+class TestSpanSampling:
+    """Sampling spans the whole event window, not ±1s around the start."""
+
+    def test_span_sampler_called_with_event_center_and_half_span(self, sampler_stub):
+        model = _make_yolo_model(ball_xywhn=[0.5, 0.10, 0.02, 0.02])
+        g = _make_grounder(sampler_stub, model)
+        # Event: start=100, end=106 → span=6, center=103, half_window=3
+        event = Event(
+            event_id=str(uuid.uuid4()),
+            job_id="j",
+            source_file="m.mp4",
+            event_type=EventType.THROW_IN,
+            timestamp_start=100.0,
+            timestamp_end=106.0,
+            confidence=0.8,
+            reel_targets=[],
+            is_goalkeeper_event=False,
+            frame_start=0,
+            frame_end=180,
+        )
+        g.filter([event])
+        call = sampler_stub.sample_range.call_args
+        assert call.kwargs["center_sec"] == pytest.approx(103.0)
+        assert call.kwargs["window_sec"] == pytest.approx(3.0)
+
 
 @pytest.mark.unit
 class TestDiagnostics:

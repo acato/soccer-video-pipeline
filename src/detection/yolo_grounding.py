@@ -117,7 +117,7 @@ class YoloGrounder:
         inference_size: int = 640,
         use_gpu: bool = True,
         ball_conf_threshold: float = 0.15,
-        n_frames: int = 3,
+        n_frames: int = 5,
         frame_span_sec: float = 2.0,
         fail_open: bool = True,
         diagnostics_path: Optional[Path] = None,
@@ -130,7 +130,9 @@ class YoloGrounder:
         self._use_gpu = use_gpu
         self._ball_conf = ball_conf_threshold
         self._n_frames = max(1, n_frames)
-        self._frame_span_sec = max(0.5, frame_span_sec)
+        # Minimum span fallback when the event's own duration is too short
+        # (e.g. point events with timestamp_end == timestamp_start).
+        self._min_span_sec = max(0.5, frame_span_sec)
         self._fail_open = fail_open
         self._diag_path = diagnostics_path
         self._model = model            # Lazy-loaded via _load() if None
@@ -187,7 +189,7 @@ class YoloGrounder:
     # ── Verification ────────────────────────────────────────────────────
 
     def _verify(self, event: Event) -> GroundingDecision:
-        frames = self._sample_frames(event.timestamp_start)
+        frames = self._sample_event_span(event)
         features = self._extract_features(frames)
 
         # Fail-open: no frames, no ball, or YOLO unavailable → keep.
@@ -220,66 +222,87 @@ class YoloGrounder:
         )
 
     def _verify_throw_in(self, f: SpatialFeatures) -> GroundingDecision:
-        """Ball must be near a touchline (top or bottom of frame)."""
-        y = f.ball_y_norm
-        near_top = y <= _TOUCHLINE_BAND
-        near_bottom = y >= (1.0 - _TOUCHLINE_BAND)
-        if near_top or near_bottom:
-            return GroundingDecision(
-                keep=True, reason="ball_near_touchline", features=f,
-            )
+        """Ball must be near a touchline in ANY sampled frame."""
+        for det in f.ball_detections:
+            y = det.y_norm
+            if y <= _TOUCHLINE_BAND or y >= (1.0 - _TOUCHLINE_BAND):
+                return GroundingDecision(
+                    keep=True,
+                    reason=f"ball_near_touchline_y={y:.2f}_t={det.frame_ts:.1f}",
+                    features=f,
+                )
+        ys = [round(d.y_norm, 2) for d in f.ball_detections]
         return GroundingDecision(
             keep=False,
-            reason=f"ball_not_near_touchline_y={y:.2f}",
+            reason=f"ball_never_near_touchline_ys={ys}",
             features=f,
         )
 
     def _verify_corner_kick(self, f: SpatialFeatures) -> GroundingDecision:
-        """Ball must be near a corner (intersection of touchline + goal line)."""
-        x, y = f.ball_x_norm, f.ball_y_norm
-        in_x_band = x <= _CORNER_X_BAND or x >= (1.0 - _CORNER_X_BAND)
-        in_y_band = y <= _CORNER_Y_BAND or y >= (1.0 - _CORNER_Y_BAND)
-        if in_x_band and in_y_band:
-            return GroundingDecision(
-                keep=True, reason="ball_in_corner_quadrant", features=f,
-            )
+        """Ball must be in a corner quadrant in ANY sampled frame."""
+        for det in f.ball_detections:
+            x, y = det.x_norm, det.y_norm
+            in_x_band = x <= _CORNER_X_BAND or x >= (1.0 - _CORNER_X_BAND)
+            in_y_band = y <= _CORNER_Y_BAND or y >= (1.0 - _CORNER_Y_BAND)
+            if in_x_band and in_y_band:
+                return GroundingDecision(
+                    keep=True,
+                    reason=f"ball_in_corner_x={x:.2f}_y={y:.2f}_t={det.frame_ts:.1f}",
+                    features=f,
+                )
+        positions = [(round(d.x_norm, 2), round(d.y_norm, 2)) for d in f.ball_detections]
         return GroundingDecision(
             keep=False,
-            reason=f"ball_not_in_corner_x={x:.2f}_y={y:.2f}",
+            reason=f"ball_never_in_corner_xys={positions}",
             features=f,
         )
 
     def _verify_goal_kick(self, f: SpatialFeatures) -> GroundingDecision:
-        """Ball must be near a goal line, in the vertical middle of frame."""
-        x, y = f.ball_x_norm, f.ball_y_norm
-        near_left = x <= _GOAL_LINE_BAND
-        near_right = x >= (1.0 - _GOAL_LINE_BAND)
-        vert_ok = _GOAL_LINE_VERT_MIN <= y <= _GOAL_LINE_VERT_MAX
-        if (near_left or near_right) and vert_ok:
-            return GroundingDecision(
-                keep=True, reason="ball_near_goal_line", features=f,
-            )
+        """Ball must be near a goal line (vertical middle) in ANY sampled frame."""
+        for det in f.ball_detections:
+            x, y = det.x_norm, det.y_norm
+            near_left = x <= _GOAL_LINE_BAND
+            near_right = x >= (1.0 - _GOAL_LINE_BAND)
+            vert_ok = _GOAL_LINE_VERT_MIN <= y <= _GOAL_LINE_VERT_MAX
+            if (near_left or near_right) and vert_ok:
+                return GroundingDecision(
+                    keep=True,
+                    reason=f"ball_near_goal_line_x={x:.2f}_y={y:.2f}_t={det.frame_ts:.1f}",
+                    features=f,
+                )
+        positions = [(round(d.x_norm, 2), round(d.y_norm, 2)) for d in f.ball_detections]
         return GroundingDecision(
             keep=False,
-            reason=f"ball_not_near_goal_line_x={x:.2f}_y={y:.2f}",
+            reason=f"ball_never_near_goal_line_xys={positions}",
             features=f,
         )
 
     # ── Frame sampling + YOLO inference ─────────────────────────────────
 
-    def _sample_frames(self, center_sec: float) -> list[SampledFrame]:
-        """Pull n_frames around the event center, spanning frame_span_sec."""
+    def _sample_event_span(self, event: Event) -> list[SampledFrame]:
+        """Pull n_frames spanning the full event window [start, end].
+
+        The landmark for throw_in / corner_kick / goal_kick is momentary —
+        the ball is only at the touchline/corner/goal-line for a fraction
+        of the full event window. Sampling across the entire span (rather
+        than ±1s around a single center) gives the gate a chance to see
+        that moment even when timestamp_start doesn't coincide with it.
+        """
+        start = max(0.0, event.timestamp_start)
+        end = event.timestamp_end if event.timestamp_end > start else start
+        span = max(self._min_span_sec, end - start)
+        center = start + span / 2.0
+        half_window = span / 2.0
         if self._n_frames == 1:
-            interval = 1.0
+            interval = span
         else:
-            interval = self._frame_span_sec / max(1, self._n_frames - 1)
+            interval = span / max(1, self._n_frames - 1)
         frames = self._sampler.sample_range(
-            center_sec=center_sec,
-            window_sec=self._frame_span_sec / 2.0,
+            center_sec=center,
+            window_sec=half_window,
             interval_sec=max(0.2, interval),
             duration_sec=self._video_duration,
         )
-        # Clip to n_frames (sample_range may return more than requested)
         if len(frames) > self._n_frames:
             step = len(frames) / self._n_frames
             indices = [int(i * step) for i in range(self._n_frames)]

@@ -367,7 +367,7 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         swap_script=cfg.DUAL_PASS_SWAP_SCRIPT or "",
         yolo_grounding_enabled=yolo_grounding,
         yolo_grounding_fail_open=_truthy(getattr(cfg, 'YOLO_GROUNDING_FAIL_OPEN', 'true')),
-        yolo_grounding_frames=int(getattr(cfg, 'YOLO_GROUNDING_FRAMES', 3)),
+        yolo_grounding_frames=int(getattr(cfg, 'YOLO_GROUNDING_FRAMES', 5)),
         yolo_grounding_frame_span_sec=float(getattr(cfg, 'YOLO_GROUNDING_FRAME_SPAN_SEC', 2.0)),
         yolo_grounding_inference_size=int(getattr(cfg, 'YOLO_GROUNDING_INFERENCE_SIZE', 640)),
         yolo_grounding_ball_conf=float(getattr(cfg, 'YOLO_GROUNDING_BALL_CONF', 0.15)),

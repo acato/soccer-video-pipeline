@@ -484,7 +484,7 @@ class DualPassConfig:
     # ── YOLO spatial grounding (Run #33 breakthrough) ──────────────────
     yolo_grounding_enabled: bool = False
     yolo_grounding_fail_open: bool = True
-    yolo_grounding_frames: int = 3
+    yolo_grounding_frames: int = 5
     yolo_grounding_frame_span_sec: float = 2.0
     yolo_grounding_inference_size: int = 640
     yolo_grounding_ball_conf: float = 0.15
