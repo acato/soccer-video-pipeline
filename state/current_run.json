@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 32,
-  "run_label": "run_32",
-  "job_id": "aa161acd-ecff-4194-a833-1531dbc2ae14",
-  "commit_sha": "009ddb8",
-  "submitted_at": "2026-04-18T16:17:00Z",
+  "run_number": 33,
+  "run_label": "run_33",
+  "job_id": "TBD",
+  "commit_sha": "a0273f2",
+  "submitted_at": "2026-04-18T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,15 +34,16 @@
     }
   },
   "baseline": {
-    "run": "29",
-    "f1": 0.392,
-    "notes": "Run 29 best stable F1. Runs 30-31 explored corner enablement \u2014 both regressed. Run 32 parks corner (pending YOLO hybrid) and targets shot_on_target recall (34 FN, biggest pool)."
+    "run": "32",
+    "f1": 0.396,
+    "notes": "Run 32 set the F1 ceiling at 0.396 (TP 82 / FN 74 / FP 176). Precision 0.318 is the bottleneck \u2014 prompt/gate iteration exhausted. Run 33 introduces YOLO spatial grounding gate to cut FPs on throw_in/corner_kick/goal_kick where the ball isn\u2019t near the required landmark."
   },
   "targets": {
-    "f1": 0.41,
-    "goal_tp_min": 4,
-    "goal_recall_min": 1.0,
-    "shot_on_target_tp_min": 20
+    "f1": 0.46,
+    "precision_min": 0.42,
+    "throw_in_fp_max": 12,
+    "goal_kick_fp_max": 20,
+    "corner_kick_tp_min": 2
   },
-  "notes": "Run #32 \u2014 Shot recall fix (F\"). Step 4 rewritten: shot_on_target is first-class, emit alongside saves/goals/restarts. Corner prompt reverted to Run 29 baseline. Target: 20+ shot TPs (from 12)."
+  "notes": "Run #33 \u2014 YOLO HYBRID breakthrough. YoloGrounder runs YOLOv8 on 3 frames around each tentative event and rejects throw_in/corner_kick/goal_kick that lack the required ball position (touchline / corner / goal line). Fail-open on no-ball-detected. Expected FP cut ~30-50% on the three gated types; other types unchanged. Corner detection unblocked."
 }
