@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 34,
-  "run_label": "run_34",
-  "job_id": "7058396a-2a25-4141-993e-192f6b65a90e",
-  "commit_sha": "a08d32e",
-  "submitted_at": "2026-04-19T15:37:22Z",
+  "run_number": 35,
+  "run_label": "run_35",
+  "job_id": "TBD",
+  "commit_sha": "e93ad34",
+  "submitted_at": "2026-04-19T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,15 +34,16 @@
     }
   },
   "baseline": {
-    "run": "33",
-    "f1": 0.369,
-    "notes": "Run 33 regressed to F1 0.369 (TP 69 / FN 87 / FP 149) vs Run 32's 0.396. YOLO gate removed 40 events but 13 were TPs \u2014 only 67% precision on gate decisions. Root causes: (1) \u00b11s sampling around timestamp_start missed the fleeting landmark moment; (2) only best-confidence detection was evaluated. Run 34 applies Option A: full-event-span sampling + any-frame rule match."
+    "run": "34",
+    "f1": 0.372,
+    "notes": "Run 34 recovered only +1 TP (F1 0.369→0.372). Diagnostics showed 45% of gated events had no ball detection at all (COCO yolov8m is weak on small distant soccer balls), and many real TPs were rejected just outside the bands (throw_in y=0.25, goal_kick x=0.16–0.17)."
   },
   "targets": {
-    "f1": 0.4,
-    "tp_min": 78,
-    "precision_min": 0.33,
-    "notes": "Recover \u22658 of the 13 TPs lost in Run 33 while keeping most of the 27 FPs dropped. Beating Run 32 (F1 0.396) counts as a breakthrough."
+    "f1": 0.42,
+    "tp_min": 85,
+    "precision_min": 0.35,
+    "ball_detection_rate_min": 0.75,
+    "notes": "Widened bands + soccer-tuned YOLO weight (uisikdag, mAP@0.5=0.785) should lift ball-detection from ~52% to ~80%+ and recover band-edge near-misses. Beating Run 32 (F1 0.396) is the recovery target; breaking 0.42 is breakthrough. Run 35 also collects goalkeeper-position diagnostics for the Run #36 GK-action gate."
   },
-  "notes": "Run #34 \u2014 Option A fix for Run #33 regression. _sample_event_span samples n_frames=5 evenly across [timestamp_start, timestamp_end] instead of \u00b11s around start. Per-type rules now iterate over every ball detection and keep event if ANY frame satisfies the landmark rule (previously: only the best-confidence detection). Backlog B (relax goal_kick vertical band) and C (soccer-ball-tuned detector) deferred."
+  "notes": "Run #35 — band widening + soccer-tuned YOLO (uisikdag/yolo-v8-football-players-detection). _TOUCHLINE_BAND 0.22→0.28, _GOAL_LINE_BAND 0.15→0.20. Swapped YOLO weight from COCO yolov8m to a 4-class soccer model (0=ball, 1=goalkeeper, 2=player, 3=referee); ball_class_id and person/gk_class_ids plumbed through config. GK boxes tracked in diagnostics — data-collection for Run #36 GK-action gate on catch/shot_stop_diving. Backlog B (relax goal_kick vertical band) still deferred."
 }
