@@ -311,13 +311,15 @@ class YoloGrounder:
 
         try:
             # Batched inference — YOLOv8 accepts list of numpy arrays
-            results = model(
-                images,
-                imgsz=self._inference_size,
-                conf=self._ball_conf,
-                verbose=False,
-                device=0 if self._use_gpu else "cpu",
-            )
+            kwargs = {
+                "imgsz": self._inference_size,
+                "conf": self._ball_conf,
+                "verbose": False,
+            }
+            if not self._use_gpu:
+                kwargs["device"] = "cpu"
+            # else: let ultralytics auto-select (cuda on Linux, mps on Mac)
+            results = model(images, **kwargs)
         except Exception as exc:      # pragma: no cover
             log.warning("yolo_grounding.inference_error", error=str(exc))
             return feats
