@@ -223,6 +223,18 @@ YOLO_GROUNDING_INFERENCE_SIZE: int = _int("YOLO_GROUNDING_INFERENCE_SIZE", 640)
 YOLO_GROUNDING_BALL_CONF: float = _float("YOLO_GROUNDING_BALL_CONF", 0.15)
 """Minimum YOLO confidence to accept a ball detection."""
 
+YOLO_BALL_CLASS_ID: int = _int("YOLO_BALL_CLASS_ID", 32)
+"""Class index of 'ball' in the YOLO model. COCO default is 32 (sports_ball);
+soccer-tuned models (e.g. uisikdag/yolo-v8-football-players-detection) use 0."""
+
+YOLO_PERSON_CLASS_IDS: str = _opt("YOLO_PERSON_CLASS_IDS", "0")
+"""Comma-separated class indices counted as persons. COCO default: '0'.
+Soccer-tuned models: '1,2,3' (goalkeeper, player, referee)."""
+
+YOLO_GK_CLASS_IDS: str = _opt("YOLO_GK_CLASS_IDS", "")
+"""Comma-separated class indices for goalkeeper-specific tracking. Empty by
+default. Soccer-tuned models set '1'. Tracked for the Run #36 GK-action gate."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -365,6 +377,9 @@ class _Config:
             "YOLO_GROUNDING_FRAME_SPAN_SEC": ("YOLO_GROUNDING_FRAME_SPAN_SEC", "2.0"),
             "YOLO_GROUNDING_INFERENCE_SIZE": ("YOLO_GROUNDING_INFERENCE_SIZE", "640"),
             "YOLO_GROUNDING_BALL_CONF": ("YOLO_GROUNDING_BALL_CONF", "0.15"),
+            "YOLO_BALL_CLASS_ID": ("YOLO_BALL_CLASS_ID", "32"),
+            "YOLO_PERSON_CLASS_IDS": ("YOLO_PERSON_CLASS_IDS", "0"),
+            "YOLO_GK_CLASS_IDS": ("YOLO_GK_CLASS_IDS", ""),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

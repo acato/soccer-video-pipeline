@@ -35,7 +35,11 @@ from src.detection.models import Event, EventType
 log = structlog.get_logger(__name__)
 
 
-# COCO class IDs (YOLOv8 default model)
+# COCO class IDs (YOLOv8 default model). These are the defaults when no
+# custom class IDs are configured. Soccer-tuned detectors typically use a
+# different schema (e.g. uisikdag/yolo-v8-football-players-detection uses
+# 0=ball, 1=goalkeeper, 2=player, 3=referee), so class IDs are passed
+# into YoloGrounder at construction time.
 _COCO_PERSON = 0
 _COCO_SPORTS_BALL = 32
 
@@ -51,8 +55,12 @@ _GATED_TYPES: frozenset[EventType] = frozenset({
 # Spatial thresholds in normalized frame coords (0..1). These assume a
 # typical sideline-camera POV where the touchlines are the top/bottom edges
 # of the frame and the goal lines are the left/right edges.
-_TOUCHLINE_BAND = 0.22           # throw_in: within 22% of top or bottom
-_GOAL_LINE_BAND = 0.15           # goal_kick: within 15% of left or right
+#
+# Band widths were widened after the Run #34 post-mortem: many true-positive
+# rejections clustered just outside the Run #33 bands (throw_in ys at 0.25,
+# goal_kick xs at 0.16–0.17 — within a few percent of the previous cutoffs).
+_TOUCHLINE_BAND = 0.28           # throw_in: within 28% of top or bottom
+_GOAL_LINE_BAND = 0.20           # goal_kick: within 20% of left or right
 _GOAL_LINE_VERT_MIN = 0.25       # goal_kick: vertical middle 50% only
 _GOAL_LINE_VERT_MAX = 0.75       # (excludes the field corners)
 _CORNER_X_BAND = 0.25            # corner_kick: within 25% of left or right
@@ -69,6 +77,15 @@ class BallDetection:
 
 
 @dataclass
+class GoalkeeperDetection:
+    """A single YOLO goalkeeper detection (soccer-tuned models only)."""
+    x_norm: float
+    y_norm: float
+    confidence: float
+    frame_ts: float
+
+
+@dataclass
 class SpatialFeatures:
     """Aggregated spatial signals across the sampled frames."""
     n_frames: int = 0
@@ -78,6 +95,10 @@ class SpatialFeatures:
     ball_confidence: float = 0.0
     ball_detections: list[BallDetection] = field(default_factory=list)
     person_count_max: int = 0                # Max persons in any single frame
+    # Goalkeeper data (populated only when gk_class_ids is configured;
+    # empty for COCO-class setups). Collected for the Run #36 GK-action
+    # gate design.
+    gk_detections: list[GoalkeeperDetection] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +109,12 @@ class SpatialFeatures:
             "ball_confidence": self.ball_confidence,
             "person_count_max": self.person_count_max,
             "n_ball_detections": len(self.ball_detections),
+            "n_gk_detections": len(self.gk_detections),
+            "gk_positions": [
+                {"x": round(g.x_norm, 3), "y": round(g.y_norm, 3),
+                 "conf": round(g.confidence, 3), "t": round(g.frame_ts, 1)}
+                for g in self.gk_detections
+            ],
         }
 
 
@@ -122,6 +149,9 @@ class YoloGrounder:
         fail_open: bool = True,
         diagnostics_path: Optional[Path] = None,
         model: Optional[object] = None,  # Injected YOLO model (tests)
+        ball_class_id: int = _COCO_SPORTS_BALL,
+        person_class_ids: tuple[int, ...] = (_COCO_PERSON,),
+        gk_class_ids: tuple[int, ...] = (),
     ):
         self._sampler = sampler
         self._video_duration = video_duration
@@ -130,6 +160,12 @@ class YoloGrounder:
         self._use_gpu = use_gpu
         self._ball_conf = ball_conf_threshold
         self._n_frames = max(1, n_frames)
+        self._ball_class_id = int(ball_class_id)
+        self._person_class_ids = frozenset(int(c) for c in person_class_ids)
+        # Goalkeeper class ids are also typically a subset of person_class_ids;
+        # they are tracked separately for diagnostics and the future GK-action
+        # gate (Run #36).
+        self._gk_class_ids = frozenset(int(c) for c in gk_class_ids)
         # Minimum span fallback when the event's own duration is too short
         # (e.g. point events with timestamp_end == timestamp_start).
         self._min_span_sec = max(0.5, frame_span_sec)
@@ -364,9 +400,8 @@ class YoloGrounder:
 
             n_person = 0
             for cls, conf, xywh in zip(classes, confs, xywhn):
-                if int(cls) == _COCO_PERSON:
-                    n_person += 1
-                elif int(cls) == _COCO_SPORTS_BALL:
+                cls_int = int(cls)
+                if cls_int == self._ball_class_id:
                     detection = BallDetection(
                         x_norm=float(xywh[0]),
                         y_norm=float(xywh[1]),
@@ -376,6 +411,15 @@ class YoloGrounder:
                     feats.ball_detections.append(detection)
                     if best is None or detection.confidence > best.confidence:
                         best = detection
+                if cls_int in self._gk_class_ids:
+                    feats.gk_detections.append(GoalkeeperDetection(
+                        x_norm=float(xywh[0]),
+                        y_norm=float(xywh[1]),
+                        confidence=float(conf),
+                        frame_ts=frame.timestamp_sec,
+                    ))
+                if cls_int in self._person_class_ids:
+                    n_person += 1
             if n_person > person_max:
                 person_max = n_person
 

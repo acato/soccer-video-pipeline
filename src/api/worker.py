@@ -351,6 +351,11 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
     single_pass = str(getattr(cfg, 'SINGLE_PASS_32B', 'false')).lower() in ("1", "true", "yes")
 
     _truthy = lambda v: str(v).lower() in ("1", "true", "yes")
+    def _parse_int_csv(v) -> tuple[int, ...]:
+        s = str(v or "").strip()
+        if not s:
+            return ()
+        return tuple(int(x) for x in s.split(",") if x.strip())
     yolo_grounding = _truthy(getattr(cfg, 'YOLO_GROUNDING_ENABLED', 'false'))
 
     dp_config = DualPassConfig(
@@ -373,6 +378,9 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         yolo_grounding_ball_conf=float(getattr(cfg, 'YOLO_GROUNDING_BALL_CONF', 0.15)),
         yolo_model_path=str(getattr(cfg, 'YOLO_MODEL_PATH', '')),
         yolo_use_gpu=_truthy(getattr(cfg, 'USE_GPU', 'false')),
+        yolo_ball_class_id=int(getattr(cfg, 'YOLO_BALL_CLASS_ID', 32)),
+        yolo_person_class_ids=_parse_int_csv(getattr(cfg, 'YOLO_PERSON_CLASS_IDS', '0')),
+        yolo_gk_class_ids=_parse_int_csv(getattr(cfg, 'YOLO_GK_CLASS_IDS', '')),
     )
 
     detector = DualPassDetector(

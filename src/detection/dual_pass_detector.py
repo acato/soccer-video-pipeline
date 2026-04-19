@@ -490,6 +490,14 @@ class DualPassConfig:
     yolo_grounding_ball_conf: float = 0.15
     yolo_model_path: str = ""              # Path to YOLOv8 weights
     yolo_use_gpu: bool = True
+    # Class IDs — default to COCO (generic sports_ball=32, person=0).
+    # For soccer-tuned weights like uisikdag/yolo-v8-football-players-detection
+    # set ball_class_id=0 and person_class_ids=(1,2,3) (goalkeeper, player,
+    # referee), and gk_class_ids=(1,) so GK boxes are tracked for the Run #36
+    # goalkeeper-action gate.
+    yolo_ball_class_id: int = 32
+    yolo_person_class_ids: tuple[int, ...] = (0,)
+    yolo_gk_class_ids: tuple[int, ...] = ()
 
 
 class DualPassDetector:
@@ -1330,6 +1338,9 @@ class DualPassDetector:
             frame_span_sec=self._cfg.yolo_grounding_frame_span_sec,
             fail_open=self._cfg.yolo_grounding_fail_open,
             diagnostics_path=diag_path,
+            ball_class_id=self._cfg.yolo_ball_class_id,
+            person_class_ids=self._cfg.yolo_person_class_ids,
+            gk_class_ids=self._cfg.yolo_gk_class_ids,
         )
         try:
             return grounder.filter(events)

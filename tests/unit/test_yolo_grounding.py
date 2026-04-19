@@ -411,6 +411,101 @@ class TestSpanSampling:
 
 
 @pytest.mark.unit
+class TestCustomClassIds:
+    """Soccer-tuned models use ball=0 and dedicated goalkeeper class."""
+
+    def _soccer_model(self, *, ball_xy, gk_xy=None):
+        """Build a fake YOLO result where ball=class 0 and gk=class 1."""
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+        boxes = MagicMock()
+        cls_list, conf_list, xywhn_list = [0], [0.9], [list(ball_xy)]
+        if gk_xy is not None:
+            cls_list.append(1)
+            conf_list.append(0.8)
+            xywhn_list.append(list(gk_xy))
+        boxes.cls = _tensor(cls_list)
+        boxes.conf = _tensor(conf_list)
+        boxes.xywhn = _tensor(np.array(xywhn_list))
+        r = MagicMock()
+        r.boxes = boxes
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [r for _ in images]
+        return model
+
+    def test_ball_at_class_id_zero_detected(self, sampler_stub):
+        # Ball near top touchline, at class ID 0 (soccer model schema).
+        model = self._soccer_model(ball_xy=[0.5, 0.10, 0.02, 0.02])
+        g = _make_grounder(
+            sampler_stub, model,
+            ball_class_id=0,
+            person_class_ids=(1, 2, 3),
+        )
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert len(out) == 1
+
+    def test_ball_at_coco_id_ignored_when_class_overridden(self, sampler_stub):
+        # COCO sports_ball=32 at touchline, but we only accept class 0.
+        # Without a class-0 detection, gate sees no ball → fail-open keeps.
+        model = _make_yolo_model(ball_xywhn=[0.5, 0.10, 0.02, 0.02])
+        g = _make_grounder(
+            sampler_stub, model,
+            ball_class_id=0,  # Reject COCO schema
+            person_class_ids=(1, 2, 3),
+            fail_open=False,  # Prove the ball was NOT picked up
+        )
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert out == []
+
+    def test_gk_detections_captured_when_gk_class_configured(
+        self, sampler_stub, tmp_path
+    ):
+        import json
+        model = self._soccer_model(
+            ball_xy=[0.5, 0.10, 0.02, 0.02],
+            gk_xy=[0.9, 0.5, 0.05, 0.12],
+        )
+        g = _make_grounder(
+            sampler_stub, model, tmp_path=tmp_path,
+            ball_class_id=0,
+            person_class_ids=(1, 2, 3),
+            gk_class_ids=(1,),
+        )
+        g.filter([_make_event(EventType.THROW_IN)])
+        g.close()
+        recs = [
+            json.loads(l)
+            for l in (tmp_path / "yolo_grounding.jsonl").read_text().splitlines()
+        ]
+        assert recs[0]["features"]["n_gk_detections"] > 0
+        assert recs[0]["features"]["gk_positions"][0]["x"] == pytest.approx(0.9)
+
+    def test_gk_detections_empty_when_gk_class_not_configured(
+        self, sampler_stub, tmp_path
+    ):
+        import json
+        model = self._soccer_model(
+            ball_xy=[0.5, 0.10, 0.02, 0.02],
+            gk_xy=[0.9, 0.5, 0.05, 0.12],
+        )
+        g = _make_grounder(
+            sampler_stub, model, tmp_path=tmp_path,
+            ball_class_id=0,
+            person_class_ids=(1, 2, 3),
+            # gk_class_ids left at default () — no GK tracking
+        )
+        g.filter([_make_event(EventType.THROW_IN)])
+        g.close()
+        recs = [
+            json.loads(l)
+            for l in (tmp_path / "yolo_grounding.jsonl").read_text().splitlines()
+        ]
+        assert recs[0]["features"]["n_gk_detections"] == 0
+
+
+@pytest.mark.unit
 class TestDiagnostics:
 
     def test_writes_per_event_record(self, sampler_stub, tmp_path):
