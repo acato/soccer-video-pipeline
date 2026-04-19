@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 35,
   "run_label": "run_35",
-  "job_id": "TBD",
+  "job_id": "bca58f65-7186-4a75-85dc-b9dab2220cdd",
   "commit_sha": "e93ad34",
-  "submitted_at": "2026-04-19T00:00:00Z",
+  "submitted_at": "2026-04-19T19:32:37Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,7 +36,7 @@
   "baseline": {
     "run": "34",
     "f1": 0.372,
-    "notes": "Run 34 recovered only +1 TP (F1 0.369→0.372). Diagnostics showed 45% of gated events had no ball detection at all (COCO yolov8m is weak on small distant soccer balls), and many real TPs were rejected just outside the bands (throw_in y=0.25, goal_kick x=0.16–0.17)."
+    "notes": "Run 34 recovered only +1 TP (F1 0.369\u21920.372). Diagnostics showed 45% of gated events had no ball detection at all (COCO yolov8m is weak on small distant soccer balls), and many real TPs were rejected just outside the bands (throw_in y=0.25, goal_kick x=0.16\u20130.17)."
   },
   "targets": {
     "f1": 0.42,
@@ -45,5 +45,5 @@
     "ball_detection_rate_min": 0.75,
     "notes": "Widened bands + soccer-tuned YOLO weight (uisikdag, mAP@0.5=0.785) should lift ball-detection from ~52% to ~80%+ and recover band-edge near-misses. Beating Run 32 (F1 0.396) is the recovery target; breaking 0.42 is breakthrough. Run 35 also collects goalkeeper-position diagnostics for the Run #36 GK-action gate."
   },
-  "notes": "Run #35 — band widening + soccer-tuned YOLO (uisikdag/yolo-v8-football-players-detection). _TOUCHLINE_BAND 0.22→0.28, _GOAL_LINE_BAND 0.15→0.20. Swapped YOLO weight from COCO yolov8m to a 4-class soccer model (0=ball, 1=goalkeeper, 2=player, 3=referee); ball_class_id and person/gk_class_ids plumbed through config. GK boxes tracked in diagnostics — data-collection for Run #36 GK-action gate on catch/shot_stop_diving. Backlog B (relax goal_kick vertical band) still deferred."
+  "notes": "Run #35 \u2014 band widening + soccer-tuned YOLO (uisikdag/yolo-v8-football-players-detection). _TOUCHLINE_BAND 0.22\u21920.28, _GOAL_LINE_BAND 0.15\u21920.20. Swapped YOLO weight from COCO yolov8m to a 4-class soccer model (0=ball, 1=goalkeeper, 2=player, 3=referee); ball_class_id and person/gk_class_ids plumbed through config. GK boxes tracked in diagnostics \u2014 data-collection for Run #36 GK-action gate on catch/shot_stop_diving. Backlog B (relax goal_kick vertical band) still deferred."
 }
