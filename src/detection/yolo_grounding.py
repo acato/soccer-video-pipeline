@@ -23,7 +23,9 @@ a spatial contradiction. This preserves recall while cutting FPs.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -99,6 +101,51 @@ class GoalkeeperDetection:
     frame_ts: float
 
 
+class TrajectorySignature(str, Enum):
+    """Classification of ball motion around a GK event (Run #37).
+
+    PARRY:       direction reverses sharply — GK deflected ball away.
+    CATCH:       ball decelerates to near-zero post-contact — GK held ball.
+    DEFLECTION:  moderate direction change — ball touched but not stopped.
+    MISSED:      ball continues uninterrupted — no save actually happened.
+    INSUFFICIENT_DATA: not enough ball positions to fit a trajectory.
+    """
+    PARRY = "parry"
+    CATCH = "catch"
+    DEFLECTION = "deflection"
+    MISSED = "missed"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+@dataclass
+class TrajectoryMetadata:
+    """Numeric signals behind a TrajectorySignature decision."""
+    n_positions: int = 0
+    pre_speed: float = 0.0            # Normalized per-second
+    post_speed: float = 0.0
+    speed_ratio: float = 1.0          # post / pre
+    angle_deg: float = 0.0            # Between pre and post velocity vectors
+    contact_frame_ts: Optional[float] = None
+    min_ball_gk_distance: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "n_positions": self.n_positions,
+            "pre_speed": round(self.pre_speed, 4),
+            "post_speed": round(self.post_speed, 4),
+            "speed_ratio": round(self.speed_ratio, 3),
+            "angle_deg": round(self.angle_deg, 1),
+            "contact_frame_ts": (
+                round(self.contact_frame_ts, 1)
+                if self.contact_frame_ts is not None else None
+            ),
+            "min_ball_gk_distance": (
+                round(self.min_ball_gk_distance, 3)
+                if self.min_ball_gk_distance is not None else None
+            ),
+        }
+
+
 @dataclass
 class SpatialFeatures:
     """Aggregated spatial signals across the sampled frames."""
@@ -113,6 +160,9 @@ class SpatialFeatures:
     # empty for COCO-class setups). Collected for the Run #36 GK-action
     # gate design.
     gk_detections: list[GoalkeeperDetection] = field(default_factory=list)
+    # Trajectory signature (Run #37). Only computed for GK events.
+    trajectory_signature: Optional[TrajectorySignature] = None
+    trajectory_metadata: Optional[TrajectoryMetadata] = None
 
     def to_dict(self) -> dict:
         return {
@@ -129,6 +179,14 @@ class SpatialFeatures:
                  "conf": round(g.confidence, 3), "t": round(g.frame_ts, 1)}
                 for g in self.gk_detections
             ],
+            "trajectory_signature": (
+                self.trajectory_signature.value
+                if self.trajectory_signature else None
+            ),
+            "trajectory_metadata": (
+                self.trajectory_metadata.to_dict()
+                if self.trajectory_metadata else None
+            ),
         }
 
 
@@ -138,6 +196,31 @@ class GroundingDecision:
     keep: bool
     reason: str
     features: SpatialFeatures
+
+
+def _avg_velocity(
+    points: list[BallDetection],
+) -> tuple[float, float, float]:
+    """Average per-second velocity vector across consecutive ball points.
+
+    Returns (vx, vy, speed). vx/vy are normalized-coords per second; speed
+    is the vector magnitude. Zero for single-point input.
+    """
+    if len(points) < 2:
+        return 0.0, 0.0, 0.0
+    vxs: list[float] = []
+    vys: list[float] = []
+    for i in range(1, len(points)):
+        dt = points[i].frame_ts - points[i - 1].frame_ts
+        if dt <= 1e-6:
+            continue
+        vxs.append((points[i].x_norm - points[i - 1].x_norm) / dt)
+        vys.append((points[i].y_norm - points[i - 1].y_norm) / dt)
+    if not vxs:
+        return 0.0, 0.0, 0.0
+    vx = sum(vxs) / len(vxs)
+    vy = sum(vys) / len(vys)
+    return vx, vy, math.hypot(vx, vy)
 
 
 class YoloGrounder:
@@ -170,6 +253,11 @@ class YoloGrounder:
         gk_n_frames: Optional[int] = None,
         gk_min_span_sec: Optional[float] = None,
         gk_inference_size: Optional[int] = None,
+        trajectory_enabled: bool = True,
+        parry_angle_threshold: float = 90.0,
+        deflection_angle_threshold: float = 30.0,
+        catch_speed_ratio_threshold: float = 0.3,
+        missed_speed_ratio_threshold: float = 0.8,
     ):
         self._sampler = sampler
         self._video_duration = video_duration
@@ -202,6 +290,14 @@ class YoloGrounder:
         self._gk_inference_size = (
             int(gk_inference_size) if gk_inference_size else self._inference_size
         )
+        # Trajectory classifier (Run #37) — only used for GK events, fills
+        # in the "does the ball actually interact with GK?" signal that the
+        # 2D proximity gate can't answer.
+        self._trajectory_enabled = bool(trajectory_enabled)
+        self._parry_angle_threshold = float(parry_angle_threshold)
+        self._deflection_angle_threshold = float(deflection_angle_threshold)
+        self._catch_speed_ratio_threshold = float(catch_speed_ratio_threshold)
+        self._missed_speed_ratio_threshold = float(missed_speed_ratio_threshold)
         self._diag_path = diagnostics_path
         self._model = model            # Lazy-loaded via _load() if None
         self._model_load_failed = False
@@ -327,6 +423,105 @@ class YoloGrounder:
             features=f,
         )
 
+    def _compute_trajectory_signature(
+        self, f: SpatialFeatures,
+    ) -> tuple[TrajectorySignature, TrajectoryMetadata]:
+        """Classify ball motion around the GK contact moment.
+
+        Sorts ball detections by time, finds the frame where the ball was
+        nearest any goalkeeper (the "contact" frame), and compares average
+        pre-contact vs post-contact velocity vectors:
+
+          - large direction change → parry
+          - sharp speed drop       → catch
+          - mild direction change  → deflection
+          - no change              → missed (ball continued untouched)
+
+        When a GK is never co-observed with the ball, the trajectory is
+        split at its midpoint so we can still detect "ball passed through
+        the sampled region unchanged" as evidence of a hallucinated save.
+        """
+        meta = TrajectoryMetadata(n_positions=len(f.ball_detections))
+        if len(f.ball_detections) < 3:
+            return TrajectorySignature.INSUFFICIENT_DATA, meta
+
+        balls = sorted(f.ball_detections, key=lambda b: b.frame_ts)
+        meta.n_positions = len(balls)
+
+        # Find contact frame: index of the ball detection whose timestamp
+        # has a GK co-observed and whose ball-GK distance is minimum. Falls
+        # back to midpoint if no co-observation.
+        contact_idx = -1
+        if f.gk_detections:
+            gk_by_ts: dict[float, list[GoalkeeperDetection]] = {}
+            for g in f.gk_detections:
+                gk_by_ts.setdefault(round(g.frame_ts, 2), []).append(g)
+            best_dist = float("inf")
+            for i, b in enumerate(balls):
+                ts = round(b.frame_ts, 2)
+                if ts not in gk_by_ts:
+                    continue
+                for g in gk_by_ts[ts]:
+                    d = math.hypot(b.x_norm - g.x_norm, b.y_norm - g.y_norm)
+                    if d < best_dist:
+                        best_dist = d
+                        contact_idx = i
+                        meta.contact_frame_ts = b.frame_ts
+                        meta.min_ball_gk_distance = d
+        if contact_idx < 0:
+            # No co-observed frame; split at midpoint to still detect
+            # "ball moved through unchanged" (MISSED signature).
+            contact_idx = len(balls) // 2
+
+        # Need at least 2 points on each side of the split for velocity.
+        if contact_idx < 1 or contact_idx >= len(balls) - 1:
+            # Adjust inward; if still not enough, give up.
+            contact_idx = max(1, min(contact_idx, len(balls) - 2))
+            if contact_idx < 1 or contact_idx >= len(balls) - 1:
+                return TrajectorySignature.INSUFFICIENT_DATA, meta
+
+        pre = balls[: contact_idx + 1]
+        post = balls[contact_idx:]
+        if len(pre) < 2 or len(post) < 2:
+            return TrajectorySignature.INSUFFICIENT_DATA, meta
+
+        pre_vx, pre_vy, pre_speed = _avg_velocity(pre)
+        post_vx, post_vy, post_speed = _avg_velocity(post)
+        meta.pre_speed = pre_speed
+        meta.post_speed = post_speed
+        meta.speed_ratio = (post_speed / pre_speed) if pre_speed > 1e-6 else 1.0
+
+        # If the ball barely moved in either segment the trajectory has
+        # nothing to say (ball lying on the ground, GK holding it before
+        # the event window, etc.). Don't claim MISSED from absence of
+        # motion — let the proximity gate decide.
+        _MIN_MOTION = 0.01  # normalized units per second
+        if max(pre_speed, post_speed) < _MIN_MOTION:
+            return TrajectorySignature.INSUFFICIENT_DATA, meta
+
+        # Angle between vectors in degrees. If either vector has ~zero
+        # magnitude, the ball is essentially stationary on that side.
+        if pre_speed < 1e-6 or post_speed < 1e-6:
+            meta.angle_deg = 0.0
+        else:
+            cos = (pre_vx * post_vx + pre_vy * post_vy) / (pre_speed * post_speed)
+            cos = max(-1.0, min(1.0, cos))
+            meta.angle_deg = math.degrees(math.acos(cos))
+
+        # Classify. Order matters — parry (sharp angle change) takes
+        # priority over catch; catch before deflection; missed is the
+        # default for "nothing changed".
+        if meta.angle_deg >= self._parry_angle_threshold:
+            return TrajectorySignature.PARRY, meta
+        if meta.speed_ratio <= self._catch_speed_ratio_threshold:
+            return TrajectorySignature.CATCH, meta
+        if meta.angle_deg >= self._deflection_angle_threshold:
+            return TrajectorySignature.DEFLECTION, meta
+        if meta.speed_ratio >= self._missed_speed_ratio_threshold:
+            return TrajectorySignature.MISSED, meta
+        # Ambiguous middle ground — treat as deflection (keep, less certain).
+        return TrajectorySignature.DEFLECTION, meta
+
     def _verify_gk_action(self, f: SpatialFeatures) -> GroundingDecision:
         """Require ball to be close to a goalkeeper in at least one frame.
 
@@ -339,13 +534,45 @@ class YoloGrounder:
             threshold → REJECT (active evidence they weren't interacting).
 
         Multiple GKs per frame are handled by taking the minimum distance.
+
+        Trajectory layer (Run #37): if enabled, the ball's pre/post-contact
+        motion is classified into PARRY / CATCH / DEFLECTION / MISSED. A
+        strong MISSED signature overrides a proximity-keep decision —
+        suggesting the ball passed through untouched despite being "near"
+        the GK in 2D. Other signatures tag the event for reel quality.
         """
+        # Always attempt trajectory classification first — the result is
+        # attached to features.trajectory_signature for diagnostics even
+        # when it doesn't flip the proximity decision.
+        if self._trajectory_enabled:
+            sig, tmeta = self._compute_trajectory_signature(f)
+            f.trajectory_signature = sig
+            f.trajectory_metadata = tmeta
+
+        # Proximity branch (Run #36 / #36b semantics), with the trajectory
+        # signature factored in.
         if not f.gk_detections:
+            # Without GK we can't do proximity. But trajectory alone can
+            # still tell us the ball passed through unchanged (MISSED).
+            if (
+                self._trajectory_enabled
+                and f.trajectory_signature == TrajectorySignature.MISSED
+            ):
+                return GroundingDecision(
+                    keep=False,
+                    reason=(
+                        f"trajectory_missed_no_gk_"
+                        f"angle={f.trajectory_metadata.angle_deg:.1f}_"
+                        f"ratio={f.trajectory_metadata.speed_ratio:.2f}"
+                    ),
+                    features=f,
+                )
             return GroundingDecision(
                 keep=True,
                 reason="no_gk_detected_fail_open",
                 features=f,
             )
+
         # Group by frame timestamp (rounded to avoid float-equality issues)
         from collections import defaultdict
         ball_by_ts: dict[float, list[BallDetection]] = defaultdict(list)
@@ -357,6 +584,19 @@ class YoloGrounder:
 
         common_ts = sorted(set(ball_by_ts) & set(gk_by_ts))
         if not common_ts:
+            if (
+                self._trajectory_enabled
+                and f.trajectory_signature == TrajectorySignature.MISSED
+            ):
+                return GroundingDecision(
+                    keep=False,
+                    reason=(
+                        f"trajectory_missed_no_covis_"
+                        f"angle={f.trajectory_metadata.angle_deg:.1f}_"
+                        f"ratio={f.trajectory_metadata.speed_ratio:.2f}"
+                    ),
+                    features=f,
+                )
             return GroundingDecision(
                 keep=True,
                 reason="no_frame_with_both_ball_and_gk_fail_open",
@@ -375,10 +615,34 @@ class YoloGrounder:
                         best_distance = dist
                         best_ts = ts
 
-        if best_distance <= self._gk_proximity_threshold:
+        proximity_keep = best_distance <= self._gk_proximity_threshold
+
+        # Trajectory override: ball co-observed near GK but passes through
+        # unchanged → still a hallucinated save.
+        if (
+            proximity_keep
+            and self._trajectory_enabled
+            and f.trajectory_signature == TrajectorySignature.MISSED
+        ):
+            return GroundingDecision(
+                keep=False,
+                reason=(
+                    f"trajectory_missed_overrides_proximity_"
+                    f"dist={best_distance:.3f}_"
+                    f"angle={f.trajectory_metadata.angle_deg:.1f}_"
+                    f"ratio={f.trajectory_metadata.speed_ratio:.2f}"
+                ),
+                features=f,
+            )
+
+        if proximity_keep:
+            sig_str = (
+                f.trajectory_signature.value
+                if f.trajectory_signature else "n/a"
+            )
             return GroundingDecision(
                 keep=True,
-                reason=f"ball_near_gk_dist={best_distance:.3f}_t={best_ts:.1f}",
+                reason=f"ball_near_gk_dist={best_distance:.3f}_t={best_ts:.1f}_sig={sig_str}",
                 features=f,
             )
         return GroundingDecision(

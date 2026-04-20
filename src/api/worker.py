@@ -385,6 +385,11 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         yolo_gk_frames=int(getattr(cfg, 'YOLO_GK_FRAMES', 10)),
         yolo_gk_min_span_sec=float(getattr(cfg, 'YOLO_GK_MIN_SPAN_SEC', 6.0)),
         yolo_gk_inference_size=int(getattr(cfg, 'YOLO_GK_INFERENCE_SIZE', 1280)),
+        yolo_trajectory_enabled=_truthy(getattr(cfg, 'YOLO_TRAJECTORY_ENABLED', 'true')),
+        yolo_parry_angle_threshold=float(getattr(cfg, 'YOLO_PARRY_ANGLE_THRESHOLD', 90.0)),
+        yolo_deflection_angle_threshold=float(getattr(cfg, 'YOLO_DEFLECTION_ANGLE_THRESHOLD', 30.0)),
+        yolo_catch_speed_ratio_threshold=float(getattr(cfg, 'YOLO_CATCH_SPEED_RATIO_THRESHOLD', 0.3)),
+        yolo_missed_speed_ratio_threshold=float(getattr(cfg, 'YOLO_MISSED_SPEED_RATIO_THRESHOLD', 0.8)),
     )
 
     detector = DualPassDetector(

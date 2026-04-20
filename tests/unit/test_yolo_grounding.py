@@ -18,6 +18,7 @@ from src.detection.models import Event, EventType
 from src.detection.yolo_grounding import (
     _COCO_PERSON,
     _COCO_SPORTS_BALL,
+    TrajectorySignature,
     YoloGrounder,
 )
 
@@ -723,6 +724,188 @@ class TestGkSpecificSampling:
         g.filter([_make_event(EventType.GOAL_KICK, t=100.0)])
         assert captured["calls"][0]["window_sec"] == pytest.approx(1.5)
         assert model_captured["imgsz"][0] == 640
+
+
+@pytest.mark.unit
+class TestTrajectorySignature:
+    """Run #37: ball motion pre/post GK contact classifies the save type."""
+
+    def _sampler_with_timed_frames(self, n, interval=0.5):
+        """Returns a sampler that produces n frames at fixed intervals."""
+        s = MagicMock()
+
+        def _sample(center_sec, window_sec, interval_sec, duration_sec):
+            return [
+                SampledFrame(
+                    timestamp_sec=center_sec - window_sec + i * interval,
+                    jpeg_bytes=FAKE_JPEG,
+                )
+                for i in range(n)
+            ]
+        s.sample_range.side_effect = _sample
+        return s
+
+    def _model_per_frame(self, positions_by_frame):
+        """positions_by_frame: list[list[(cls,x,y,conf)]] — one per frame."""
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+
+        def _result_for(boxes_list):
+            boxes = MagicMock()
+            if not boxes_list:
+                boxes.cls = _tensor([])
+                boxes.conf = _tensor([])
+                boxes.xywhn = _tensor(np.zeros((0, 4)))
+            else:
+                boxes.cls = _tensor([b[0] for b in boxes_list])
+                boxes.conf = _tensor([b[3] for b in boxes_list])
+                boxes.xywhn = _tensor(
+                    np.array([[b[1], b[2], 0.05, 0.05] for b in boxes_list])
+                )
+            r = MagicMock()
+            r.boxes = boxes
+            return r
+
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [
+            _result_for(positions_by_frame[i]) for i in range(len(images))
+        ]
+        return model
+
+    def _gk_grounder(self, sampler, model, **extra):
+        # Trajectory tests feed 5 positions per event; make sure all 5 reach
+        # the model by setting n_frames=5 (default is 3, which would clip).
+        defaults = dict(
+            ball_class_id=0, person_class_ids=(1, 2, 3), gk_class_ids=(1,),
+            n_frames=5,
+        )
+        defaults.update(extra)
+        return _make_grounder(sampler, model, **defaults)
+
+    def test_parry_signature_keeps_and_tags(self):
+        # 5 frames, GK at (0.9, 0.5). Ball approaches GK from left, then
+        # reverses back to left after contact — sharp direction change.
+        sampler = self._sampler_with_timed_frames(5)
+        positions = [
+            [(0, 0.50, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.70, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.88, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # contact
+            [(0, 0.70, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # reversed
+            [(0, 0.50, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+        ]
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.SHOT_STOP_DIVING)])
+        assert len(out) == 1  # kept
+        # Can't directly read the signature from the output Event, but we
+        # can open the diag file or inspect via the grounder's last call.
+
+    def test_catch_signature_keeps(self):
+        # Ball flies in, then stops near GK (speed ratio << 0.3).
+        sampler = self._sampler_with_timed_frames(5)
+        positions = [
+            [(0, 0.30, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.50, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.88, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # contact
+            [(0, 0.89, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # held
+            [(0, 0.89, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+        ]
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1
+
+    def test_missed_signature_rejects_despite_proximity(self):
+        # Ball flies through the GK location at constant speed — no touch.
+        # Proximity would keep (ball is near GK at contact frame) but
+        # trajectory MISSED should override and REJECT.
+        sampler = self._sampler_with_timed_frames(5)
+        positions = [
+            [(0, 0.10, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.30, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.89, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # near GK
+            [(0, 0.70, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # ball continues
+            [(0, 0.50, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # (wrapped back)
+        ]
+        # Actually, a "pass through" test needs same direction continuation.
+        # Use a cleanly constant-direction pass: ball moves left→right
+        # through the GK location at steady speed.
+        positions = [
+            [(0, 0.10, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.30, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(0, 0.89, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],  # at GK
+            [(0, 0.70, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            # ... hmm reversed. Let me do a real pass-through.
+        ]
+        # Real pass-through: ball continues at constant speed across GK.
+        positions = [
+            [(0, 0.10, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.30, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.49, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],  # contact
+            [(0, 0.70, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.90, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+        ]
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.SHOT_STOP_DIVING)])
+        assert out == []  # rejected by trajectory MISSED override
+
+    def test_insufficient_data_falls_back_to_proximity(self):
+        # Only 2 ball positions → not enough for trajectory. Proximity is
+        # within threshold → should still KEEP via proximity path.
+        sampler = self._sampler_with_timed_frames(3)
+        positions = [
+            [(0, 0.89, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+            [(1, 0.90, 0.50, 0.8)],  # GK only, no ball in frame 2
+            [(0, 0.91, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+        ]
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1  # kept via proximity
+
+    def test_stationary_ball_is_insufficient_data(self):
+        # Ball at exactly same position every frame — no motion. Should NOT
+        # be classified as MISSED. Proximity keeps.
+        sampler = self._sampler_with_timed_frames(5)
+        positions = [
+            [(0, 0.89, 0.50, 0.9), (1, 0.90, 0.50, 0.8)],
+        ] * 5
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.CATCH)])
+        assert len(out) == 1  # kept by proximity (trajectory is INSUFFICIENT_DATA)
+
+    def test_trajectory_disabled_uses_only_proximity(self):
+        # Constant-speed pass-through would normally be MISSED-rejected.
+        # With trajectory disabled, proximity-keep stands.
+        sampler = self._sampler_with_timed_frames(5)
+        positions = [
+            [(0, 0.10, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.30, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.49, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.70, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+            [(0, 0.90, 0.50, 0.9), (1, 0.50, 0.50, 0.8)],
+        ]
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model, trajectory_enabled=False)
+        out = g.filter([_make_event(EventType.SHOT_STOP_DIVING)])
+        assert len(out) == 1  # kept — trajectory override disabled
+
+    def test_non_gk_event_not_affected_by_trajectory(self):
+        # Even a clean "MISSED" signature wouldn't affect a throw_in event
+        # since it's not a GK type.
+        sampler = self._sampler_with_timed_frames(5)
+        positions = [
+            # ball right on the touchline — should be kept by landmark rule
+            [(0, 0.50, 0.05, 0.9), (1, 0.90, 0.50, 0.8)],
+        ] * 5
+        model = self._model_per_frame(positions)
+        g = self._gk_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert len(out) == 1
 
 
 @pytest.mark.unit

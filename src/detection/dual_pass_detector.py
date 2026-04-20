@@ -508,6 +508,13 @@ class DualPassConfig:
     yolo_gk_frames: int = 10
     yolo_gk_min_span_sec: float = 6.0
     yolo_gk_inference_size: int = 1280
+    # Trajectory classifier (Run #37). Analyzes ball motion around the
+    # GK contact point to separate real saves from hallucinations.
+    yolo_trajectory_enabled: bool = True
+    yolo_parry_angle_threshold: float = 90.0
+    yolo_deflection_angle_threshold: float = 30.0
+    yolo_catch_speed_ratio_threshold: float = 0.3
+    yolo_missed_speed_ratio_threshold: float = 0.8
 
 
 class DualPassDetector:
@@ -1355,6 +1362,11 @@ class DualPassDetector:
             gk_n_frames=self._cfg.yolo_gk_frames,
             gk_min_span_sec=self._cfg.yolo_gk_min_span_sec,
             gk_inference_size=self._cfg.yolo_gk_inference_size,
+            trajectory_enabled=self._cfg.yolo_trajectory_enabled,
+            parry_angle_threshold=self._cfg.yolo_parry_angle_threshold,
+            deflection_angle_threshold=self._cfg.yolo_deflection_angle_threshold,
+            catch_speed_ratio_threshold=self._cfg.yolo_catch_speed_ratio_threshold,
+            missed_speed_ratio_threshold=self._cfg.yolo_missed_speed_ratio_threshold,
         )
         try:
             return grounder.filter(events)

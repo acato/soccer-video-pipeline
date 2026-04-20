@@ -255,6 +255,27 @@ YOLO_GK_INFERENCE_SIZE: int = _int("YOLO_GK_INFERENCE_SIZE", 1280)
 for landmark events). GKs are small/distant in wide-POV footage; higher
 resolution improves GK detection recall."""
 
+YOLO_TRAJECTORY_ENABLED: bool = _bool("YOLO_TRAJECTORY_ENABLED", True)
+"""Run #37: analyze ball trajectory around GK contact to classify
+saves (parry/catch/deflection/missed). Strong MISSED signature overrides
+proximity keeps — ball passed through untouched = hallucinated save."""
+
+YOLO_PARRY_ANGLE_THRESHOLD: float = _float("YOLO_PARRY_ANGLE_THRESHOLD", 90.0)
+"""Direction-change angle (degrees) above which ball trajectory indicates
+a parry. Default 90 — sharp reversal."""
+
+YOLO_DEFLECTION_ANGLE_THRESHOLD: float = _float("YOLO_DEFLECTION_ANGLE_THRESHOLD", 30.0)
+"""Direction-change angle (degrees) below parry threshold that still
+indicates a touch (deflection). Default 30."""
+
+YOLO_CATCH_SPEED_RATIO_THRESHOLD: float = _float("YOLO_CATCH_SPEED_RATIO_THRESHOLD", 0.3)
+"""Post/pre speed ratio below which the ball is considered caught
+(stopped). Default 0.3 — retains <30% of original speed."""
+
+YOLO_MISSED_SPEED_RATIO_THRESHOLD: float = _float("YOLO_MISSED_SPEED_RATIO_THRESHOLD", 0.8)
+"""Post/pre speed ratio above which the ball is considered to have
+passed through untouched. Default 0.8 — retains >80% of original speed."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -404,6 +425,11 @@ class _Config:
             "YOLO_GK_FRAMES": ("YOLO_GK_FRAMES", "10"),
             "YOLO_GK_MIN_SPAN_SEC": ("YOLO_GK_MIN_SPAN_SEC", "6.0"),
             "YOLO_GK_INFERENCE_SIZE": ("YOLO_GK_INFERENCE_SIZE", "1280"),
+            "YOLO_TRAJECTORY_ENABLED": ("YOLO_TRAJECTORY_ENABLED", "true"),
+            "YOLO_PARRY_ANGLE_THRESHOLD": ("YOLO_PARRY_ANGLE_THRESHOLD", "90.0"),
+            "YOLO_DEFLECTION_ANGLE_THRESHOLD": ("YOLO_DEFLECTION_ANGLE_THRESHOLD", "30.0"),
+            "YOLO_CATCH_SPEED_RATIO_THRESHOLD": ("YOLO_CATCH_SPEED_RATIO_THRESHOLD", "0.3"),
+            "YOLO_MISSED_SPEED_RATIO_THRESHOLD": ("YOLO_MISSED_SPEED_RATIO_THRESHOLD", "0.8"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
