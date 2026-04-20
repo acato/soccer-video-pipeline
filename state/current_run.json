@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 37,
   "run_label": "run_37",
-  "job_id": "TBD",
+  "job_id": "d27963a2-874a-490d-a19a-7e2db191bba7",
   "commit_sha": "dd555e1",
-  "submitted_at": "2026-04-20T00:00:00Z",
+  "submitted_at": "2026-04-20T06:14:02Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,7 +36,7 @@
   "baseline": {
     "run": "36b",
     "f1": 0.393,
-    "notes": "Run 36b achieved 57.5% ball+GK co-visibility and showed a clean bimodal distance distribution at the 0.20 threshold. Precision gate working as designed but with diminishing returns: lost 3 TPs to cut 11 FPs, F1 flat. The remaining 28 GK FPs have either no GK visible or ball+GK both present at plausible proximity — 2D position alone can't distinguish real saves from hallucinations."
+    "notes": "Run 36b achieved 57.5% ball+GK co-visibility and showed a clean bimodal distance distribution at the 0.20 threshold. Precision gate working as designed but with diminishing returns: lost 3 TPs to cut 11 FPs, F1 flat. The remaining 28 GK FPs have either no GK visible or ball+GK both present at plausible proximity \u2014 2D position alone can't distinguish real saves from hallucinations."
   },
   "targets": {
     "f1": 0.42,
@@ -44,7 +44,7 @@
     "precision_min": 0.38,
     "shot_stop_diving_fp_max": 12,
     "catch_fp_max": 8,
-    "notes": "Trajectory MISSED override should reject shot_stop_diving events where ball passes through GK unchanged. Expected to cut 8–12 more FPs without affecting TPs (save trajectories show real direction/speed change). F1 ≥ 0.42 breakthrough target; ≥ 0.40 minimum improvement. Diag captures parry/catch/deflection signatures for later reel tagging."
+    "notes": "Trajectory MISSED override should reject shot_stop_diving events where ball passes through GK unchanged. Expected to cut 8\u201312 more FPs without affecting TPs (save trajectories show real direction/speed change). F1 \u2265 0.42 breakthrough target; \u2265 0.40 minimum improvement. Diag captures parry/catch/deflection signatures for later reel tagging."
   },
-  "notes": "Run #37 — ball trajectory signature classifier. For GK events: analyze ball motion around contact moment. Strong MISSED signature (speed_ratio ≥ 0.8, angle < 30°) overrides proximity keeps. PARRY/CATCH/DEFLECTION signatures tagged in diag for future reel quality signals. Thresholds (90°, 30°, 0.3, 0.8) are physics-guess — Run #37 diag exposes real TP/FP distributions for #37b calibration."
+  "notes": "Run #37 \u2014 ball trajectory signature classifier. For GK events: analyze ball motion around contact moment. Strong MISSED signature (speed_ratio \u2265 0.8, angle < 30\u00b0) overrides proximity keeps. PARRY/CATCH/DEFLECTION signatures tagged in diag for future reel quality signals. Thresholds (90\u00b0, 30\u00b0, 0.3, 0.8) are physics-guess \u2014 Run #37 diag exposes real TP/FP distributions for #37b calibration."
 }
