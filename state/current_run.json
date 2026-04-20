@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 38,
   "run_label": "run_38",
-  "job_id": "TBD",
+  "job_id": "e50fdae8-c37f-45ba-8adb-d26adf40a70e",
   "commit_sha": "7861ddc",
-  "submitted_at": "2026-04-20T00:00:00Z",
+  "submitted_at": "2026-04-20T14:34:11Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,14 +36,14 @@
   "baseline": {
     "run": "37",
     "f1": 0.391,
-    "notes": "Runs 36→37 converged at F1 ~0.39 — GK spatial gates reached their ceiling (each layer trades TPs for FPs, F1 flat). Remaining largest FP pool is free_kick_shot (30 FPs on 34 detections, P=0.12) — unrelated to GK work. Run 38 pivots to this."
+    "notes": "Runs 36\u219237 converged at F1 ~0.39 \u2014 GK spatial gates reached their ceiling (each layer trades TPs for FPs, F1 flat). Remaining largest FP pool is free_kick_shot (30 FPs on 34 detections, P=0.12) \u2014 unrelated to GK work. Run 38 pivots to this."
   },
   "targets": {
     "f1": 0.42,
     "tp_min": 66,
-    "precision_min": 0.40,
+    "precision_min": 0.4,
     "free_kick_shot_fp_max": 15,
-    "notes": "Cut free_kick_shot FPs from 30 to ≤15 via pre-event ball-stillness gate. TP may drop by 1-2 if real free kicks have noisy ball tracking, but the FP cut is much larger. F1 ≥ 0.42 breakthrough."
+    "notes": "Cut free_kick_shot FPs from 30 to \u226415 via pre-event ball-stillness gate. TP may drop by 1-2 if real free kicks have noisy ball tracking, but the FP cut is much larger. F1 \u2265 0.42 breakthrough."
   },
-  "notes": "Run #38 — free_kick_shot pre-event stillness gate. Sample 4 frames in [timestamp_start - 5s, timestamp_start]. If ball detected in ≥2 frames AND position std-dev < 0.04 → KEEP (placed ball = real free kick). If std-dev > 0.08 → REJECT (ball in motion = open-play shot mislabeled). Ambiguous middle keeps (fail-safe). No trajectory fragility issues — single-condition physical signal."
+  "notes": "Run #38 \u2014 free_kick_shot pre-event stillness gate. Sample 4 frames in [timestamp_start - 5s, timestamp_start]. If ball detected in \u22652 frames AND position std-dev < 0.04 \u2192 KEEP (placed ball = real free kick). If std-dev > 0.08 \u2192 REJECT (ball in motion = open-play shot mislabeled). Ambiguous middle keeps (fail-safe). No trajectory fragility issues \u2014 single-condition physical signal."
 }
