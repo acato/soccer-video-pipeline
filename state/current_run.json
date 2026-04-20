@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 36,
   "run_label": "run_36b",
-  "job_id": "TBD",
+  "job_id": "2ae2328c-a498-433e-b434-ecc1c0b7c27f",
   "commit_sha": "d090fa6",
-  "submitted_at": "2026-04-20T00:00:00Z",
+  "submitted_at": "2026-04-20T03:02:44Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,7 +36,7 @@
   "baseline": {
     "run": "36",
     "f1": 0.394,
-    "notes": "Run 36 introduced the GK-proximity gate but co-visibility was the bottleneck: of 73 GK events, only ~5 had ball+GK in the same sampled frame. 46% shot_stop_diving events had no ball detection, 40% had no GK detection. Gate cut 4 FPs (zero TP loss) — directionally right but way under target."
+    "notes": "Run 36 introduced the GK-proximity gate but co-visibility was the bottleneck: of 73 GK events, only ~5 had ball+GK in the same sampled frame. 46% shot_stop_diving events had no ball detection, 40% had no GK detection. Gate cut 4 FPs (zero TP loss) \u2014 directionally right but way under target."
   },
   "targets": {
     "f1": 0.42,
@@ -45,7 +45,7 @@
     "shot_stop_diving_fp_max": 13,
     "catch_fp_max": 12,
     "gk_covisibility_rate_min": 0.25,
-    "notes": "Co-visibility target ≥25% (up from ~7%). If that lifts, the proximity gate can actually do its job. F1 ≥ 0.42 is the breakthrough target; beating Run 32 (0.396) is the minimum recovery."
+    "notes": "Co-visibility target \u226525% (up from ~7%). If that lifts, the proximity gate can actually do its job. F1 \u2265 0.42 is the breakthrough target; beating Run 32 (0.396) is the minimum recovery."
   },
-  "notes": "Run #36b — GK-specific sampling. Same GK-proximity rule as Run #36 but: n_frames 5→10, min_span 2s→6s, inference_size 640→1280 for GK events. Non-GK events unchanged. Expected to lift GK ball+GK co-visibility from ~7% to ≥25%, enabling the proximity gate to actually make decisions rather than fail-open."
+  "notes": "Run #36b \u2014 GK-specific sampling. Same GK-proximity rule as Run #36 but: n_frames 5\u219210, min_span 2s\u21926s, inference_size 640\u21921280 for GK events. Non-GK events unchanged. Expected to lift GK ball+GK co-visibility from ~7% to \u226525%, enabling the proximity gate to actually make decisions rather than fail-open."
 }
