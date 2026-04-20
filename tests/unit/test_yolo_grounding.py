@@ -18,8 +18,10 @@ from src.detection.models import Event, EventType
 from src.detection.yolo_grounding import (
     _COCO_PERSON,
     _COCO_SPORTS_BALL,
+    BallDetection,
     TrajectorySignature,
     YoloGrounder,
+    _chain_ball_detections,
 )
 
 
@@ -970,14 +972,19 @@ class TestFreeKickShotStillness:
         out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
         assert len(out) == 1
 
-    def test_moving_ball_is_rejected(self):
-        # Ball moves significantly across frames → high std-dev → reject.
+    def test_free_kick_shot_currently_passes_through(self):
+        # Run #38b reverted FREE_KICK_SHOT from _PRE_EVENT_STILLNESS_TYPES
+        # after Run #38 showed the pre-event signal was unreliable. The
+        # gate code remains in place for potential future use with better
+        # ball tracking; this test documents the current passthrough.
         sampler = self._sampler_with_n_frames(4)
         positions = [(0.20, 0.30), (0.40, 0.40), (0.60, 0.50), (0.80, 0.60)]
         model = self._model_with_ball_positions(positions)
         g = self._fks_grounder(sampler, model)
         out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
-        assert out == []
+        # Would have been rejected by the stillness gate (moving ball);
+        # now passes through untouched.
+        assert len(out) == 1
 
     def test_single_ball_detection_fails_open(self):
         # Only 1 frame has ball → insufficient data → fail-open keep.
@@ -1017,6 +1024,151 @@ class TestFreeKickShotStillness:
         g = self._fks_grounder(sampler, model)
         out = g.filter([_make_event(EventType.THROW_IN)])
         assert len(out) == 1
+
+
+@pytest.mark.unit
+class TestBallChainLinker:
+    """Run #38b: _chain_ball_detections enforces single-ball identity
+    across frames via nearest-neighbor linking.
+    """
+
+    def _b(self, x, y, ts, conf=0.8):
+        return BallDetection(x_norm=x, y_norm=y, confidence=conf, frame_ts=ts)
+
+    def test_empty_input(self):
+        assert _chain_ball_detections([], max_speed_per_sec=0.3) == []
+
+    def test_single_detection_per_frame_passthrough(self):
+        raw = [
+            self._b(0.50, 0.50, 1.0),
+            self._b(0.55, 0.50, 2.0),
+            self._b(0.60, 0.50, 3.0),
+        ]
+        out = _chain_ball_detections(raw, max_speed_per_sec=0.3)
+        assert len(out) == 3
+        assert [b.x_norm for b in out] == [0.50, 0.55, 0.60]
+
+    def test_picks_nearest_when_multiple_per_frame(self):
+        # Frame 1 establishes ball at (0.50, 0.50). Frame 2 has two
+        # candidates: (0.90, 0.50) far and (0.55, 0.50) close. Chain
+        # should pick the close one.
+        raw = [
+            self._b(0.50, 0.50, 1.0, conf=0.9),
+            # Frame 2: high-conf far ball and low-conf close ball
+            self._b(0.90, 0.50, 2.0, conf=0.95),   # "noise" — far, high conf
+            self._b(0.55, 0.50, 2.0, conf=0.50),   # real ball — close, low conf
+        ]
+        out = _chain_ball_detections(raw, max_speed_per_sec=0.3)
+        assert len(out) == 2
+        # Chain picks the NEARER one despite lower confidence.
+        assert out[1].x_norm == pytest.approx(0.55)
+
+    def test_lost_track_restarts_with_highest_confidence(self):
+        # Frame 1: ball at (0.50, 0.50). Frame 2: both candidates are
+        # farther than max_jump allows → chain "loses track" and restarts
+        # with highest confidence.
+        raw = [
+            self._b(0.10, 0.50, 1.0, conf=0.9),
+            # Next frame: nothing within max_speed (0.3) × dt (1s) = 0.3
+            self._b(0.90, 0.50, 2.0, conf=0.95),   # far, high conf
+            self._b(0.80, 0.50, 2.0, conf=0.50),   # far, low conf
+        ]
+        out = _chain_ball_detections(raw, max_speed_per_sec=0.3)
+        assert len(out) == 2
+        assert out[1].x_norm == pytest.approx(0.90)  # highest conf
+
+    def test_returns_one_per_frame(self):
+        # 3 frames with 2 candidates each
+        raw = [
+            self._b(0.50, 0.50, 1.0, conf=0.9),
+            self._b(0.80, 0.50, 1.0, conf=0.85),
+            self._b(0.52, 0.50, 2.0, conf=0.9),
+            self._b(0.82, 0.50, 2.0, conf=0.85),
+            self._b(0.54, 0.50, 3.0, conf=0.9),
+            self._b(0.84, 0.50, 3.0, conf=0.85),
+        ]
+        out = _chain_ball_detections(raw, max_speed_per_sec=0.3)
+        # One per frame after chain linking.
+        assert len(out) == 3
+        # Should stay on the "left" ball since it was picked first and is
+        # closer frame-to-frame.
+        assert all(b.x_norm < 0.60 for b in out)
+
+    def test_max_speed_constraint_enforced(self):
+        # At max_speed=0.3, dt=1s → max_jump=0.3. A candidate at distance
+        # 0.4 should NOT be picked (lost track → restart with highest conf).
+        raw = [
+            self._b(0.10, 0.50, 1.0, conf=0.9),
+            self._b(0.55, 0.50, 2.0, conf=0.5),   # 0.45 jump: too far
+            self._b(0.30, 0.50, 2.0, conf=0.95),  # 0.20 jump: within window
+        ]
+        out = _chain_ball_detections(raw, max_speed_per_sec=0.3)
+        assert len(out) == 2
+        # 0.30 is within max_jump — picked (not the highest-conf if chain is working)
+        assert out[1].x_norm == pytest.approx(0.30)
+
+
+@pytest.mark.unit
+class TestChainIntegration:
+    """Verify _extract_features filters raw ball detections via the chain
+    by default, and passes raw through when the flag is off.
+    """
+
+    def test_chain_disabled_preserves_raw(self, sampler_stub):
+        # Two balls per frame — without chain, all end up in ball_detections
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+
+        boxes = MagicMock()
+        boxes.cls = _tensor([_COCO_SPORTS_BALL, _COCO_SPORTS_BALL])
+        boxes.conf = _tensor([0.9, 0.8])
+        boxes.xywhn = _tensor(np.array([
+            [0.50, 0.50, 0.02, 0.02],
+            [0.90, 0.50, 0.02, 0.02],
+        ]))
+        r = MagicMock()
+        r.boxes = boxes
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [r for _ in images]
+
+        g = _make_grounder(sampler_stub, model, ball_chain_enabled=False)
+        events = [_make_event(EventType.THROW_IN)]
+        g.filter(events)
+        # Can't directly inspect features without exposing — rely on
+        # diag + behavior tests. This test primarily verifies the flag
+        # plumbs without crashing.
+
+    def test_raw_count_preserved_in_diagnostics(self, sampler_stub, tmp_path):
+        import json
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+        boxes = MagicMock()
+        # 2 balls per frame × 3 frames = 6 raw detections
+        boxes.cls = _tensor([_COCO_SPORTS_BALL, _COCO_SPORTS_BALL])
+        boxes.conf = _tensor([0.9, 0.8])
+        boxes.xywhn = _tensor(np.array([
+            [0.50, 0.05, 0.02, 0.02],
+            [0.52, 0.05, 0.02, 0.02],
+        ]))
+        r = MagicMock()
+        r.boxes = boxes
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [r for _ in images]
+        g = _make_grounder(sampler_stub, model, tmp_path=tmp_path,
+                           ball_chain_enabled=True)
+        g.filter([_make_event(EventType.THROW_IN)])
+        g.close()
+        recs = [
+            json.loads(l)
+            for l in (tmp_path / "yolo_grounding.jsonl").read_text().splitlines()
+        ]
+        feats = recs[0]["features"]
+        assert feats["n_raw_ball_detections"] == 6  # all raw
+        assert feats["n_ball_detections"] == 3      # one per frame after chain
 
 
 @pytest.mark.unit

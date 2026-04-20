@@ -394,6 +394,8 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         yolo_fks_n_frames=int(getattr(cfg, 'YOLO_FKS_N_FRAMES', 4)),
         yolo_fks_stillness_std_threshold=float(getattr(cfg, 'YOLO_FKS_STILLNESS_STD_THRESHOLD', 0.04)),
         yolo_fks_motion_std_threshold=float(getattr(cfg, 'YOLO_FKS_MOTION_STD_THRESHOLD', 0.08)),
+        yolo_ball_chain_enabled=_truthy(getattr(cfg, 'YOLO_BALL_CHAIN_ENABLED', 'true')),
+        yolo_ball_max_speed_per_sec=float(getattr(cfg, 'YOLO_BALL_MAX_SPEED_PER_SEC', 0.3)),
     )
 
     detector = DualPassDetector(

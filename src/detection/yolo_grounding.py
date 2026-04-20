@@ -65,11 +65,13 @@ _GK_ACTION_TYPES: frozenset[EventType] = frozenset({
 })
 
 # Event types that require the ball to be stationary BEFORE the event
-# (set pieces from a placed ball). The gate samples in the lookback
-# window before timestamp_start and requires low ball-position variance.
-_PRE_EVENT_STILLNESS_TYPES: frozenset[EventType] = frozenset({
-    EventType.FREE_KICK_SHOT,
-})
+# (set pieces from a placed ball). Currently empty — Run #38 showed the
+# pre-event camera view rarely contains the placed ball, and YOLO noise
+# from incoherent cross-frame ball identity makes the stillness statistic
+# unreliable. The gate remains in the codebase behind FREE_KICK_SHOT in
+# case a future stack (e.g. coherent ball tracking via chain linking)
+# makes the premise testable.
+_PRE_EVENT_STILLNESS_TYPES: frozenset[EventType] = frozenset()
 
 # Union of all event types the module runs YOLO on.
 _GATED_TYPES: frozenset[EventType] = (
@@ -164,6 +166,10 @@ class SpatialFeatures:
     ball_y_norm: Optional[float] = None      # Best-confidence ball y
     ball_confidence: float = 0.0
     ball_detections: list[BallDetection] = field(default_factory=list)
+    # Raw count BEFORE chain linking. `len(ball_detections)` is the
+    # post-chain count (1 per frame). n_raw_ball_detections reveals how
+    # noisy the raw YOLO output was.
+    n_raw_ball_detections: int = 0
     person_count_max: int = 0                # Max persons in any single frame
     # Goalkeeper data (populated only when gk_class_ids is configured;
     # empty for COCO-class setups). Collected for the Run #36 GK-action
@@ -182,6 +188,7 @@ class SpatialFeatures:
             "ball_confidence": self.ball_confidence,
             "person_count_max": self.person_count_max,
             "n_ball_detections": len(self.ball_detections),
+            "n_raw_ball_detections": self.n_raw_ball_detections,
             "n_gk_detections": len(self.gk_detections),
             "gk_positions": [
                 {"x": round(g.x_norm, 3), "y": round(g.y_norm, 3),
@@ -205,6 +212,64 @@ class GroundingDecision:
     keep: bool
     reason: str
     features: SpatialFeatures
+
+
+def _chain_ball_detections(
+    raw: list[BallDetection],
+    max_speed_per_sec: float,
+) -> list[BallDetection]:
+    """Pick at most one ball per frame via nearest-neighbor chain linking.
+
+    YOLO's per-frame `ball` class can fire on multiple ball-like objects
+    (real ball + stationary ball elsewhere + white shorts + glare).
+    Picking highest-confidence per frame independently can yield a
+    different object each frame, producing incoherent cross-frame
+    trajectories. This linker enforces identity:
+
+      - Group raw detections by frame timestamp.
+      - First frame with detections: pick the highest-confidence ball.
+      - Subsequent frames: pick the detection nearest the previous
+        chained ball, provided it's within ``max_speed_per_sec × dt``.
+        If nothing qualifies, restart the chain with this frame's
+        highest-confidence detection (we've lost the track).
+
+    Returns a list sorted by frame_ts with at most one entry per frame.
+    """
+    if not raw:
+        return []
+    by_ts: dict[float, list[BallDetection]] = {}
+    for b in raw:
+        by_ts.setdefault(round(b.frame_ts, 3), []).append(b)
+    timestamps = sorted(by_ts.keys())
+
+    chain: list[BallDetection] = []
+    for ts in timestamps:
+        candidates = by_ts[ts]
+        if not candidates:
+            continue
+        if not chain:
+            chosen = max(candidates, key=lambda b: b.confidence)
+        else:
+            prev = chain[-1]
+            dt = max(ts - prev.frame_ts, 0.1)
+            max_jump = max_speed_per_sec * dt
+            close = [
+                b for b in candidates
+                if math.hypot(b.x_norm - prev.x_norm, b.y_norm - prev.y_norm)
+                <= max_jump
+            ]
+            if close:
+                chosen = min(
+                    close,
+                    key=lambda b: math.hypot(
+                        b.x_norm - prev.x_norm, b.y_norm - prev.y_norm
+                    ),
+                )
+            else:
+                # Lost track — restart chain with this frame's best.
+                chosen = max(candidates, key=lambda b: b.confidence)
+        chain.append(chosen)
+    return chain
 
 
 def _avg_velocity(
@@ -271,6 +336,8 @@ class YoloGrounder:
         fks_n_frames: int = 4,
         fks_stillness_std_threshold: float = 0.04,
         fks_motion_std_threshold: float = 0.08,
+        ball_chain_enabled: bool = True,
+        ball_max_speed_per_sec: float = 0.3,
     ):
         self._sampler = sampler
         self._video_duration = video_duration
@@ -318,6 +385,14 @@ class YoloGrounder:
         self._fks_n_frames = max(2, int(fks_n_frames))
         self._fks_stillness_std_threshold = float(fks_stillness_std_threshold)
         self._fks_motion_std_threshold = float(fks_motion_std_threshold)
+        # Ball identity chain linking (Run #38b). Runs #37 (trajectory) and
+        # #38 (stillness) both failed because YOLO emits multiple ball-like
+        # detections per frame (real ball + noise) and our per-frame highest-
+        # confidence pick could be a DIFFERENT object each frame. The chain
+        # enforces identity by selecting the ball nearest to the previous
+        # frame's chosen ball, within a max-jump window.
+        self._ball_chain_enabled = bool(ball_chain_enabled)
+        self._ball_max_speed_per_sec = float(ball_max_speed_per_sec)
         self._diag_path = diagnostics_path
         self._model = model            # Lazy-loaded via _load() if None
         self._model_load_failed = False
@@ -866,8 +941,8 @@ class YoloGrounder:
             log.warning("yolo_grounding.inference_error", error=str(exc))
             return feats
 
-        best: Optional[BallDetection] = None
         person_max = 0
+        raw_ball: list[BallDetection] = []
         for result, frame in zip(results, frames):
             # result.boxes has xywhn (normalized) or xyxyn tensors
             if not hasattr(result, "boxes") or result.boxes is None:
@@ -885,15 +960,12 @@ class YoloGrounder:
             for cls, conf, xywh in zip(classes, confs, xywhn):
                 cls_int = int(cls)
                 if cls_int == self._ball_class_id:
-                    detection = BallDetection(
+                    raw_ball.append(BallDetection(
                         x_norm=float(xywh[0]),
                         y_norm=float(xywh[1]),
                         confidence=float(conf),
                         frame_ts=frame.timestamp_sec,
-                    )
-                    feats.ball_detections.append(detection)
-                    if best is None or detection.confidence > best.confidence:
-                        best = detection
+                    ))
                 if cls_int in self._gk_class_ids:
                     feats.gk_detections.append(GoalkeeperDetection(
                         x_norm=float(xywh[0]),
@@ -907,7 +979,21 @@ class YoloGrounder:
                 person_max = n_person
 
         feats.person_count_max = person_max
-        if best is not None:
+        feats.n_raw_ball_detections = len(raw_ball)
+
+        # Filter raw ball detections via chain linking — or pass through
+        # unchanged when chaining is disabled (A/B comparison).
+        if self._ball_chain_enabled:
+            feats.ball_detections = _chain_ball_detections(
+                raw_ball, self._ball_max_speed_per_sec,
+            )
+        else:
+            feats.ball_detections = raw_ball
+
+        # "best" is now the highest-confidence ball across the chained
+        # (or raw) detections — used as a legacy summary field.
+        if feats.ball_detections:
+            best = max(feats.ball_detections, key=lambda b: b.confidence)
             feats.ball_detected = True
             feats.ball_x_norm = best.x_norm
             feats.ball_y_norm = best.y_norm

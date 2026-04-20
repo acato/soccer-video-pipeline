@@ -522,6 +522,12 @@ class DualPassConfig:
     yolo_fks_n_frames: int = 4
     yolo_fks_stillness_std_threshold: float = 0.04
     yolo_fks_motion_std_threshold: float = 0.08
+    # Ball identity chain linking (Run #38b). Filters per-frame YOLO
+    # ball detections to a coherent single-ball trajectory via
+    # nearest-neighbor chain, capping per-frame position jumps at
+    # ball_max_speed × dt. Essential for trajectory classifier sanity.
+    yolo_ball_chain_enabled: bool = True
+    yolo_ball_max_speed_per_sec: float = 0.3
 
 
 class DualPassDetector:
@@ -1378,6 +1384,8 @@ class DualPassDetector:
             fks_n_frames=self._cfg.yolo_fks_n_frames,
             fks_stillness_std_threshold=self._cfg.yolo_fks_stillness_std_threshold,
             fks_motion_std_threshold=self._cfg.yolo_fks_motion_std_threshold,
+            ball_chain_enabled=self._cfg.yolo_ball_chain_enabled,
+            ball_max_speed_per_sec=self._cfg.yolo_ball_max_speed_per_sec,
         )
         try:
             return grounder.filter(events)

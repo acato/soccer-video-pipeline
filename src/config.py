@@ -291,6 +291,15 @@ YOLO_FKS_MOTION_STD_THRESHOLD: float = _float("YOLO_FKS_MOTION_STD_THRESHOLD", 0
 """Min std-dev of ball position above which the ball is 'in motion'
 (open-play shot misclassified as free_kick_shot)."""
 
+YOLO_BALL_CHAIN_ENABLED: bool = _bool("YOLO_BALL_CHAIN_ENABLED", True)
+"""Run #38b: filter multiple per-frame ball detections to a single
+coherent trajectory via nearest-neighbor chain. Essential for the
+trajectory classifier to make physically-sensible decisions."""
+
+YOLO_BALL_MAX_SPEED_PER_SEC: float = _float("YOLO_BALL_MAX_SPEED_PER_SEC", 0.3)
+"""Max plausible ball velocity in normalized frame-widths per second,
+used as the max jump constraint for chain linking."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -449,6 +458,8 @@ class _Config:
             "YOLO_FKS_N_FRAMES": ("YOLO_FKS_N_FRAMES", "4"),
             "YOLO_FKS_STILLNESS_STD_THRESHOLD": ("YOLO_FKS_STILLNESS_STD_THRESHOLD", "0.04"),
             "YOLO_FKS_MOTION_STD_THRESHOLD": ("YOLO_FKS_MOTION_STD_THRESHOLD", "0.08"),
+            "YOLO_BALL_CHAIN_ENABLED": ("YOLO_BALL_CHAIN_ENABLED", "true"),
+            "YOLO_BALL_MAX_SPEED_PER_SEC": ("YOLO_BALL_MAX_SPEED_PER_SEC", "0.3"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
