@@ -2,20 +2,26 @@
   "$schema_version": 1,
   "run_number": 39,
   "run_label": "run_39",
-  "job_id": "TBD",
+  "job_id": "e6b01dc8-e43e-49e1-95ec-71106817b253",
   "commit_sha": "4eb6546",
-  "submitted_at": "2026-04-20T00:00:00Z",
+  "submitted_at": "2026-04-20T21:17:07Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance", "90",
-    "--video-offset", "420",
-    "--half2-start", "3720",
-    "--half2-game-offset", "2400",
-    "--gt-file", "/Volumes/transit/Games/18/2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_1st Half.json",
-    "--gt-file", "/Volumes/transit/Games/18/2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_2nd Half.json"
+    "--tolerance",
+    "90",
+    "--video-offset",
+    "420",
+    "--half2-start",
+    "3720",
+    "--half2-game-offset",
+    "2400",
+    "--gt-file",
+    "/Volumes/transit/Games/18/2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_1st Half.json",
+    "--gt-file",
+    "/Volumes/transit/Games/18/2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_2nd Half.json"
   ],
   "ground_truth_source": "NAS /Volumes/transit/Games/18 (U15 match, 40-min halves)",
   "job_payload": {
@@ -44,7 +50,7 @@
   },
   "targets": {
     "f1_minimum_interesting": 0.35,
-    "notes": "Success criterion is informational, not metric: does the pipeline produce sensible per-type detection distributions on a different game? If F1 is similar to Rush (~0.39) and per-type P/R patterns match, the ceiling is real and pipeline-general. If F1 is wildly different, the Rush game has some specific property (camera angle, ball visibility) that caps detection quality. Offsets are estimates — expect eval noise; trust per-type distributions over overall F1."
+    "notes": "Success criterion is informational, not metric: does the pipeline produce sensible per-type detection distributions on a different game? If F1 is similar to Rush (~0.39) and per-type P/R patterns match, the ceiling is real and pipeline-general. If F1 is wildly different, the Rush game has some specific property (camera angle, ball visibility) that caps detection quality. Offsets are estimates \u2014 expect eval noise; trust per-type distributions over overall F1."
   },
-  "notes": "Run #39 — generalization test on Seattle Reign vs Westside Metros (2026-03-14, U15). Same feature commit as Run #38b (4eb6546 — ball chain linking). Offsets: VIDEO_OFFSET=420 (est), half2_start=3720 (est), half2_game_offset=2400 (U15 = 40-min halves, not 45 min). Tolerance widened to 90s to absorb offset error. Match colors are placeholders (don't affect F1, only GK reel assignment). Analysis focus: per-type detection counts + distributions, not overall F1."
+  "notes": "Run #39 \u2014 generalization test on Seattle Reign vs Westside Metros (2026-03-14, U15). Same feature commit as Run #38b (4eb6546 \u2014 ball chain linking). Offsets: VIDEO_OFFSET=420 (est), half2_start=3720 (est), half2_game_offset=2400 (U15 = 40-min halves, not 45 min). Tolerance widened to 90s to absorb offset error. Match colors are placeholders (don't affect F1, only GK reel assignment). Analysis focus: per-type detection counts + distributions, not overall F1."
 }
