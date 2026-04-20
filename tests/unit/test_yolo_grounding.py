@@ -909,6 +909,117 @@ class TestTrajectorySignature:
 
 
 @pytest.mark.unit
+class TestFreeKickShotStillness:
+    """Run #38: free_kick_shot requires ball-stillness in pre-event window."""
+
+    def _sampler_with_n_frames(self, n):
+        s = MagicMock()
+
+        def _sample(center_sec, window_sec, interval_sec, duration_sec):
+            # Return n frames at ts from start to end of the requested window
+            return [
+                SampledFrame(
+                    timestamp_sec=center_sec - window_sec
+                    + i * (2 * window_sec / max(1, n - 1)),
+                    jpeg_bytes=FAKE_JPEG,
+                )
+                for i in range(n)
+            ]
+        s.sample_range.side_effect = _sample
+        return s
+
+    def _model_with_ball_positions(self, positions_per_frame):
+        """positions_per_frame: list of (x, y) or None, one per frame."""
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+
+        def _result_for(pos):
+            boxes = MagicMock()
+            if pos is None:
+                boxes.cls = _tensor([])
+                boxes.conf = _tensor([])
+                boxes.xywhn = _tensor(np.zeros((0, 4)))
+            else:
+                x, y = pos
+                boxes.cls = _tensor([_COCO_SPORTS_BALL])
+                boxes.conf = _tensor([0.9])
+                boxes.xywhn = _tensor(np.array([[x, y, 0.02, 0.02]]))
+            r = MagicMock()
+            r.boxes = boxes
+            return r
+
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [
+            _result_for(positions_per_frame[i]) for i in range(len(images))
+        ]
+        return model
+
+    def _fks_grounder(self, sampler, model, **extra):
+        defaults = dict(fks_n_frames=4)
+        defaults.update(extra)
+        return _make_grounder(sampler, model, **defaults)
+
+    def test_stationary_ball_is_kept(self):
+        # 4 frames, ball at nearly-identical positions → low std-dev → keep.
+        sampler = self._sampler_with_n_frames(4)
+        positions = [(0.50, 0.50), (0.51, 0.50), (0.50, 0.51), (0.51, 0.51)]
+        model = self._model_with_ball_positions(positions)
+        g = self._fks_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
+        assert len(out) == 1
+
+    def test_moving_ball_is_rejected(self):
+        # Ball moves significantly across frames → high std-dev → reject.
+        sampler = self._sampler_with_n_frames(4)
+        positions = [(0.20, 0.30), (0.40, 0.40), (0.60, 0.50), (0.80, 0.60)]
+        model = self._model_with_ball_positions(positions)
+        g = self._fks_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
+        assert out == []
+
+    def test_single_ball_detection_fails_open(self):
+        # Only 1 frame has ball → insufficient data → fail-open keep.
+        sampler = self._sampler_with_n_frames(4)
+        positions = [(0.50, 0.50), None, None, None]
+        model = self._model_with_ball_positions(positions)
+        g = self._fks_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
+        assert len(out) == 1
+
+    def test_no_ball_detections_fails_open(self):
+        sampler = self._sampler_with_n_frames(4)
+        positions = [None, None, None, None]
+        model = self._model_with_ball_positions(positions)
+        g = self._fks_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
+        assert len(out) == 1
+
+    def test_ambiguous_std_keeps(self):
+        # Std-dev between the two thresholds (0.04 < std < 0.08) → keep.
+        sampler = self._sampler_with_n_frames(4)
+        # Positions with std ~0.06 — spread but not wildly moving
+        positions = [(0.48, 0.50), (0.54, 0.50), (0.46, 0.50), (0.52, 0.50)]
+        model = self._model_with_ball_positions(positions)
+        g = self._fks_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.FREE_KICK_SHOT)])
+        assert len(out) == 1
+
+    def test_non_fks_event_not_affected(self):
+        # A moving ball would reject a free_kick_shot, but for throw_in it
+        # should go through the landmark path, not the stillness gate.
+        sampler = self._sampler_with_n_frames(4)
+        # Ball near top touchline throughout — should be kept by throw_in
+        # landmark rule regardless of motion.
+        positions = [(0.50, 0.05), (0.52, 0.05), (0.48, 0.05), (0.50, 0.05)]
+        model = self._model_with_ball_positions(positions)
+        g = self._fks_grounder(sampler, model)
+        out = g.filter([_make_event(EventType.THROW_IN)])
+        assert len(out) == 1
+
+
+@pytest.mark.unit
 class TestDiagnostics:
 
     def test_writes_per_event_record(self, sampler_stub, tmp_path):

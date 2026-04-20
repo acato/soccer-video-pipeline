@@ -276,6 +276,21 @@ YOLO_MISSED_SPEED_RATIO_THRESHOLD: float = _float("YOLO_MISSED_SPEED_RATIO_THRES
 """Post/pre speed ratio above which the ball is considered to have
 passed through untouched. Default 0.8 — retains >80% of original speed."""
 
+YOLO_FKS_LOOKBACK_SEC: float = _float("YOLO_FKS_LOOKBACK_SEC", 5.0)
+"""Seconds before a free_kick_shot event to sample for ball-stillness
+check. Real free kicks have the ball placed and motionless for >3s."""
+
+YOLO_FKS_N_FRAMES: int = _int("YOLO_FKS_N_FRAMES", 4)
+"""Frames to sample in the free_kick_shot pre-event window."""
+
+YOLO_FKS_STILLNESS_STD_THRESHOLD: float = _float("YOLO_FKS_STILLNESS_STD_THRESHOLD", 0.04)
+"""Max std-dev of ball position (normalized) to classify as 'still'
+(placed ball → real free kick). Default 0.04 ≈ 4% of frame."""
+
+YOLO_FKS_MOTION_STD_THRESHOLD: float = _float("YOLO_FKS_MOTION_STD_THRESHOLD", 0.08)
+"""Min std-dev of ball position above which the ball is 'in motion'
+(open-play shot misclassified as free_kick_shot)."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -430,6 +445,10 @@ class _Config:
             "YOLO_DEFLECTION_ANGLE_THRESHOLD": ("YOLO_DEFLECTION_ANGLE_THRESHOLD", "30.0"),
             "YOLO_CATCH_SPEED_RATIO_THRESHOLD": ("YOLO_CATCH_SPEED_RATIO_THRESHOLD", "0.3"),
             "YOLO_MISSED_SPEED_RATIO_THRESHOLD": ("YOLO_MISSED_SPEED_RATIO_THRESHOLD", "0.8"),
+            "YOLO_FKS_LOOKBACK_SEC": ("YOLO_FKS_LOOKBACK_SEC", "5.0"),
+            "YOLO_FKS_N_FRAMES": ("YOLO_FKS_N_FRAMES", "4"),
+            "YOLO_FKS_STILLNESS_STD_THRESHOLD": ("YOLO_FKS_STILLNESS_STD_THRESHOLD", "0.04"),
+            "YOLO_FKS_MOTION_STD_THRESHOLD": ("YOLO_FKS_MOTION_STD_THRESHOLD", "0.08"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")

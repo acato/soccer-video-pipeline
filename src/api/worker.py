@@ -390,6 +390,10 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         yolo_deflection_angle_threshold=float(getattr(cfg, 'YOLO_DEFLECTION_ANGLE_THRESHOLD', 30.0)),
         yolo_catch_speed_ratio_threshold=float(getattr(cfg, 'YOLO_CATCH_SPEED_RATIO_THRESHOLD', 0.3)),
         yolo_missed_speed_ratio_threshold=float(getattr(cfg, 'YOLO_MISSED_SPEED_RATIO_THRESHOLD', 0.8)),
+        yolo_fks_lookback_sec=float(getattr(cfg, 'YOLO_FKS_LOOKBACK_SEC', 5.0)),
+        yolo_fks_n_frames=int(getattr(cfg, 'YOLO_FKS_N_FRAMES', 4)),
+        yolo_fks_stillness_std_threshold=float(getattr(cfg, 'YOLO_FKS_STILLNESS_STD_THRESHOLD', 0.04)),
+        yolo_fks_motion_std_threshold=float(getattr(cfg, 'YOLO_FKS_MOTION_STD_THRESHOLD', 0.08)),
     )
 
     detector = DualPassDetector(

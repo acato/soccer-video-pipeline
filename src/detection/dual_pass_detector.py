@@ -515,6 +515,13 @@ class DualPassConfig:
     yolo_deflection_angle_threshold: float = 30.0
     yolo_catch_speed_ratio_threshold: float = 0.3
     yolo_missed_speed_ratio_threshold: float = 0.8
+    # free_kick_shot pre-event stillness gate (Run #38). Free kicks have
+    # 3+ seconds of ball stillness before the shot; open-play shots
+    # misclassified as free_kick_shot show ball motion pre-event.
+    yolo_fks_lookback_sec: float = 5.0
+    yolo_fks_n_frames: int = 4
+    yolo_fks_stillness_std_threshold: float = 0.04
+    yolo_fks_motion_std_threshold: float = 0.08
 
 
 class DualPassDetector:
@@ -1367,6 +1374,10 @@ class DualPassDetector:
             deflection_angle_threshold=self._cfg.yolo_deflection_angle_threshold,
             catch_speed_ratio_threshold=self._cfg.yolo_catch_speed_ratio_threshold,
             missed_speed_ratio_threshold=self._cfg.yolo_missed_speed_ratio_threshold,
+            fks_lookback_sec=self._cfg.yolo_fks_lookback_sec,
+            fks_n_frames=self._cfg.yolo_fks_n_frames,
+            fks_stillness_std_threshold=self._cfg.yolo_fks_stillness_std_threshold,
+            fks_motion_std_threshold=self._cfg.yolo_fks_motion_std_threshold,
         )
         try:
             return grounder.filter(events)

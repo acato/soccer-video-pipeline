@@ -64,8 +64,17 @@ _GK_ACTION_TYPES: frozenset[EventType] = frozenset({
     EventType.PUNCH,
 })
 
+# Event types that require the ball to be stationary BEFORE the event
+# (set pieces from a placed ball). The gate samples in the lookback
+# window before timestamp_start and requires low ball-position variance.
+_PRE_EVENT_STILLNESS_TYPES: frozenset[EventType] = frozenset({
+    EventType.FREE_KICK_SHOT,
+})
+
 # Union of all event types the module runs YOLO on.
-_GATED_TYPES: frozenset[EventType] = _LANDMARK_TYPES | _GK_ACTION_TYPES
+_GATED_TYPES: frozenset[EventType] = (
+    _LANDMARK_TYPES | _GK_ACTION_TYPES | _PRE_EVENT_STILLNESS_TYPES
+)
 
 
 # Spatial thresholds in normalized frame coords (0..1). These assume a
@@ -258,6 +267,10 @@ class YoloGrounder:
         deflection_angle_threshold: float = 30.0,
         catch_speed_ratio_threshold: float = 0.3,
         missed_speed_ratio_threshold: float = 0.8,
+        fks_lookback_sec: float = 5.0,
+        fks_n_frames: int = 4,
+        fks_stillness_std_threshold: float = 0.04,
+        fks_motion_std_threshold: float = 0.08,
     ):
         self._sampler = sampler
         self._video_duration = video_duration
@@ -298,6 +311,13 @@ class YoloGrounder:
         self._deflection_angle_threshold = float(deflection_angle_threshold)
         self._catch_speed_ratio_threshold = float(catch_speed_ratio_threshold)
         self._missed_speed_ratio_threshold = float(missed_speed_ratio_threshold)
+        # free_kick_shot pre-event stillness gate (Run #38). Free kicks have
+        # 3+ seconds of ball stillness before the shot; open-play shots
+        # misclassified as free_kick_shot show ball motion pre-event.
+        self._fks_lookback_sec = float(fks_lookback_sec)
+        self._fks_n_frames = max(2, int(fks_n_frames))
+        self._fks_stillness_std_threshold = float(fks_stillness_std_threshold)
+        self._fks_motion_std_threshold = float(fks_motion_std_threshold)
         self._diag_path = diagnostics_path
         self._model = model            # Lazy-loaded via _load() if None
         self._model_load_failed = False
@@ -353,6 +373,20 @@ class YoloGrounder:
     # ── Verification ────────────────────────────────────────────────────
 
     def _verify(self, event: Event) -> GroundingDecision:
+        # Pre-event stillness gate (Run #38): sample the window BEFORE
+        # timestamp_start rather than during the event.
+        if event.event_type in _PRE_EVENT_STILLNESS_TYPES:
+            frames = self._sample_pre_event_window(event)
+            features = self._extract_features(frames, event_type=event.event_type)
+            if features.n_frames == 0:
+                return GroundingDecision(
+                    keep=True, reason="no_pre_event_frames_fail_open",
+                    features=features,
+                )
+            if event.event_type == EventType.FREE_KICK_SHOT:
+                return self._verify_free_kick_shot(features)
+            # Other pre-event-stillness types could be added here.
+
         frames = self._sample_event_span(event)
         features = self._extract_features(frames, event_type=event.event_type)
 
@@ -420,6 +454,50 @@ class YoloGrounder:
         return GroundingDecision(
             keep=False,
             reason=f"ball_never_in_corner_xys={positions}",
+            features=f,
+        )
+
+    def _verify_free_kick_shot(self, f: SpatialFeatures) -> GroundingDecision:
+        """Require ball stillness in the pre-event window.
+
+        Computes the standard deviation of ball positions across pre-event
+        frames. Low std = placed ball (real free kick). High std = ball
+        in motion (open-play shot mislabeled). Ambiguous middle falls
+        through to keep (fail-safe toward recall).
+        """
+        balls = f.ball_detections
+        if len(balls) < 2:
+            return GroundingDecision(
+                keep=True,
+                reason=f"fks_insufficient_ball_detections_n={len(balls)}_fail_open",
+                features=f,
+            )
+        xs = [b.x_norm for b in balls]
+        ys = [b.y_norm for b in balls]
+        mean_x = sum(xs) / len(xs)
+        mean_y = sum(ys) / len(ys)
+        var_x = sum((x - mean_x) ** 2 for x in xs) / len(xs)
+        var_y = sum((y - mean_y) ** 2 for y in ys) / len(ys)
+        std_x = var_x ** 0.5
+        std_y = var_y ** 0.5
+        max_std = max(std_x, std_y)
+
+        if max_std >= self._fks_motion_std_threshold:
+            return GroundingDecision(
+                keep=False,
+                reason=f"fks_ball_in_motion_std={max_std:.3f}",
+                features=f,
+            )
+        if max_std <= self._fks_stillness_std_threshold:
+            return GroundingDecision(
+                keep=True,
+                reason=f"fks_ball_still_std={max_std:.3f}_n={len(balls)}",
+                features=f,
+            )
+        # Ambiguous band between thresholds — keep to preserve recall.
+        return GroundingDecision(
+            keep=True,
+            reason=f"fks_ambiguous_std={max_std:.3f}_keep",
             features=f,
         )
 
@@ -672,6 +750,34 @@ class YoloGrounder:
         )
 
     # ── Frame sampling + YOLO inference ─────────────────────────────────
+
+    def _sample_pre_event_window(self, event: Event) -> list[SampledFrame]:
+        """Sample frames in [timestamp_start - lookback, timestamp_start].
+
+        Used by the free_kick_shot gate to observe ball position before
+        the shot. Real free kicks have a placed (stationary) ball in this
+        window; open-play shots mislabeled as free kicks show ball motion.
+        """
+        start = max(0.0, event.timestamp_start - self._fks_lookback_sec)
+        end = max(start, event.timestamp_start)
+        span = end - start
+        if span <= 0:
+            return []
+        n = self._fks_n_frames
+        center = start + span / 2.0
+        half_window = span / 2.0
+        interval = span if n == 1 else span / max(1, n - 1)
+        frames = self._sampler.sample_range(
+            center_sec=center,
+            window_sec=half_window,
+            interval_sec=max(0.2, interval),
+            duration_sec=self._video_duration,
+        )
+        if len(frames) > n:
+            step = len(frames) / n
+            idx = [int(i * step) for i in range(n)]
+            frames = [frames[i] for i in idx]
+        return frames
 
     def _sample_event_span(self, event: Event) -> list[SampledFrame]:
         """Pull n_frames spanning the full event window [start, end].
