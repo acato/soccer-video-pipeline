@@ -630,6 +630,102 @@ class TestGkProximityGate:
 
 
 @pytest.mark.unit
+class TestGkSpecificSampling:
+    """Run #36b: GK events sample more frames over a wider window at higher
+    inference resolution than landmark events."""
+
+    def _sampler_and_model(self):
+        s = MagicMock()
+        # Record call args so tests can inspect them
+        captured = {"calls": []}
+
+        def _sample(center_sec, window_sec, interval_sec, duration_sec):
+            captured["calls"].append({
+                "center_sec": center_sec,
+                "window_sec": window_sec,
+                "interval_sec": interval_sec,
+            })
+            # Return 3 dummy frames regardless (quantity doesn't matter for
+            # sampling assertion — we inspect call args, not return length)
+            return [
+                SampledFrame(timestamp_sec=center_sec, jpeg_bytes=FAKE_JPEG)
+                for _ in range(3)
+            ]
+        s.sample_range.side_effect = _sample
+
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+        boxes = MagicMock()
+        boxes.cls = _tensor([])
+        boxes.conf = _tensor([])
+        boxes.xywhn = _tensor(np.zeros((0, 4)))
+        r = MagicMock()
+        r.boxes = boxes
+        model = MagicMock()
+        model_captured = {"imgsz": []}
+
+        def _call(images, **kw):
+            model_captured["imgsz"].append(kw.get("imgsz"))
+            return [r for _ in images]
+        model.side_effect = _call
+        return s, model, captured, model_captured
+
+    def test_gk_event_uses_wider_window(self):
+        sampler, model, captured, _ = self._sampler_and_model()
+        g = _make_grounder(
+            sampler, model,
+            ball_class_id=0, person_class_ids=(1, 2, 3), gk_class_ids=(1,),
+            n_frames=5, frame_span_sec=2.0,
+            gk_n_frames=10, gk_min_span_sec=6.0,
+        )
+        # Event span of 1s — shorter than both min_span (2s) and gk_min_span (6s).
+        # Non-GK event (throw_in) uses 2s min → window_sec = 1.0
+        # GK event (catch) uses 6s min → window_sec = 3.0
+        event_tin = _make_event(EventType.THROW_IN, t=100.0)
+        event_tin = event_tin.__class__(**{**event_tin.__dict__,
+                                           "timestamp_end": 101.0})
+        event_gk = _make_event(EventType.CATCH, t=200.0)
+        event_gk = event_gk.__class__(**{**event_gk.__dict__,
+                                         "timestamp_end": 201.0})
+        g.filter([event_tin, event_gk])
+        assert captured["calls"][0]["window_sec"] == pytest.approx(1.0)
+        assert captured["calls"][1]["window_sec"] == pytest.approx(3.0)
+
+    def test_gk_event_uses_higher_inference_size(self):
+        sampler, model, _, model_captured = self._sampler_and_model()
+        g = _make_grounder(
+            sampler, model,
+            ball_class_id=0, person_class_ids=(1, 2, 3), gk_class_ids=(1,),
+            inference_size=640,
+            gk_inference_size=1280,
+        )
+        g.filter([
+            _make_event(EventType.THROW_IN, t=10.0),
+            _make_event(EventType.CATCH, t=20.0),
+        ])
+        # First event (throw_in) at 640, second (catch) at 1280.
+        assert model_captured["imgsz"][0] == 640
+        assert model_captured["imgsz"][1] == 1280
+
+    def test_non_gk_event_uses_default_sampling(self):
+        sampler, model, captured, model_captured = self._sampler_and_model()
+        g = _make_grounder(
+            sampler, model,
+            ball_class_id=0, person_class_ids=(1, 2, 3), gk_class_ids=(1,),
+            n_frames=5, frame_span_sec=2.0, inference_size=640,
+            gk_n_frames=10, gk_min_span_sec=6.0, gk_inference_size=1280,
+        )
+        # _make_event default span is 3s (t → t+3). With min_span=2.0 for
+        # landmark events, span stays at 3.0 → window_sec = 1.5. This is
+        # NOT 3.0 (which would indicate gk_min_span=6.0 was applied).
+        g.filter([_make_event(EventType.GOAL_KICK, t=100.0)])
+        assert captured["calls"][0]["window_sec"] == pytest.approx(1.5)
+        assert model_captured["imgsz"][0] == 640
+
+
+@pytest.mark.unit
 class TestDiagnostics:
 
     def test_writes_per_event_record(self, sampler_stub, tmp_path):

@@ -167,6 +167,9 @@ class YoloGrounder:
         person_class_ids: tuple[int, ...] = (_COCO_PERSON,),
         gk_class_ids: tuple[int, ...] = (),
         gk_proximity_threshold: float = 0.20,
+        gk_n_frames: Optional[int] = None,
+        gk_min_span_sec: Optional[float] = None,
+        gk_inference_size: Optional[int] = None,
     ):
         self._sampler = sampler
         self._video_duration = video_duration
@@ -175,6 +178,10 @@ class YoloGrounder:
         self._use_gpu = use_gpu
         self._ball_conf = ball_conf_threshold
         self._n_frames = max(1, n_frames)
+        # Minimum span fallback when the event's own duration is too short
+        # (e.g. point events with timestamp_end == timestamp_start).
+        self._min_span_sec = max(0.5, frame_span_sec)
+        self._fail_open = fail_open
         self._ball_class_id = int(ball_class_id)
         self._person_class_ids = frozenset(int(c) for c in person_class_ids)
         # Goalkeeper class ids are also typically a subset of person_class_ids;
@@ -184,10 +191,17 @@ class YoloGrounder:
         # accepted. 0.20 ≈ 20% of the frame diagonal — generous first pass;
         # tune from Run #36 TP data for subsequent runs.
         self._gk_proximity_threshold = float(gk_proximity_threshold)
-        # Minimum span fallback when the event's own duration is too short
-        # (e.g. point events with timestamp_end == timestamp_start).
-        self._min_span_sec = max(0.5, frame_span_sec)
-        self._fail_open = fail_open
+        # GK-specific sampling overrides (Run #36b). GK events (catch /
+        # shot_stop_*) have sparse ball-AND-GK co-visibility, so we sample
+        # more frames over a wider window and run YOLO at higher resolution
+        # to improve the chance of detecting both in the same frame.
+        self._gk_n_frames = int(gk_n_frames) if gk_n_frames else self._n_frames
+        self._gk_min_span_sec = (
+            float(gk_min_span_sec) if gk_min_span_sec else self._min_span_sec
+        )
+        self._gk_inference_size = (
+            int(gk_inference_size) if gk_inference_size else self._inference_size
+        )
         self._diag_path = diagnostics_path
         self._model = model            # Lazy-loaded via _load() if None
         self._model_load_failed = False
@@ -244,7 +258,7 @@ class YoloGrounder:
 
     def _verify(self, event: Event) -> GroundingDecision:
         frames = self._sample_event_span(event)
-        features = self._extract_features(frames)
+        features = self._extract_features(frames, event_type=event.event_type)
 
         # Fail-open: no frames, no ball, or YOLO unavailable → keep.
         if features.n_frames == 0:
@@ -403,29 +417,43 @@ class YoloGrounder:
         of the full event window. Sampling across the entire span (rather
         than ±1s around a single center) gives the gate a chance to see
         that moment even when timestamp_start doesn't coincide with it.
+
+        GK events (catch / shot_stop_*) use wider sampling (gk_n_frames,
+        gk_min_span_sec) because ball ↔ GK co-visibility is sparse —
+        Run #36 diag showed only ~7% of GK events had both ball and GK
+        in the same sampled frame under the default 5-frame / event-span
+        config.
         """
+        is_gk = event.event_type in _GK_ACTION_TYPES
+        n_frames = self._gk_n_frames if is_gk else self._n_frames
+        min_span = self._gk_min_span_sec if is_gk else self._min_span_sec
+
         start = max(0.0, event.timestamp_start)
         end = event.timestamp_end if event.timestamp_end > start else start
-        span = max(self._min_span_sec, end - start)
+        span = max(min_span, end - start)
         center = start + span / 2.0
         half_window = span / 2.0
-        if self._n_frames == 1:
+        if n_frames == 1:
             interval = span
         else:
-            interval = span / max(1, self._n_frames - 1)
+            interval = span / max(1, n_frames - 1)
         frames = self._sampler.sample_range(
             center_sec=center,
             window_sec=half_window,
             interval_sec=max(0.2, interval),
             duration_sec=self._video_duration,
         )
-        if len(frames) > self._n_frames:
-            step = len(frames) / self._n_frames
-            indices = [int(i * step) for i in range(self._n_frames)]
+        if len(frames) > n_frames:
+            step = len(frames) / n_frames
+            indices = [int(i * step) for i in range(n_frames)]
             frames = [frames[i] for i in indices]
         return frames
 
-    def _extract_features(self, frames: list[SampledFrame]) -> SpatialFeatures:
+    def _extract_features(
+        self,
+        frames: list[SampledFrame],
+        event_type: Optional[EventType] = None,
+    ) -> SpatialFeatures:
         feats = SpatialFeatures(n_frames=len(frames))
         if not frames:
             return feats
@@ -448,10 +476,15 @@ class YoloGrounder:
         if not images:
             return feats
 
+        # GK events run at higher resolution — GKs are small/far in wide-POV
+        # footage and standard 640px inference misses many of them.
+        is_gk = event_type in _GK_ACTION_TYPES if event_type else False
+        imgsz = self._gk_inference_size if is_gk else self._inference_size
+
         try:
             # Batched inference — YOLOv8 accepts list of numpy arrays
             kwargs = {
-                "imgsz": self._inference_size,
+                "imgsz": imgsz,
                 "conf": self._ball_conf,
                 "verbose": False,
             }

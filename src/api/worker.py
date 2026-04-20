@@ -382,6 +382,9 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         yolo_person_class_ids=_parse_int_csv(getattr(cfg, 'YOLO_PERSON_CLASS_IDS', '0')),
         yolo_gk_class_ids=_parse_int_csv(getattr(cfg, 'YOLO_GK_CLASS_IDS', '')),
         yolo_gk_proximity_threshold=float(getattr(cfg, 'YOLO_GK_PROXIMITY_THRESHOLD', 0.20)),
+        yolo_gk_frames=int(getattr(cfg, 'YOLO_GK_FRAMES', 10)),
+        yolo_gk_min_span_sec=float(getattr(cfg, 'YOLO_GK_MIN_SPAN_SEC', 6.0)),
+        yolo_gk_inference_size=int(getattr(cfg, 'YOLO_GK_INFERENCE_SIZE', 1280)),
     )
 
     detector = DualPassDetector(

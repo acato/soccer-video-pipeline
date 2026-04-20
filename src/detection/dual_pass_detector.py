@@ -501,6 +501,13 @@ class DualPassConfig:
     # Max normalized ball-to-GK distance for a GK event to be kept. Only
     # used when gk_class_ids is configured. 0.20 is a generous first pass.
     yolo_gk_proximity_threshold: float = 0.20
+    # GK-specific sampling overrides (Run #36b). Run #36 diag showed
+    # ~7% ball+GK co-visibility on GK events under the default 5-frame /
+    # event-span config. Wider sampling at higher resolution should lift
+    # that significantly.
+    yolo_gk_frames: int = 10
+    yolo_gk_min_span_sec: float = 6.0
+    yolo_gk_inference_size: int = 1280
 
 
 class DualPassDetector:
@@ -1345,6 +1352,9 @@ class DualPassDetector:
             person_class_ids=self._cfg.yolo_person_class_ids,
             gk_class_ids=self._cfg.yolo_gk_class_ids,
             gk_proximity_threshold=self._cfg.yolo_gk_proximity_threshold,
+            gk_n_frames=self._cfg.yolo_gk_frames,
+            gk_min_span_sec=self._cfg.yolo_gk_min_span_sec,
+            gk_inference_size=self._cfg.yolo_gk_inference_size,
         )
         try:
             return grounder.filter(events)

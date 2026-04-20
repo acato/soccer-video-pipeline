@@ -240,6 +240,21 @@ YOLO_GK_PROXIMITY_THRESHOLD: float = _float("YOLO_GK_PROXIMITY_THRESHOLD", 0.20)
 (catch, shot_stop_*, punch) to be accepted by the grounding gate. 0.20 ≈
 20% of the frame diagonal — generous first pass."""
 
+YOLO_GK_FRAMES: int = _int("YOLO_GK_FRAMES", 10)
+"""Frames to sample for GK-action events (Run #36b). Default 10, vs the
+5 used for landmark events. Rationale: ball+GK co-visibility is sparse
+and scales with frame count."""
+
+YOLO_GK_MIN_SPAN_SEC: float = _float("YOLO_GK_MIN_SPAN_SEC", 6.0)
+"""Minimum sampling span (seconds) for GK events. Default 6.0 (±3s).
+Extends the window when event duration is short to increase chance of
+capturing the save moment."""
+
+YOLO_GK_INFERENCE_SIZE: int = _int("YOLO_GK_INFERENCE_SIZE", 1280)
+"""YOLO input resolution for GK-event inference. Default 1280 (vs 640
+for landmark events). GKs are small/distant in wide-POV footage; higher
+resolution improves GK detection recall."""
+
 # ---------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------
@@ -386,6 +401,9 @@ class _Config:
             "YOLO_PERSON_CLASS_IDS": ("YOLO_PERSON_CLASS_IDS", "0"),
             "YOLO_GK_CLASS_IDS": ("YOLO_GK_CLASS_IDS", ""),
             "YOLO_GK_PROXIMITY_THRESHOLD": ("YOLO_GK_PROXIMITY_THRESHOLD", "0.20"),
+            "YOLO_GK_FRAMES": ("YOLO_GK_FRAMES", "10"),
+            "YOLO_GK_MIN_SPAN_SEC": ("YOLO_GK_MIN_SPAN_SEC", "6.0"),
+            "YOLO_GK_INFERENCE_SIZE": ("YOLO_GK_INFERENCE_SIZE", "1280"),
         }
         if name not in env_map:
             raise AttributeError(f"Unknown config key: {name}")
