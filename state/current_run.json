@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 36,
-  "run_label": "run_36b",
-  "job_id": "2ae2328c-a498-433e-b434-ecc1c0b7c27f",
-  "commit_sha": "d090fa6",
-  "submitted_at": "2026-04-20T03:02:44Z",
+  "run_number": 37,
+  "run_label": "run_37",
+  "job_id": "TBD",
+  "commit_sha": "dd555e1",
+  "submitted_at": "2026-04-20T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,18 +34,17 @@
     }
   },
   "baseline": {
-    "run": "36",
-    "f1": 0.394,
-    "notes": "Run 36 introduced the GK-proximity gate but co-visibility was the bottleneck: of 73 GK events, only ~5 had ball+GK in the same sampled frame. 46% shot_stop_diving events had no ball detection, 40% had no GK detection. Gate cut 4 FPs (zero TP loss) \u2014 directionally right but way under target."
+    "run": "36b",
+    "f1": 0.393,
+    "notes": "Run 36b achieved 57.5% ball+GK co-visibility and showed a clean bimodal distance distribution at the 0.20 threshold. Precision gate working as designed but with diminishing returns: lost 3 TPs to cut 11 FPs, F1 flat. The remaining 28 GK FPs have either no GK visible or ball+GK both present at plausible proximity — 2D position alone can't distinguish real saves from hallucinations."
   },
   "targets": {
     "f1": 0.42,
-    "tp_min": 75,
+    "tp_min": 72,
     "precision_min": 0.38,
-    "shot_stop_diving_fp_max": 13,
-    "catch_fp_max": 12,
-    "gk_covisibility_rate_min": 0.25,
-    "notes": "Co-visibility target \u226525% (up from ~7%). If that lifts, the proximity gate can actually do its job. F1 \u2265 0.42 is the breakthrough target; beating Run 32 (0.396) is the minimum recovery."
+    "shot_stop_diving_fp_max": 12,
+    "catch_fp_max": 8,
+    "notes": "Trajectory MISSED override should reject shot_stop_diving events where ball passes through GK unchanged. Expected to cut 8–12 more FPs without affecting TPs (save trajectories show real direction/speed change). F1 ≥ 0.42 breakthrough target; ≥ 0.40 minimum improvement. Diag captures parry/catch/deflection signatures for later reel tagging."
   },
-  "notes": "Run #36b \u2014 GK-specific sampling. Same GK-proximity rule as Run #36 but: n_frames 5\u219210, min_span 2s\u21926s, inference_size 640\u21921280 for GK events. Non-GK events unchanged. Expected to lift GK ball+GK co-visibility from ~7% to \u226525%, enabling the proximity gate to actually make decisions rather than fail-open."
+  "notes": "Run #37 — ball trajectory signature classifier. For GK events: analyze ball motion around contact moment. Strong MISSED signature (speed_ratio ≥ 0.8, angle < 30°) overrides proximity keeps. PARRY/CATCH/DEFLECTION signatures tagged in diag for future reel quality signals. Thresholds (90°, 30°, 0.3, 0.8) are physics-guess — Run #37 diag exposes real TP/FP distributions for #37b calibration."
 }
