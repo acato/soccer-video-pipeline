@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 37,
-  "run_label": "run_37",
-  "job_id": "d27963a2-874a-490d-a19a-7e2db191bba7",
-  "commit_sha": "dd555e1",
-  "submitted_at": "2026-04-20T06:14:02Z",
+  "run_number": 38,
+  "run_label": "run_38",
+  "job_id": "TBD",
+  "commit_sha": "7861ddc",
+  "submitted_at": "2026-04-20T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,17 +34,16 @@
     }
   },
   "baseline": {
-    "run": "36b",
-    "f1": 0.393,
-    "notes": "Run 36b achieved 57.5% ball+GK co-visibility and showed a clean bimodal distance distribution at the 0.20 threshold. Precision gate working as designed but with diminishing returns: lost 3 TPs to cut 11 FPs, F1 flat. The remaining 28 GK FPs have either no GK visible or ball+GK both present at plausible proximity \u2014 2D position alone can't distinguish real saves from hallucinations."
+    "run": "37",
+    "f1": 0.391,
+    "notes": "Runs 36→37 converged at F1 ~0.39 — GK spatial gates reached their ceiling (each layer trades TPs for FPs, F1 flat). Remaining largest FP pool is free_kick_shot (30 FPs on 34 detections, P=0.12) — unrelated to GK work. Run 38 pivots to this."
   },
   "targets": {
     "f1": 0.42,
-    "tp_min": 72,
-    "precision_min": 0.38,
-    "shot_stop_diving_fp_max": 12,
-    "catch_fp_max": 8,
-    "notes": "Trajectory MISSED override should reject shot_stop_diving events where ball passes through GK unchanged. Expected to cut 8\u201312 more FPs without affecting TPs (save trajectories show real direction/speed change). F1 \u2265 0.42 breakthrough target; \u2265 0.40 minimum improvement. Diag captures parry/catch/deflection signatures for later reel tagging."
+    "tp_min": 66,
+    "precision_min": 0.40,
+    "free_kick_shot_fp_max": 15,
+    "notes": "Cut free_kick_shot FPs from 30 to ≤15 via pre-event ball-stillness gate. TP may drop by 1-2 if real free kicks have noisy ball tracking, but the FP cut is much larger. F1 ≥ 0.42 breakthrough."
   },
-  "notes": "Run #37 \u2014 ball trajectory signature classifier. For GK events: analyze ball motion around contact moment. Strong MISSED signature (speed_ratio \u2265 0.8, angle < 30\u00b0) overrides proximity keeps. PARRY/CATCH/DEFLECTION signatures tagged in diag for future reel quality signals. Thresholds (90\u00b0, 30\u00b0, 0.3, 0.8) are physics-guess \u2014 Run #37 diag exposes real TP/FP distributions for #37b calibration."
+  "notes": "Run #38 — free_kick_shot pre-event stillness gate. Sample 4 frames in [timestamp_start - 5s, timestamp_start]. If ball detected in ≥2 frames AND position std-dev < 0.04 → KEEP (placed ball = real free kick). If std-dev > 0.08 → REJECT (ball in motion = open-play shot mislabeled). Ambiguous middle keeps (fail-safe). No trajectory fragility issues — single-condition physical signal."
 }
