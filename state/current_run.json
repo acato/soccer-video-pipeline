@@ -1,49 +1,50 @@
 {
   "$schema_version": 1,
-  "run_number": 38,
-  "run_label": "run_38b",
-  "job_id": "0ad8fa5d-37f3-41cd-9efe-c996ea7a5dc1",
+  "run_number": 39,
+  "run_label": "run_39",
+  "job_id": "TBD",
   "commit_sha": "4eb6546",
-  "submitted_at": "2026-04-20T17:40:33Z",
+  "submitted_at": "2026-04-20T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance",
-    "45"
+    "--tolerance", "90",
+    "--video-offset", "420",
+    "--half2-start", "3720",
+    "--half2-game-offset", "2400",
+    "--gt-file", "/Volumes/transit/Games/18/2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_1st Half.json",
+    "--gt-file", "/Volumes/transit/Games/18/2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_2nd Half.json"
   ],
-  "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
+  "ground_truth_source": "NAS /Volumes/transit/Games/18 (U15 match, 40-min halves)",
   "job_payload": {
-    "nas_path": "2026-02-07 - Rush - GA2008.mp4",
+    "nas_path": "2026-03-14-reign-vs-westside-metros.mp4",
     "reel_types": [
       "keeper",
       "highlights"
     ],
     "match_config": {
       "team": {
-        "team_name": "Rush",
-        "outfield_color": "white",
-        "gk_color": "neon_yellow"
-      },
-      "opponent": {
-        "team_name": "GA 2008",
+        "team_name": "Seattle Reign 2011 GA",
         "outfield_color": "blue",
         "gk_color": "neon_green"
+      },
+      "opponent": {
+        "team_name": "Westside Metros",
+        "outfield_color": "red",
+        "gk_color": "neon_yellow"
       }
     }
   },
   "baseline": {
-    "run": "38",
-    "f1": 0.385,
-    "notes": "Run 38's free_kick_shot gate regressed F1 to 0.385 (lost 3 of 4 TPs). Root cause: same as Run 37 trajectory failure \u2014 YOLO emits multiple per-frame ball-like detections (real + noise), and our aggregate statistics (position std, velocity vectors) treat them as one object. Run 38b reverts the free_kick_shot gate and fixes the root cause via ball-identity chain linking."
+    "run": "38b-on-rush",
+    "f1": 0.392,
+    "notes": "All runs #35-38b plateaued at F1 ~0.39 on the Rush game. Run #39 tests generalization on a DIFFERENT 2026 game (Seattle Reign U15 vs Westside Metros, 2026-03-14) to determine if the ceiling is game-specific or pipeline-general. Same gate config as Run #38b (ball chain linking + GK proximity + trajectory). Same team (Seattle Reign 2011 GA) as several other GT'd games so camera/rig setup should be similar."
   },
   "targets": {
-    "f1": 0.41,
-    "tp_min": 70,
-    "precision_min": 0.37,
-    "trajectory_impossible_ratio_rate_max": 0.1,
-    "notes": "With coherent ball trajectories, Run #37's trajectory classifier should make physically-sensible decisions. Expect MISSED override to cut shot_stop_diving FPs cleanly (without the TP loss seen in 36b\u219237). 'Impossible ratio' rate = fraction of events with speed_ratio > 2.0; should drop from >20% in Run 37 to <10%."
+    "f1_minimum_interesting": 0.35,
+    "notes": "Success criterion is informational, not metric: does the pipeline produce sensible per-type detection distributions on a different game? If F1 is similar to Rush (~0.39) and per-type P/R patterns match, the ceiling is real and pipeline-general. If F1 is wildly different, the Rush game has some specific property (camera angle, ball visibility) that caps detection quality. Offsets are estimates — expect eval noise; trust per-type distributions over overall F1."
   },
-  "notes": "Run #38b \u2014 ball-identity chain linking. _extract_features now filters raw YOLO ball detections to one-per-frame via nearest-neighbor chain with max_speed=0.3 frame-widths/sec. free_kick_shot gate reverted (premise not testable with current pre-event camera behavior). Trajectory classifier (Run #37) still active \u2014 now operating on coherent ball positions rather than noisy candidates. Diag includes n_raw_ball_detections for before/after noise comparison."
+  "notes": "Run #39 — generalization test on Seattle Reign vs Westside Metros (2026-03-14, U15). Same feature commit as Run #38b (4eb6546 — ball chain linking). Offsets: VIDEO_OFFSET=420 (est), half2_start=3720 (est), half2_game_offset=2400 (U15 = 40-min halves, not 45 min). Tolerance widened to 90s to absorb offset error. Match colors are placeholders (don't affect F1, only GK reel assignment). Analysis focus: per-type detection counts + distributions, not overall F1."
 }

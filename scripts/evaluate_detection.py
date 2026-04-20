@@ -311,12 +311,18 @@ def main():
                         help="Video timestamp where 2nd half starts (default: 3916.0)")
     parser.add_argument("--half2-game-offset", type=float, default=2700.0,
                         help="Game-clock seconds at 2nd half start (default: 2700.0)")
+    parser.add_argument("--gt-file", action="append", default=None,
+                        help="Override the hardcoded Rush GT file list. "
+                             "Repeat for 1st + 2nd halves in order. When "
+                             "omitted, falls back to the Rush GT hardcode.")
     parser.add_argument("--json-out", type=str, default=None,
                         help="Write structured results to this JSON file (for pollers/tools)")
     args = parser.parse_args()
 
-    global VIDEO_OFFSET
+    global VIDEO_OFFSET, GT_FILES
     VIDEO_OFFSET = args.video_offset
+    if args.gt_file:
+        GT_FILES = list(args.gt_file)
 
     print(f"Loading GT (video_offset={VIDEO_OFFSET}s, half2_start={args.half2_start}s, "
           f"half2_game_offset={args.half2_game_offset}s)...")
