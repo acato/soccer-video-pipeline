@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
   "run_number": 38,
-  "run_label": "run_38",
-  "job_id": "e50fdae8-c37f-45ba-8adb-d26adf40a70e",
-  "commit_sha": "7861ddc",
-  "submitted_at": "2026-04-20T14:34:11Z",
+  "run_label": "run_38b",
+  "job_id": "TBD",
+  "commit_sha": "4eb6546",
+  "submitted_at": "2026-04-20T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,16 +34,16 @@
     }
   },
   "baseline": {
-    "run": "37",
-    "f1": 0.391,
-    "notes": "Runs 36\u219237 converged at F1 ~0.39 \u2014 GK spatial gates reached their ceiling (each layer trades TPs for FPs, F1 flat). Remaining largest FP pool is free_kick_shot (30 FPs on 34 detections, P=0.12) \u2014 unrelated to GK work. Run 38 pivots to this."
+    "run": "38",
+    "f1": 0.385,
+    "notes": "Run 38's free_kick_shot gate regressed F1 to 0.385 (lost 3 of 4 TPs). Root cause: same as Run 37 trajectory failure — YOLO emits multiple per-frame ball-like detections (real + noise), and our aggregate statistics (position std, velocity vectors) treat them as one object. Run 38b reverts the free_kick_shot gate and fixes the root cause via ball-identity chain linking."
   },
   "targets": {
-    "f1": 0.42,
-    "tp_min": 66,
-    "precision_min": 0.4,
-    "free_kick_shot_fp_max": 15,
-    "notes": "Cut free_kick_shot FPs from 30 to \u226415 via pre-event ball-stillness gate. TP may drop by 1-2 if real free kicks have noisy ball tracking, but the FP cut is much larger. F1 \u2265 0.42 breakthrough."
+    "f1": 0.41,
+    "tp_min": 70,
+    "precision_min": 0.37,
+    "trajectory_impossible_ratio_rate_max": 0.10,
+    "notes": "With coherent ball trajectories, Run #37's trajectory classifier should make physically-sensible decisions. Expect MISSED override to cut shot_stop_diving FPs cleanly (without the TP loss seen in 36b→37). 'Impossible ratio' rate = fraction of events with speed_ratio > 2.0; should drop from >20% in Run 37 to <10%."
   },
-  "notes": "Run #38 \u2014 free_kick_shot pre-event stillness gate. Sample 4 frames in [timestamp_start - 5s, timestamp_start]. If ball detected in \u22652 frames AND position std-dev < 0.04 \u2192 KEEP (placed ball = real free kick). If std-dev > 0.08 \u2192 REJECT (ball in motion = open-play shot mislabeled). Ambiguous middle keeps (fail-safe). No trajectory fragility issues \u2014 single-condition physical signal."
+  "notes": "Run #38b — ball-identity chain linking. _extract_features now filters raw YOLO ball detections to one-per-frame via nearest-neighbor chain with max_speed=0.3 frame-widths/sec. free_kick_shot gate reverted (premise not testable with current pre-event camera behavior). Trajectory classifier (Run #37) still active — now operating on coherent ball positions rather than noisy candidates. Diag includes n_raw_ball_detections for before/after noise comparison."
 }
