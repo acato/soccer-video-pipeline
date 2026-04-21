@@ -256,40 +256,43 @@ STEP 4 — SHOT (first-class event — emit alongside related events):
   a player = shot_on_target, regardless of what happens after.
 
 A window can contain MULTIPLE events (e.g., shot_on_target + goal_kick).
-Throw-ins and goal kicks are common events — emit them when you can \
-point to specific visible evidence (ball at touchline / ball in goal \
-area). Catches are emitted when the GK is clearly seen with the ball \
-in their hands. DO NOT emit events from inferred or speculative \
-evidence.
+Throw-ins and goal kicks are the MOST COMMON events — flag aggressively.
+Catches are common too — whenever the GK has the ball in their hands.
 
 For each event: start_sec and end_sec should be the actual timestamps.
 
 Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
 "end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 
-BEFORE returning "none", run these targeted checks — but only emit the \
-event if you can POINT to specific visible evidence:
+BEFORE you conclude "open play" and return none, CHECK EACH OF THESE — \
+these events are routinely missed when the pose is only briefly visible:
 
-  (a) THROW-IN check — scan the SIDELINES (top and bottom edges) for \
-      any player near the touchline holding the ball with both hands or \
-      walking toward the line with a ball in hand. The throw-in pose \
-      is brief, but you must see at least the pre- or post-throw \
-      posture WITH the ball clearly in possession.
+  (a) THROW-IN check — scan the SIDELINES (top and bottom edges of the \
+      frame) in EVERY frame: is any player near the touchline holding a \
+      ball, reaching down to pick one up, walking toward the line with a \
+      ball, or mid-throw? The throw-in pose (ball overhead, both hands) \
+      is brief — you may only see the pre- or post-throw posture. Any of \
+      these = throw_in. Do NOT require a clear "ball overhead" pose.
 
-  (b) CATCH check — is the goalkeeper visible with the ball in their \
-      hands/arms? You must SEE the ball in the GK's hands (not infer \
-      it from GK position alone). If a shot preceded and the GK now \
-      visibly holds the ball = catch.
+  (b) CATCH check — is the goalkeeper visible with a ball in their \
+      hands/arms, even briefly? Even if they are walking, bouncing the \
+      ball, or preparing to distribute — that is catch. If a shot or \
+      save preceded and the GK now has the ball = catch.
 
-  (c) CORNER check — is the ball clearly at a CORNER FLAG / corner arc, \
-      with a player standing at the corner ready to kick? The ball \
-      MUST be at the corner, not just "near a sideline."
+  (c) CORNER check — is the ball anywhere near a CORNER FLAG, or is a \
+      player standing at the corner arc? Corner kicks are often shot \
+      from wide, so look at the four corners of the pitch specifically.
 
-If the visible evidence is ambiguous (you cannot point to a specific \
-frame where the criterion is met), return "none" — DO NOT emit a \
-speculative event with low confidence. False positives on these event \
-types are very costly; missed events can be recovered from neighboring \
-windows. Conservative is better than aggressive.
+Only return "none" if ALL THREE checks are clearly negative AND the \
+frames show continuous open play (ball in motion mid-field, no stoppage). \
+If in doubt on any check, emit the event with confidence 0.5-0.7 rather \
+than skipping.
+
+NOTE: the "if in doubt, emit" policy above applies ONLY to the three \
+check types (throw_in / catch / corner_kick). It does NOT relax the \
+REQUIRES clauses on free_kick_shot or shot_stop_diving — those still \
+need the specific evidence listed in their definitions, no exceptions. \
+Speculative free_kick_shot or shot_stop_diving emission is very costly.
 
 If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
