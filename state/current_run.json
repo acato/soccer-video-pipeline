@@ -2,22 +2,28 @@
   "$schema_version": 1,
   "run_number": 40,
   "run_label": "run_40",
-  "job_id": "TBD",
+  "job_id": "6e790f09-e718-4614-86c0-ed6df08e0cfc",
   "commit_sha": "4eb6546",
-  "submitted_at": "2026-04-20T00:00:00Z",
+  "submitted_at": "2026-04-21T00:06:46Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance", "90",
-    "--video-offset", "420",
-    "--half2-start", "4020",
-    "--half2-game-offset", "2700",
-    "--gt-file", "/Volumes/transit/Games/17/08 GA (U19) vs Columbia Premier SC U19 (W)_1st Half.json",
-    "--gt-file", "/Volumes/transit/Games/17/08 GA (U19) vs Columbia Premier SC U19 (W)_2nd Half.json"
+    "--tolerance",
+    "90",
+    "--video-offset",
+    "420",
+    "--half2-start",
+    "4020",
+    "--half2-game-offset",
+    "2700",
+    "--gt-file",
+    "/Volumes/transit/Games/17/08 GA (U19) vs Columbia Premier SC U19 (W)_1st Half.json",
+    "--gt-file",
+    "/Volumes/transit/Games/17/08 GA (U19) vs Columbia Premier SC U19 (W)_2nd Half.json"
   ],
-  "ground_truth_source": "NAS /Volumes/transit/Games/17 — 08 GA (U19) vs Columbia Premier SC (U19), 2026-03-07",
+  "ground_truth_source": "NAS /Volumes/transit/Games/17 \u2014 08 GA (U19) vs Columbia Premier SC (U19), 2026-03-07",
   "job_payload": {
     "nas_path": "2026-03-07-ga-vs-columbia-premier.mp4",
     "reel_types": [
@@ -40,11 +46,11 @@
   "baseline": {
     "run": "38b-on-rush",
     "f1": 0.392,
-    "notes": "All runs #35-38b plateaued at F1 ~0.39 on the Rush game (08 GA U19 vs Washington Rush U19, 2026-02-07). Run #39 attempted this generalization test on 2026-03-14 U15 Westside Metros but that video had framing issues (camera didn't capture goal action → only 5 events detected in 120 min). Run #40 retries with 2026-03-07 08 GA U19 vs Columbia Premier — SAME team, age group (U19, 45-min halves), and rig as Rush; only the opponent and date change."
+    "notes": "All runs #35-38b plateaued at F1 ~0.39 on the Rush game (08 GA U19 vs Washington Rush U19, 2026-02-07). Run #39 attempted this generalization test on 2026-03-14 U15 Westside Metros but that video had framing issues (camera didn't capture goal action \u2192 only 5 events detected in 120 min). Run #40 retries with 2026-03-07 08 GA U19 vs Columbia Premier \u2014 SAME team, age group (U19, 45-min halves), and rig as Rush; only the opponent and date change."
   },
   "targets": {
-    "f1_minimum_interesting": 0.30,
+    "f1_minimum_interesting": 0.3,
     "notes": "Apples-to-apples test on same-team-different-opponent. Expect detection volumes similar to Rush if pipeline generalizes. F1 close to ~0.39 confirms the ceiling is pipeline-general; substantially different would point to something Rush-specific. Per-type distributions are the primary signal."
   },
-  "notes": "Run #40 — generalization test on same-team-different-opponent. Same feature commit as Run #38b (4eb6546 — ball chain linking + GK proximity + trajectory). Video: 2026-03-07 08 GA U19 vs Columbia Premier (117 min, 1944 GT events across both halves). U19 = 45-min halves (same as Rush). Offsets: VIDEO_OFFSET=420 (est), half2_start=4020 (est), half2_game_offset=2700 (U19 standard). Tolerance 90s. Replaces the aborted Run #39 on folder 18 (Westside Metros had framing issues — bad test video)."
+  "notes": "Run #40 \u2014 generalization test on same-team-different-opponent. Same feature commit as Run #38b (4eb6546 \u2014 ball chain linking + GK proximity + trajectory). Video: 2026-03-07 08 GA U19 vs Columbia Premier (117 min, 1944 GT events across both halves). U19 = 45-min halves (same as Rush). Offsets: VIDEO_OFFSET=420 (est), half2_start=4020 (est), half2_game_offset=2700 (U19 standard). Tolerance 90s. Replaces the aborted Run #39 on folder 18 (Westside Metros had framing issues \u2014 bad test video)."
 }
