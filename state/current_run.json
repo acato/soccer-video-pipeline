@@ -2,15 +2,16 @@
   "$schema_version": 1,
   "run_number": 43,
   "run_label": "run_43",
-  "job_id": "TBD",
+  "job_id": "c60c8264-ebc6-4a4b-a1be-14e2dd38330c",
   "commit_sha": "56ecb98",
-  "submitted_at": "2026-04-21T00:00:00Z",
+  "submitted_at": "2026-04-21T20:18:42Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance", "45"
+    "--tolerance",
+    "45"
   ],
   "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
   "job_payload": {
@@ -35,14 +36,14 @@
   "baseline": {
     "run": "38b",
     "f1": 0.392,
-    "notes": "Run 38b: F1 0.392, P 0.356, R 0.436. Run 41 regressed (broad changes), Run 42 partial recovery (F1 0.351) but free_kick_shot tightening was the only durable win (FP 30→11, -2 TPs). Run 43 keeps ONLY the free_kick_shot tightening and reverts shot_stop_diving to test whether a single strict clause causes less global caution bleed than two."
+    "notes": "Run 38b: F1 0.392, P 0.356, R 0.436. Run 41 regressed (broad changes), Run 42 partial recovery (F1 0.351) but free_kick_shot tightening was the only durable win (FP 30\u219211, -2 TPs). Run 43 keeps ONLY the free_kick_shot tightening and reverts shot_stop_diving to test whether a single strict clause causes less global caution bleed than two."
   },
   "targets": {
     "f1": 0.41,
     "tp_min": 66,
-    "precision_min": 0.40,
+    "precision_min": 0.4,
     "free_kick_shot_fp_max": 15,
-    "notes": "Expect free_kick_shot to hold its FP cut (30→~11-15 range). Non-targeted types should rebound closer to Run 38b recall levels since only one strict clause remains in the prompt. F1 0.41 = +0.018 over Run 38b — first real ceiling break if achieved."
+    "notes": "Expect free_kick_shot to hold its FP cut (30\u2192~11-15 range). Non-targeted types should rebound closer to Run 38b recall levels since only one strict clause remains in the prompt. F1 0.41 = +0.018 over Run 38b \u2014 first real ceiling break if achieved."
   },
-  "notes": "Run #43 — minimal VLM prompt tightening: ONLY free_kick_shot requires wall OR foul context. shot_stop_diving reverted to original single-line definition after Run 42 showed its tightening had tiny precision benefit with significant collateral recall damage. Hypothesis: fewer strict clauses = less global VLM caution = recall rebound. Same gate config as Run #38b."
+  "notes": "Run #43 \u2014 minimal VLM prompt tightening: ONLY free_kick_shot requires wall OR foul context. shot_stop_diving reverted to original single-line definition after Run 42 showed its tightening had tiny precision benefit with significant collateral recall damage. Hypothesis: fewer strict clauses = less global VLM caution = recall rebound. Same gate config as Run #38b."
 }
