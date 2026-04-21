@@ -1172,6 +1172,65 @@ class TestChainIntegration:
 
 
 @pytest.mark.unit
+class TestTrajectoryStampingOnEvent:
+    """The trajectory signature is stamped onto event.metadata when the
+    grounder keeps a GK event — so downstream reel composition can tag
+    parries / catches / deflections in the job manifest.
+    """
+
+    def _soccer_model_with_contact(self):
+        """5 frames: ball moves toward GK then reverses (parry signature)."""
+        def _tensor(arr):
+            t = MagicMock()
+            t.cpu.return_value.numpy.return_value = np.array(arr)
+            return t
+
+        def _result_for(ball_pos):
+            boxes = MagicMock()
+            # class 0 = ball, class 1 = goalkeeper (soccer schema)
+            x, y = ball_pos
+            boxes.cls = _tensor([0, 1])
+            boxes.conf = _tensor([0.9, 0.8])
+            boxes.xywhn = _tensor(np.array([
+                [x, y, 0.02, 0.02],
+                [0.90, 0.50, 0.05, 0.12],
+            ]))
+            r = MagicMock()
+            r.boxes = boxes
+            return r
+
+        # Ball path: approaches GK (0.90, 0.50), contacts, then reverses.
+        # Timestamps: 120.0, 121.5, 123.0 (from default sampler_stub).
+        positions = [(0.50, 0.50), (0.88, 0.50), (0.50, 0.50)]
+        model = MagicMock()
+        model.side_effect = lambda images, **kw: [
+            _result_for(positions[i]) for i in range(len(images))
+        ]
+        return model
+
+    def test_kept_gk_event_gets_trajectory_signature_in_metadata(
+        self, sampler_stub
+    ):
+        model = self._soccer_model_with_contact()
+        g = _make_grounder(
+            sampler_stub, model,
+            ball_class_id=0, person_class_ids=(1, 2, 3), gk_class_ids=(1,),
+        )
+        event = _make_event(EventType.CATCH)
+        assert event.metadata == {}  # starts empty
+        out = g.filter([event])
+        assert len(out) == 1
+        kept = out[0]
+        # The signature should be stamped in the event's metadata as a
+        # string (enum .value), and trajectory dict should be present.
+        assert "trajectory_signature" in kept.metadata
+        assert isinstance(kept.metadata["trajectory_signature"], str)
+        assert kept.metadata["trajectory_signature"] in {
+            "parry", "catch", "deflection", "missed", "insufficient_data"
+        }
+
+
+@pytest.mark.unit
 class TestDiagnostics:
 
     def test_writes_per_event_record(self, sampler_stub, tmp_path):

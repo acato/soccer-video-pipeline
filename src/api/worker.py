@@ -336,7 +336,7 @@ def _run_vlm_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working: Path
 def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working: Path) -> dict:
     """Dual-pass VLM pipeline: 8B triage → model swap → 32B classification."""
     from src.assembly.composer import ReelComposer
-    from src.assembly.output import write_reel_to_nas
+    from src.assembly.output import write_reel_to_nas, write_job_manifest
     from src.detection.dual_pass_detector import DualPassConfig, DualPassDetector
     from src.detection.event_log import EventLog
     from src.ingestion.models import JobStatus
@@ -507,6 +507,52 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         store.update_status(job_id, JobStatus.FAILED, progress=100.0, error=error_msg)
         log.warning("pipeline.no_reels_produced", job_id=job_id, reel_names=reel_names)
         return {"job_id": job_id, "output_paths": {}}
+
+    # Write a per-job manifest alongside the reels so downstream tools
+    # (review UI, analysis scripts) can inspect the events that fed
+    # each reel — including the trajectory_signature tag on GK events
+    # (parry / catch / deflection) surfaced by the YOLO grounding gate.
+    try:
+        def _event_to_dict(e):
+            return {
+                "event_id": e.event_id,
+                "event_type": e.event_type.value,
+                "timestamp_start": e.timestamp_start,
+                "timestamp_end": e.timestamp_end,
+                "confidence": e.confidence,
+                "reel_targets": list(e.reel_targets),
+                "trajectory_signature": (
+                    e.metadata.get("trajectory_signature")
+                    if isinstance(e.metadata, dict) else None
+                ),
+                "trajectory": (
+                    e.metadata.get("trajectory")
+                    if isinstance(e.metadata, dict) else None
+                ),
+            }
+
+        events_by_reel = {
+            reel_name: [
+                _event_to_dict(e)
+                for e in all_events
+                if reel_name in e.reel_targets
+            ]
+            for reel_name in reel_names
+        }
+        write_job_manifest(
+            nas_output_base=cfg.NAS_OUTPUT_PATH,
+            job_id=job_id,
+            output_paths=output_paths,
+            metadata={
+                "source_file": vf.filename,
+                "video_duration_sec": vf.duration_sec,
+                "pipeline": "dual_pass_single_pass_32b" if single_pass else "dual_pass",
+                "total_events": len(all_events),
+                "events_by_reel": events_by_reel,
+            },
+        )
+    except Exception as exc:
+        log.warning("pipeline.manifest_write_failed", job_id=job_id, error=str(exc))
 
     store.update_status(job_id, JobStatus.COMPLETE, progress=100.0, output_paths=output_paths)
     log.info("pipeline.complete", job_id=job_id, reels=list(output_paths.keys()))

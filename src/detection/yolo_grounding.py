@@ -420,6 +420,16 @@ class YoloGrounder:
             decision = self._verify(event)
             self._emit_diag(event, decision)
             if decision.keep:
+                # Stamp trajectory signature onto the event's metadata so
+                # downstream reel composition + job manifest can surface
+                # parry / catch / deflection tags on GK events.
+                sig = decision.features.trajectory_signature
+                if sig is not None:
+                    event.metadata["trajectory_signature"] = sig.value
+                    if decision.features.trajectory_metadata is not None:
+                        event.metadata["trajectory"] = (
+                            decision.features.trajectory_metadata.to_dict()
+                        )
                 kept.append(event)
             else:
                 dropped += 1
