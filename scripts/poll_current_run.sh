@@ -220,9 +220,16 @@ PYEOF
 
     log "evaluating: $PY $REPO/$EVAL_SCRIPT $EVENTS_FILE [args=$EVAL_ARGS_JSON] --json-out $EVAL_JSON"
 
-    # shellcheck disable=SC2046
+    # Build EVAL_ARGS as a bash array via NUL-separated stream so paths
+    # with spaces survive (the previous $(... ' '.join(args)) approach
+    # word-split on whitespace and broke --gt-file paths with spaces).
+    EVAL_ARGS=()
+    while IFS= read -r -d '' arg; do
+      EVAL_ARGS+=("$arg")
+    done < <("$PY" -c "import json,sys;[sys.stdout.write(a+chr(0)) for a in json.loads(sys.argv[1])]" "$EVAL_ARGS_JSON")
+
     if "$PY" "$REPO/$EVAL_SCRIPT" "$EVENTS_FILE" \
-        $("$PY" -c "import json,sys;print(' '.join(json.loads(sys.argv[1])))" "$EVAL_ARGS_JSON") \
+        "${EVAL_ARGS[@]}" \
         --json-out "$EVAL_JSON" \
         > "$EVAL_LOG" 2>&1; then
       log "evaluation succeeded; building result file"

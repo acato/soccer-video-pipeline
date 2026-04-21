@@ -199,10 +199,18 @@ STEP 1 — DEAD BALL / RESTART (check first — these are the most common events
 - corner_kick: Ball STATIONARY at or near a CORNER FLAG / corner arc. \
   A player is standing at the corner of the field ready to kick. Look \
   for the distinctive corner flag and the curved corner arc marking.
-- free_kick_shot: Ball STATIONARY anywhere on the pitch OUTSIDE the \
-  goal area and away from corners, with a player standing over it ready \
-  to kick. Often a defensive WALL of 3+ players forms nearby. Can be \
-  anywhere: midfield, edge of penalty area, defensive third.
+- free_kick_shot: REQUIRES BOTH (a) AND (b): \
+  (a) Ball STATIONARY anywhere on the pitch OUTSIDE the goal area and \
+      away from corners, with a player standing over it preparing to kick. \
+  (b) Direct evidence of a free kick (NOT just any stoppage): EITHER a \
+      visible defensive WALL of 3+ players standing in a line within \
+      ~10m of the ball, OR an obvious pre-event foul (player on the \
+      ground, referee with arm raised, opponents complaining). \
+  If you see only "ball stationary + player standing over it" without \
+  (b), this is NOT a free_kick_shot — it could be ANY restart (kickoff, \
+  goal kick, throw-in setup, paused play). DO NOT rationalize a missing \
+  defensive wall as "consistent with" a free kick — absence of (b) means \
+  this event does not qualify.
 - kickoff: Ball at CENTER SPOT, both teams in own halves.
 
 STEP 2 — GOALKEEPER ACTIONS (look for the GK specifically):
@@ -210,9 +218,19 @@ STEP 2 — GOALKEEPER ACTIONS (look for the GK specifically):
   hands/arms, not bouncing away. GK then typically distributes (throws \
   or kicks) the ball. This is VERY COMMON (~12 per game). If you see \
   the GK standing with the ball in their hands, that is a catch.
-- shot_stop_diving: GK DIVES or LUNGES and the ball REBOUNDS/deflects \
-  AWAY. The key difference from catch: the ball is NOT held — it bounces \
-  off the GK or goes wide. The GK's body hits the ground.
+- shot_stop_diving: REQUIRES ALL THREE: \
+  (a) A visible SHOT in the SAME window or in the immediately preceding \
+      frames — a player must be seen STRIKING the ball toward the goal. \
+      DO NOT infer a shot from "GK preparing to save" or "ball near GK" \
+      alone — you must SEE the shot being struck. \
+  (b) The GK clearly DIVES or LUNGES (full extension, leaving feet) — \
+      not standing-position movements like reaching, stepping, or \
+      crouching. If the GK stays on their feet, this is NOT shot_stop_diving. \
+  (c) Visible ball DEFLECTION away from goal — the ball must be seen \
+      changing direction or bouncing away after GK contact. \
+  If you cannot point to a specific frame where the shot was STRUCK, \
+  do not emit shot_stop_diving — it is more likely no save happened, \
+  or the GK action you see is a routine touch (catch / collect).
 - punch: GK PUNCHES ball with a closed FIST, usually on a cross/corner.
 
 STEP 3 — GOAL (requires post-goal signals):
@@ -238,37 +256,40 @@ STEP 4 — SHOT (first-class event — emit alongside related events):
   a player = shot_on_target, regardless of what happens after.
 
 A window can contain MULTIPLE events (e.g., shot_on_target + goal_kick).
-Throw-ins and goal kicks are the MOST COMMON events — flag aggressively.
-Catches are common too — whenever the GK has the ball in their hands.
+Throw-ins and goal kicks are common events — emit them when you can \
+point to specific visible evidence (ball at touchline / ball in goal \
+area). Catches are emitted when the GK is clearly seen with the ball \
+in their hands. DO NOT emit events from inferred or speculative \
+evidence.
 
 For each event: start_sec and end_sec should be the actual timestamps.
 
 Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
 "end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 
-BEFORE you conclude "open play" and return none, CHECK EACH OF THESE — \
-these events are routinely missed when the pose is only briefly visible:
+BEFORE returning "none", run these targeted checks — but only emit the \
+event if you can POINT to specific visible evidence:
 
-  (a) THROW-IN check — scan the SIDELINES (top and bottom edges of the \
-      frame) in EVERY frame: is any player near the touchline holding a \
-      ball, reaching down to pick one up, walking toward the line with a \
-      ball, or mid-throw? The throw-in pose (ball overhead, both hands) \
-      is brief — you may only see the pre- or post-throw posture. Any of \
-      these = throw_in. Do NOT require a clear "ball overhead" pose.
+  (a) THROW-IN check — scan the SIDELINES (top and bottom edges) for \
+      any player near the touchline holding the ball with both hands or \
+      walking toward the line with a ball in hand. The throw-in pose \
+      is brief, but you must see at least the pre- or post-throw \
+      posture WITH the ball clearly in possession.
 
-  (b) CATCH check — is the goalkeeper visible with a ball in their \
-      hands/arms, even briefly? Even if they are walking, bouncing the \
-      ball, or preparing to distribute — that is catch. If a shot or \
-      save preceded and the GK now has the ball = catch.
+  (b) CATCH check — is the goalkeeper visible with the ball in their \
+      hands/arms? You must SEE the ball in the GK's hands (not infer \
+      it from GK position alone). If a shot preceded and the GK now \
+      visibly holds the ball = catch.
 
-  (c) CORNER check — is the ball anywhere near a CORNER FLAG, or is a \
-      player standing at the corner arc? Corner kicks are often shot \
-      from wide, so look at the four corners of the pitch specifically.
+  (c) CORNER check — is the ball clearly at a CORNER FLAG / corner arc, \
+      with a player standing at the corner ready to kick? The ball \
+      MUST be at the corner, not just "near a sideline."
 
-Only return "none" if ALL THREE checks are clearly negative AND the \
-frames show continuous open play (ball in motion mid-field, no stoppage). \
-If in doubt on any check, emit the event with confidence 0.5-0.7 rather \
-than skipping.
+If the visible evidence is ambiguous (you cannot point to a specific \
+frame where the criterion is met), return "none" — DO NOT emit a \
+speculative event with low confidence. False positives on these event \
+types are very costly; missed events can be recovered from neighboring \
+windows. Conservative is better than aggressive.
 
 If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
