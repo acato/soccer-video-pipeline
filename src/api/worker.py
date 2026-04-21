@@ -539,6 +539,20 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
             ]
             for reel_name in reel_names
         }
+        clips_by_reel_meta = {
+            reel_name: [
+                {
+                    "start_sec": round(c.start_sec, 2),
+                    "end_sec": round(c.end_sec, 2),
+                    "duration_sec": round(c.end_sec - c.start_sec, 2),
+                    "primary_event_type": c.primary_event_type,
+                    "primary_signature": c.primary_signature,
+                    "event_count": len(c.events),
+                }
+                for c in clips_by_reel.get(reel_name, [])
+            ]
+            for reel_name in reel_names
+        }
         write_job_manifest(
             nas_output_base=cfg.NAS_OUTPUT_PATH,
             job_id=job_id,
@@ -549,6 +563,7 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
                 "pipeline": "dual_pass_single_pass_32b" if single_pass else "dual_pass",
                 "total_events": len(all_events),
                 "events_by_reel": events_by_reel,
+                "clips_by_reel": clips_by_reel_meta,
             },
         )
     except Exception as exc:

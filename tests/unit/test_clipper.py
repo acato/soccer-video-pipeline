@@ -1,7 +1,13 @@
 """Unit tests for src/segmentation/clipper.py"""
 import pytest
 from src.detection.models import Event, EventType
-from src.segmentation.clipper import ClipBoundary, compute_clips, clips_total_duration, clips_stats
+from src.segmentation.clipper import (
+    ClipBoundary,
+    clips_stats,
+    clips_total_duration,
+    compute_clips,
+    compute_clips_v2,
+)
 
 
 def _make_event(
@@ -148,6 +154,87 @@ class TestComputeClips:
         ]
         clips = compute_clips(events, 5400.0, "highlights", pre_pad=3.0, post_pad=5.0, merge_gap_sec=5.0)
         assert clips[0].primary_event_type == "goal"
+
+
+@pytest.mark.unit
+class TestParryAwareClipping:
+    """Parry-tagged events get extra post-padding, and the clip inherits
+    a primary_signature that summarizes trajectory tags on its events."""
+
+    def _gk_event(self, event_id, start, end, signature=None, conf=0.85):
+        e = _make_event(event_id, EventType.SHOT_STOP_DIVING, start, end,
+                        ["keeper"], confidence=conf)
+        if signature is not None:
+            e.metadata["trajectory_signature"] = signature
+        return e
+
+    def test_parry_event_gets_bonus_post_pad(self):
+        # Without signature: use EVENT_TYPE_CONFIG post_pad (shot_stop_diving).
+        baseline = compute_clips_v2(
+            [self._gk_event("e1", 100.0, 102.0, signature=None)],
+            video_duration=5400.0, reel_name="keeper",
+        )
+        with_parry = compute_clips_v2(
+            [self._gk_event("e2", 100.0, 102.0, signature="parry")],
+            video_duration=5400.0, reel_name="keeper",
+        )
+        # Parry clip should extend 3s further past event end.
+        parry_end = with_parry[0].end_sec
+        baseline_end = baseline[0].end_sec
+        assert parry_end == pytest.approx(baseline_end + 3.0)
+
+    def test_non_parry_signature_no_bonus_pad(self):
+        # "catch" signature — no bonus pad
+        baseline = compute_clips_v2(
+            [self._gk_event("e1", 100.0, 102.0, signature=None)],
+            video_duration=5400.0, reel_name="keeper",
+        )
+        with_catch = compute_clips_v2(
+            [self._gk_event("e2", 100.0, 102.0, signature="catch")],
+            video_duration=5400.0, reel_name="keeper",
+        )
+        assert with_catch[0].end_sec == baseline[0].end_sec
+
+    def test_primary_signature_empty_when_no_tags(self):
+        clips = compute_clips_v2(
+            [self._gk_event("e1", 100.0, 102.0, signature=None)],
+            video_duration=5400.0, reel_name="keeper",
+        )
+        assert clips[0].primary_signature is None
+
+    def test_primary_signature_single_event(self):
+        for sig in ("parry", "catch", "deflection", "missed", "insufficient_data"):
+            clips = compute_clips_v2(
+                [self._gk_event(f"e1_{sig}", 100.0, 102.0, signature=sig)],
+                video_duration=5400.0, reel_name="keeper",
+            )
+            assert clips[0].primary_signature == sig, (
+                f"Expected {sig} on clip, got {clips[0].primary_signature}"
+            )
+
+    def test_primary_signature_priority_parry_wins(self):
+        # Two events merged into one clip: one parry, one catch → parry.
+        events = [
+            self._gk_event("e_catch", 100.0, 102.0, signature="catch"),
+            self._gk_event("e_parry", 103.0, 105.0, signature="parry"),
+        ]
+        clips = compute_clips_v2(
+            events, video_duration=5400.0, reel_name="keeper",
+        )
+        # Should merge (within merge_gap_sec=2.0)
+        assert len(clips) == 1
+        assert clips[0].primary_signature == "parry"
+
+    def test_primary_signature_priority_catch_beats_deflection(self):
+        events = [
+            self._gk_event("e_def", 100.0, 102.0, signature="deflection"),
+            self._gk_event("e_catch", 103.0, 105.0, signature="catch"),
+        ]
+        clips = compute_clips_v2(
+            events, video_duration=5400.0, reel_name="keeper",
+        )
+        assert len(clips) == 1
+        assert clips[0].primary_signature == "catch"
 
 
 @pytest.mark.unit

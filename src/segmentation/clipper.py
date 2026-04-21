@@ -9,9 +9,43 @@ Given a list of Events, compute padded clip windows that:
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import BaseModel
 
 from src.detection.models import Event, EVENT_TYPE_CONFIG
+
+
+# Trajectory signature priority for clip-level summary. A clip with
+# multiple events inherits the highest-priority signature — parry is
+# the most highlight-worthy, insufficient_data is least informative.
+_SIG_PRIORITY: list[str] = [
+    "parry",
+    "catch",
+    "deflection",
+    "missed",
+    "insufficient_data",
+]
+
+# Additional post-event padding when a clip's primary event carries a
+# parry signature — the deflection aftermath (ball out of bounds,
+# corner setup, scramble) is highlight-valuable and often runs a few
+# seconds past timestamp_end.
+_PARRY_POST_PAD_BONUS_SEC: float = 3.0
+
+
+def _best_signature(events: list[Event]) -> Optional[str]:
+    """Pick the highest-priority trajectory signature across events."""
+    sigs: set[str] = set()
+    for e in events:
+        meta = e.metadata if isinstance(e.metadata, dict) else {}
+        sig = meta.get("trajectory_signature")
+        if sig:
+            sigs.add(sig)
+    for candidate in _SIG_PRIORITY:
+        if candidate in sigs:
+            return candidate
+    return None
 
 
 class ClipBoundary(BaseModel):
@@ -22,6 +56,10 @@ class ClipBoundary(BaseModel):
     events: list[str]           # Event IDs covered by this clip
     reel_type: str
     primary_event_type: str     # Most confident event type for metadata/title
+    # Highest-priority trajectory signature present on any event in the
+    # clip (parry / catch / deflection / missed / insufficient_data).
+    # None when no event in the clip has a signature stamped.
+    primary_signature: Optional[str] = None
 
 
 def compute_clips(
@@ -141,6 +179,14 @@ def compute_clips_v2(
         post = cfg.post_pad_sec if cfg else 5.0
         max_dur = cfg.max_clip_sec if cfg else 90.0
 
+        # Parry events benefit from extra post-padding: the deflection
+        # aftermath (ball out of bounds, corner setup, scramble) lives
+        # a few seconds past timestamp_end and is the most highlight-
+        # valuable frames of the save.
+        meta = event.metadata if isinstance(event.metadata, dict) else {}
+        if meta.get("trajectory_signature") == "parry":
+            post += _PARRY_POST_PAD_BONUS_SEC
+
         start = max(0.0, event.timestamp_start - pre)
         end = min(video_duration, event.timestamp_end + post)
         raw_clips.append((start, end, max_dur, event))
@@ -172,6 +218,7 @@ def compute_clips_v2(
             events=[e.event_id for e in clip_events],
             reel_type=reel_name,
             primary_event_type=primary.event_type,
+            primary_signature=_best_signature(clip_events),
         ))
 
     return boundaries
