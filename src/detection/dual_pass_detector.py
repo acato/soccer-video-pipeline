@@ -218,19 +218,9 @@ STEP 2 — GOALKEEPER ACTIONS (look for the GK specifically):
   hands/arms, not bouncing away. GK then typically distributes (throws \
   or kicks) the ball. This is VERY COMMON (~12 per game). If you see \
   the GK standing with the ball in their hands, that is a catch.
-- shot_stop_diving: REQUIRES ALL THREE: \
-  (a) A visible SHOT in the SAME window or in the immediately preceding \
-      frames — a player must be seen STRIKING the ball toward the goal. \
-      DO NOT infer a shot from "GK preparing to save" or "ball near GK" \
-      alone — you must SEE the shot being struck. \
-  (b) The GK clearly DIVES or LUNGES (full extension, leaving feet) — \
-      not standing-position movements like reaching, stepping, or \
-      crouching. If the GK stays on their feet, this is NOT shot_stop_diving. \
-  (c) Visible ball DEFLECTION away from goal — the ball must be seen \
-      changing direction or bouncing away after GK contact. \
-  If you cannot point to a specific frame where the shot was STRUCK, \
-  do not emit shot_stop_diving — it is more likely no save happened, \
-  or the GK action you see is a routine touch (catch / collect).
+- shot_stop_diving: GK DIVES or LUNGES and the ball REBOUNDS/deflects \
+  AWAY. The key difference from catch: the ball is NOT held — it bounces \
+  off the GK or goes wide. The GK's body hits the ground.
 - punch: GK PUNCHES ball with a closed FIST, usually on a cross/corner.
 
 STEP 3 — GOAL (requires post-goal signals):
@@ -290,9 +280,10 @@ than skipping.
 
 NOTE: the "if in doubt, emit" policy above applies ONLY to the three \
 check types (throw_in / catch / corner_kick). It does NOT relax the \
-REQUIRES clauses on free_kick_shot or shot_stop_diving — those still \
-need the specific evidence listed in their definitions, no exceptions. \
-Speculative free_kick_shot or shot_stop_diving emission is very costly.
+REQUIRES clauses on free_kick_shot — that event still needs the specific \
+evidence listed in its definition (visible defensive wall OR foul \
+context), no exceptions. Speculative free_kick_shot emission is very \
+costly and must be avoided.
 
 If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
