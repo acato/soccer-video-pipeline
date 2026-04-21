@@ -1,17 +1,16 @@
 {
   "$schema_version": 1,
-  "run_number": 42,
-  "run_label": "run_42",
-  "job_id": "b205372b-edc3-474c-84f7-46337d3b59df",
-  "commit_sha": "8def8b5",
-  "submitted_at": "2026-04-21T14:25:46Z",
+  "run_number": 43,
+  "run_label": "run_43",
+  "job_id": "TBD",
+  "commit_sha": "56ecb98",
+  "submitted_at": "2026-04-21T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance",
-    "45"
+    "--tolerance", "45"
   ],
   "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
   "job_payload": {
@@ -36,15 +35,14 @@
   "baseline": {
     "run": "38b",
     "f1": 0.392,
-    "notes": "Run 38b F1 0.392. Run 41 attempted aggressive prompt tightening and regressed to F1 0.271 because broad changes spilled into non-targeted event types (catch 5\u21920, goal 3\u21920, throw_in 20\u21929, goal_kick 14\u21923). BUT the targeted tightening on free_kick_shot (FPs 30\u21923) and shot_stop_diving (FPs 17\u21928) worked exactly as designed. Run 42 keeps only the targeted tightening; reverts the broad changes."
+    "notes": "Run 38b: F1 0.392, P 0.356, R 0.436. Run 41 regressed (broad changes), Run 42 partial recovery (F1 0.351) but free_kick_shot tightening was the only durable win (FP 30→11, -2 TPs). Run 43 keeps ONLY the free_kick_shot tightening and reverts shot_stop_diving to test whether a single strict clause causes less global caution bleed than two."
   },
   "targets": {
     "f1": 0.41,
     "tp_min": 66,
-    "precision_min": 0.4,
+    "precision_min": 0.40,
     "free_kick_shot_fp_max": 15,
-    "shot_stop_diving_fp_max": 12,
-    "notes": "Modest targets reflecting what Run 41's targeted tightening actually delivered, minus a partial rebound from reverting the broad changes. Expect free_kick_shot and shot_stop_diving to retain most of their Run 41 FP wins; other types to rebound toward Run 38b recall levels. F1 0.41 = +0.018 over baseline \u2014 first real ceiling break."
+    "notes": "Expect free_kick_shot to hold its FP cut (30→~11-15 range). Non-targeted types should rebound closer to Run 38b recall levels since only one strict clause remains in the prompt. F1 0.41 = +0.018 over Run 38b — first real ceiling break if achieved."
   },
-  "notes": "Run #42 \u2014 surgical VLM prompt tightening (retry). Commit 8def8b5 keeps ONLY the targeted REQUIRES clauses for free_kick_shot (wall/foul context required) and shot_stop_diving (shot+dive+deflection required). Reverts the broader 'conservative is better' framing and restored the aggressive-emission language for throw_in / goal_kick / catch. Added clarifying NOTE that the 'if in doubt emit' policy is SCOPED to those three types \u2014 not a relaxation of the REQUIRES clauses. Same gate config as Run #38b (ball chain linking + GK proximity + trajectory)."
+  "notes": "Run #43 — minimal VLM prompt tightening: ONLY free_kick_shot requires wall OR foul context. shot_stop_diving reverted to original single-line definition after Run 42 showed its tightening had tiny precision benefit with significant collateral recall damage. Hypothesis: fewer strict clauses = less global VLM caution = recall rebound. Same gate config as Run #38b."
 }
