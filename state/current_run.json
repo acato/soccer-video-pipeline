@@ -1,17 +1,16 @@
 {
   "$schema_version": 1,
-  "run_number": 41,
-  "run_label": "run_41",
-  "job_id": "6db06e0d-25f7-4bd3-8a6b-66ee0ee1f0be",
-  "commit_sha": "5229ab9",
-  "submitted_at": "2026-04-21T06:25:04Z",
+  "run_number": 42,
+  "run_label": "run_42",
+  "job_id": "TBD",
+  "commit_sha": "8def8b5",
+  "submitted_at": "2026-04-21T00:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance",
-    "45"
+    "--tolerance", "45"
   ],
   "ground_truth_source": "NAS /Volumes/transit (loaded by evaluate_detection.py)",
   "job_payload": {
@@ -36,15 +35,15 @@
   "baseline": {
     "run": "38b",
     "f1": 0.392,
-    "notes": "Run 38b on Rush: F1 0.392, P 0.356, R 0.436. free_kick_shot was 88% FP (30/34); shot_stop_diving 85% FP (17/20). Sampling reasonings revealed the VLM uses near-identical template language for both TPs and FPs \u2014 confabulation. Run #41 tightens the VLM prompt to require explicit evidence (defensive wall for free kicks, visible shot for diving saves) and removes the 'if in doubt, emit' instruction that was actively pushing over-emission."
+    "notes": "Run 38b F1 0.392. Run 41 attempted aggressive prompt tightening and regressed to F1 0.271 because broad changes spilled into non-targeted event types (catch 5→0, goal 3→0, throw_in 20→9, goal_kick 14→3). BUT the targeted tightening on free_kick_shot (FPs 30→3) and shot_stop_diving (FPs 17→8) worked exactly as designed. Run 42 keeps only the targeted tightening; reverts the broad changes."
   },
   "targets": {
-    "f1": 0.45,
-    "tp_min": 65,
-    "precision_min": 0.45,
-    "free_kick_shot_fp_max": 10,
-    "shot_stop_diving_fp_max": 8,
-    "notes": "Aggressive precision targets for free_kick_shot (FPs 30 \u2192 \u226410) and shot_stop_diving (FPs 17 \u2192 \u22648). Acceptable to lose 2-3 TPs given the FP cuts available. F1 0.45 = ~+0.06 over baseline; would be the first run to break the 0.39 ceiling. If F1 drops below 0.38, prompt change is too aggressive \u2014 revert and iterate."
+    "f1": 0.41,
+    "tp_min": 66,
+    "precision_min": 0.40,
+    "free_kick_shot_fp_max": 15,
+    "shot_stop_diving_fp_max": 12,
+    "notes": "Modest targets reflecting what Run 41's targeted tightening actually delivered, minus a partial rebound from reverting the broad changes. Expect free_kick_shot and shot_stop_diving to retain most of their Run 41 FP wins; other types to rebound toward Run 38b recall levels. F1 0.41 = +0.018 over baseline — first real ceiling break."
   },
-  "notes": "Run #41 \u2014 VLM prompt tightening on Rush. Commit 5229ab9: free_kick_shot requires defensive wall OR foul context; shot_stop_diving requires visible shot + full dive + visible deflection; removed 'if in doubt, emit' bias from the 'before you conclude open play, check these' section. Also fixes the poller's shell-splitting bug on eval args (was breaking GT paths with spaces). Same gate config as Run #38b (ball chain linking + GK proximity + trajectory) so any F1 movement is attributable to the prompt change."
+  "notes": "Run #42 — surgical VLM prompt tightening (retry). Commit 8def8b5 keeps ONLY the targeted REQUIRES clauses for free_kick_shot (wall/foul context required) and shot_stop_diving (shot+dive+deflection required). Reverts the broader 'conservative is better' framing and restored the aggressive-emission language for throw_in / goal_kick / catch. Added clarifying NOTE that the 'if in doubt emit' policy is SCOPED to those three types — not a relaxation of the REQUIRES clauses. Same gate config as Run #38b (ball chain linking + GK proximity + trajectory)."
 }
