@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 43,
-  "run_label": "run_43",
-  "job_id": "c60c8264-ebc6-4a4b-a1be-14e2dd38330c",
-  "commit_sha": "56ecb98",
-  "submitted_at": "2026-04-21T20:18:42Z",
+  "run_number": 44,
+  "run_label": "run_44",
+  "job_id": "e865fa25-86c7-4ac1-a4a1-2f091c6d2786",
+  "commit_sha": "e60bd4f",
+  "submitted_at": "2026-04-22T19:36:35Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -34,16 +34,22 @@
     }
   },
   "baseline": {
-    "run": "38b",
-    "f1": 0.392,
-    "notes": "Run 38b: F1 0.392, P 0.356, R 0.436. Run 41 regressed (broad changes), Run 42 partial recovery (F1 0.351) but free_kick_shot tightening was the only durable win (FP 30\u219211, -2 TPs). Run 43 keeps ONLY the free_kick_shot tightening and reverts shot_stop_diving to test whether a single strict clause causes less global caution bleed than two."
+    "run": "43",
+    "f1": 0.409,
+    "notes": "Run 43 broke the F1 ceiling at 0.409 (P 0.422, R 0.397, TP 62). Cross-game batch after Run 43 revealed the VLM coarse scan misses ~94% of events on sporting_ac vs ~50% on Rush — recognition fails with high confidence on windows that demonstrably contain events. Inspection of frames at actual 1280x720 VLM resolution showed pose cues ARE resolvable but ~1-2s throw-in/corner setup moments often fall BETWEEN the 3s-spaced frames. Run 44 = single-variable test: bump single_pass_frames 5->8 (~1.9s spacing) to directly attack the frame-sampling gap."
   },
   "targets": {
     "f1": 0.41,
-    "tp_min": 66,
-    "precision_min": 0.4,
-    "free_kick_shot_fp_max": 15,
-    "notes": "Expect free_kick_shot to hold its FP cut (30\u2192~11-15 range). Non-targeted types should rebound closer to Run 38b recall levels since only one strict clause remains in the prompt. F1 0.41 = +0.018 over Run 38b \u2014 first real ceiling break if achieved."
+    "tp_min": 62,
+    "precision_min": 0.40,
+    "notes": "On Rush alone this run should at least hold Run 43's F1 (0.409). If frame sampling was a meaningful bottleneck even on Rush, we may see +0.01-0.02 F1 from recall pickup. A regression would suggest the denser frames confuse the VLM (more context drift, harder decisions). The real prize is cross-game: batch this config across the 4-game panel after confirming no Rush regression."
   },
-  "notes": "Run #43 \u2014 minimal VLM prompt tightening: ONLY free_kick_shot requires wall OR foul context. shot_stop_diving reverted to original single-line definition after Run 42 showed its tightening had tiny precision benefit with significant collateral recall damage. Hypothesis: fewer strict clauses = less global VLM caution = recall rebound. Same gate config as Run #38b."
+  "config_changes_vs_baseline": {
+    "single_pass_frames": {
+      "old": 5,
+      "new": 8,
+      "reason": "~60% more frames per window (~1.9s spacing vs 3s) to catch brief setup moments that were falling between samples on sporting_ac. Token budget OK: 8 frames at 1280x720 ~= 9.4K visual tokens + prompt < 16384 max_model_len."
+    }
+  },
+  "notes": "Run #44 \u2014 single-variable frame-count test. No prompt, gate, or threshold changes vs Run 43. Commit e60bd4f changes single_pass_frames default 5->8 in dual_pass_detector.py. Worker restarted before submission (worker_commit.txt verified e60bd4f @ 19:36:26Z)."
 }
