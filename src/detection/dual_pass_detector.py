@@ -438,7 +438,7 @@ class DualPassConfig:
     # Single-pass settings
     single_pass_step_sec: float = 10.0   # Slide step (10s = ~684 windows for 114 min game)
     single_pass_window_sec: float = 15.0  # Each window spans 15s (5s overlap)
-    single_pass_frames: int = 5           # Frames per window (one every 3s)
+    single_pass_frames: int = 8           # Run #44: up from 5 — denser sampling (~1.9s) to catch brief events on cross-game footage
     single_pass_timeout_sec: int = 60     # Per-window timeout
 
     # 8B triage model
