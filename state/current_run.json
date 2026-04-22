@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 44,
   "run_label": "run_44",
-  "job_id": "e865fa25-86c7-4ac1-a4a1-2f091c6d2786",
-  "commit_sha": "e60bd4f",
-  "submitted_at": "2026-04-22T19:36:35Z",
+  "job_id": "d58ac4a2-1a07-4012-9b8b-fd349e358ef0",
+  "commit_sha": "25f2b4d",
+  "submitted_at": "2026-04-22T22:37:30Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -51,5 +51,5 @@
       "reason": "~60% more frames per window (~1.9s spacing vs 3s) to catch brief setup moments that were falling between samples on sporting_ac. Token budget OK: 8 frames at 1280x720 ~= 9.4K visual tokens + prompt < 16384 max_model_len."
     }
   },
-  "notes": "Run #44 \u2014 single-variable frame-count test. No prompt, gate, or threshold changes vs Run 43. Commit e60bd4f changes single_pass_frames default 5->8 in dual_pass_detector.py. Worker restarted before submission (worker_commit.txt verified e60bd4f @ 19:36:26Z)."
+  "notes": "Run #44 (rerun) \u2014 single-variable frame-count test. First submission (job e865fa25, commit e60bd4f) was a NULL RUN: diagnostics showed n_frames=5 on all 685 windows and F1 was bit-identical to Run 43 (0.40924). Root cause: worker.py:366 getattr fallback was hardcoded to 5, overriding DualPassConfig's new default of 8. Commit 25f2b4d fixes the fallback. Worker restarted on 25f2b4d @ 22:37:19Z before this resubmission."
 }
