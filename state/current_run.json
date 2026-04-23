@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 44,
   "run_label": "run_44",
-  "job_id": "0a2b194b-1614-4a5c-b6ed-1f04ccbaaa1e",
-  "commit_sha": "92f2c9a",
-  "submitted_at": "2026-04-23T01:29:30Z",
+  "job_id": "ee0268b5-94a9-4cc1-97f7-3ac74bbc9b7d",
+  "commit_sha": "bb8d4d4",
+  "submitted_at": "2026-04-23T01:35:12Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -47,9 +47,9 @@
   "config_changes_vs_baseline": {
     "single_pass_frames": {
       "old": 5,
-      "new": 8,
-      "reason": "~60% more frames per window (~1.9s spacing vs 3s) to catch brief setup moments that were falling between samples on sporting_ac. Token budget OK: 8 frames at 1280x720 ~= 9.4K visual tokens + prompt < 16384 max_model_len."
+      "new": 7,
+      "reason": "40% more frames per window (~2.14s spacing vs 3s) to catch brief setup moments that were falling between samples on sporting_ac. Originally targeted 8 frames but vLLM is running with --max-model-len 8192 (not the 16384 in swap_vllm_model.sh's tier2 config), and 8 frames blows the budget at ~8600 tokens. 7 frames fits at ~7600 tokens with margin."
     }
   },
-  "notes": "Run #44 (3rd submission) \u2014 first two submissions were null runs (n_frames=5 in diagnostics, bit-identical metrics to Run 43). The 5 was baked into 3 layers and each fix only patched one. Authoritative layer is src/config.py:203 (SINGLE_PASS_FRAMES = _int(..., 5)) which always populates cfg.SINGLE_PASS_FRAMES, so downstream getattr() fallbacks never fired. Commit 92f2c9a fixes it at the source + the env-var-map. Runtime verified: c.SINGLE_PASS_FRAMES=8. Worker restarted on 92f2c9a @ 01:28:15Z before this resubmission."
+  "notes": "Run #44 (4th submission) \u2014 prior history: 1) commit e60bd4f null run (DualPassConfig default ignored by worker's getattr); 2) commit 25f2b4d null run (getattr fallback never fires because cfg attr is always present); 3) commit 92f2c9a finally applied n_frames=8 but vLLM rejected every window with HTTP 400 (8 frames > max_model_len=8192). Commit bb8d4d4 backs off to 7 frames. Pre-flight verified on ee0268b5: startup log n_frames=7, no api_errors, coherent VLM responses at ~10s/window."
 }
