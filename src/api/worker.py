@@ -363,7 +363,7 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         single_pass=single_pass,
         single_pass_step_sec=float(getattr(cfg, 'SINGLE_PASS_STEP_SEC', 10.0)),
         single_pass_window_sec=float(getattr(cfg, 'SINGLE_PASS_WINDOW_SEC', 15.0)),
-        single_pass_frames=int(getattr(cfg, 'SINGLE_PASS_FRAMES', 7)),
+        single_pass_frames=int(getattr(cfg, 'SINGLE_PASS_FRAMES', 5)),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,

@@ -438,7 +438,7 @@ class DualPassConfig:
     # Single-pass settings
     single_pass_step_sec: float = 10.0   # Slide step (10s = ~684 windows for 114 min game)
     single_pass_window_sec: float = 15.0  # Each window spans 15s (5s overlap)
-    single_pass_frames: int = 7           # Run #44: up from 5 — denser sampling (~2.1s) to catch brief events; 7 fits the vLLM max_model_len=8192 budget (8 exceeded it)
+    single_pass_frames: int = 5           # Reverted after Run 44 (-0.040 F1 on Rush) + Run 45 (+0.055 on sporting_ac, coarse firing rate unchanged at 3.1%). Density is not the cross-game bottleneck.
     single_pass_timeout_sec: int = 60     # Per-window timeout
 
     # 8B triage model

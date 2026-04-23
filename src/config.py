@@ -200,7 +200,7 @@ SINGLE_PASS_STEP_SEC: float = _float("SINGLE_PASS_STEP_SEC", 10.0)
 SINGLE_PASS_WINDOW_SEC: float = _float("SINGLE_PASS_WINDOW_SEC", 15.0)
 """Window duration in seconds for single-pass classification."""
 
-SINGLE_PASS_FRAMES: int = _int("SINGLE_PASS_FRAMES", 7)
+SINGLE_PASS_FRAMES: int = _int("SINGLE_PASS_FRAMES", 5)
 """Number of frames per window in single-pass mode."""
 
 YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
@@ -434,7 +434,7 @@ class _Config:
             "SINGLE_PASS_32B": ("SINGLE_PASS_32B", "false"),
             "SINGLE_PASS_STEP_SEC": ("SINGLE_PASS_STEP_SEC", "10.0"),
             "SINGLE_PASS_WINDOW_SEC": ("SINGLE_PASS_WINDOW_SEC", "15.0"),
-            "SINGLE_PASS_FRAMES": ("SINGLE_PASS_FRAMES", "7"),
+            "SINGLE_PASS_FRAMES": ("SINGLE_PASS_FRAMES", "5"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),
