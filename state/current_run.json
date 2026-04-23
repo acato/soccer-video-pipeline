@@ -1,42 +1,42 @@
 {
   "$schema_version": 1,
-  "run_number": 45,
-  "run_label": "run_45_sporting_7frames",
-  "job_id": "259d3493-90ea-4c74-b313-5c8e90d607c5",
-  "commit_sha": "bb8d4d4",
-  "submitted_at": "2026-04-23T04:55:30Z",
+  "run_number": 46,
+  "run_label": "run_46",
+  "job_id": "a0c4d3d0-79a1-4c79-8351-710d1ac01a99",
+  "commit_sha": "3c7f555",
+  "submitted_at": "2026-04-23T17:37:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": [
-    "--tolerance", "90",
-    "--video-offset", "396.0",
-    "--half2-start", "3396.0",
-    "--half2-game-offset", "2700.0",
-    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_1st Half.json",
-    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_2nd Half.json"
-  ],
-  "ground_truth_source": "/Volumes/transit/Games/1/ (Sporting AC match — cross-game test, NOT Rush)",
+  "evaluate_args": ["--tolerance", "45"],
+  "ground_truth_source": "NAS /Volumes/transit (Rush, loaded by evaluate_detection.py default paths)",
   "job_payload": {
-    "nas_path": "2025-01-01-ga-vs-sporting-ac.mp4",
+    "nas_path": "2026-02-07 - Rush - GA2008.mp4",
     "reel_types": ["keeper", "highlights"],
     "match_config": {
-      "team": {"team_name": "subject_team", "outfield_color": "white", "gk_color": "neon_yellow"},
-      "opponent": {"team_name": "opponent", "outfield_color": "blue", "gk_color": "neon_green"}
+      "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
+      "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
     }
   },
   "baseline": {
-    "run": "batch_5frames_sporting_ac",
-    "f1": 0.153,
-    "notes": "Original batch run on sporting_ac with 5 frames (commit 8bf1240): F1 0.153, P 0.733, R 0.085, TP 11/129, FP 4. Catastrophic recall collapse. The coarse VLM pass flagged only 22/672 windows (3.3%) with any event vs Rush's 156/685 (22.8%). Hypothesis under test: denser frame sampling (5->7) recovers brief-event recall. Run 44 on Rush *regressed* with 7 frames (F1 0.409->0.369) due to FP inflation on pose-setup events, BUT sporting_ac's failure mode was UNDER-firing rather than over-firing, so it may respond oppositely."
+    "run": "43",
+    "f1": 0.409,
+    "notes": "Run 43 ceiling-break baseline: F1 0.409, P 0.422, R 0.397, TP 62. Run 44 (7 frames) regressed to 0.369 and Run 45 (7 frames cross-game on sporting_ac) improved only marginally with coarse-firing rate unchanged, so density was rejected as the primary lever. Reverted to 5 frames. Run 46 ships prompt surgery: the templated 3-check 'throw-in?/catch?/corner? -> open play' default path is replaced with a broader stoppage-binary that asks whether play is continuous or any stoppage signal is visible anywhere (ball stationary; player holding ball; set-piece formation; touchline/corner walk; ref raised arm; OOB; center-circle reset)."
   },
   "targets": {
-    "f1": 0.25,
-    "notes": "If density is the right lever for cross-game recall, sporting_ac F1 should jump substantially from 0.153 (modest target: 0.25 via better throw_in/shot_on_target recall). If sporting_ac is also flat or regresses, density is not the mechanism and we should revert to 5 frames and try prompt restructure or multi-crop next."
+    "f1": 0.41,
+    "tp_min": 62,
+    "precision_min": 0.38,
+    "notes": "Prompt restructure — Rush F1 can tolerate slight precision drop if recall rebounds, but F1 must not regress below Run 43's 0.409. Real prize is cross-game: if Rush holds, immediately run this prompt on sporting_ac (Run 47) to see if coarse-firing rate moves off 3.1% on non-Rush footage. FP inflation on Rush within tolerance (<=15 above baseline) is acceptable; recall jump on cross-game is the goal."
   },
   "config_changes_vs_baseline": {
-    "single_pass_frames": {"old": 5, "new": 7, "reason": "Diagnostic probe: does density help when the failure mode is under-firing on sparse events?"}
+    "single_pass_frames": {"old": 5, "new": 5, "reason": "unchanged — reverted after Run 44/45"},
+    "prompt_default_path": {
+      "old": "BEFORE you conclude open play, CHECK THROW-IN/CATCH/CORNER... only return none if ALL THREE checks are clearly negative",
+      "new": "BEFORE concluding open play, answer ONE question: is play CONTINUOUS or is ANY stoppage/restart visible in any frame? (primitive signals: ball stationary, player holding ball, set-piece formation, touchline walk, ref raised arm, OOB, center-reset)",
+      "reason": "The 3-check template was running reflexively on cross-game footage where those specific cues are harder to resolve. Switching to a broader stoppage-binary forces the VLM to engage with whole-frame play state rather than three framing-dependent pose cues. Free_kick_shot REQUIRES clause preserved (Run 43's FP 30->7 win)."
+    }
   },
-  "notes": "Run #45 (diagnostic, not on Rush benchmark): SAME 7-frame config as Run 44 (commit bb8d4d4), but run against sporting_ac instead of Rush. Purpose: isolate whether denser sampling helps the cross-game recall-collapse failure mode (distinct from Rush's over-firing regression). If yes, we accept the Rush regression and keep 7 frames. If no, revert to 5 and attack the prompt/crops."
+  "notes": "Run #46 \u2014 prompt surgery only (frames reverted to 5). Commit 3c7f555. Pre-flight verification pending on the new job."
 }
