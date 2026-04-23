@@ -441,6 +441,17 @@ class DualPassConfig:
     single_pass_frames: int = 5           # Reverted after Run 44 (-0.040 F1 on Rush) + Run 45 (+0.055 on sporting_ac, coarse firing rate unchanged at 3.1%). Density is not the cross-game bottleneck.
     single_pass_timeout_sec: int = 60     # Per-window timeout
 
+    # Run #47: YOLO-driven tight cropping before VLM. Attacks the
+    # pixel-per-player gap on zoomed-out cameras (sporting_ac ~15px/player
+    # at 640px render vs Rush ~50-100px/player). When enabled, each sampled
+    # frame is cropped to the bounding box of detected persons + ball with
+    # padding, then sent to the VLM at native crop resolution.
+    yolo_crop_enabled: bool = False
+    yolo_crop_pad_frac: float = 0.10     # Pad crop by 10% of bbox extent on each side
+    yolo_crop_min_area_frac: float = 0.15  # Skip crop if bbox is <15% of frame (spurious detection)
+    yolo_crop_max_area_frac: float = 0.85  # Skip crop if bbox is >85% of frame (crop adds no value)
+    yolo_crop_conf: float = 0.10         # Low conf threshold — we'd rather over-include than miss a player
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -562,6 +573,12 @@ class DualPassDetector:
         self._job_id = job_id
         self._working_dir = Path(working_dir)
         self._sampler = FrameSampler(source_file, frame_width=config.frame_width)
+        # Lazy-loaded YOLO model for crop gate (Run #47)
+        self._yolo_crop_model = None
+        self._yolo_crop_load_failed = False
+        self._yolo_crop_stats = {"total": 0, "cropped": 0, "fallback_no_box": 0,
+                                 "fallback_too_big": 0, "fallback_too_small": 0,
+                                 "fallback_error": 0}
 
     def detect(
         self,
@@ -575,6 +592,137 @@ class DualPassDetector:
         if self._cfg.single_pass:
             return self._single_pass_detect(progress_callback)
         return self._dual_pass_detect(progress_callback)
+
+    def _yolo_crop_frames(self, frames: list) -> list:
+        """Tight-crop each frame to the bounding box of detected persons+ball.
+
+        Run #47 experiment: attacks the pixel-per-player gap on zoomed-out
+        cameras (sporting_ac). Cropped frames are sent to the VLM at native
+        crop resolution (not rescaled), so token cost scales with crop area.
+
+        Falls back to the original frame when:
+          - YOLO model fails to load or inference errors out
+          - YOLO finds no persons or ball
+          - Resulting union bbox is too small (<min_area_frac) — likely a
+            spurious background detection
+          - Resulting union bbox is too large (>max_area_frac) — crop
+            adds no meaningful pixel density
+
+        Updates self._yolo_crop_stats for diagnostics.
+        """
+        import io
+        import numpy as np
+        from PIL import Image
+
+        cfg = self._cfg
+        # Lazy-load YOLO model
+        if self._yolo_crop_model is None and not self._yolo_crop_load_failed:
+            try:
+                from ultralytics import YOLO
+                if not cfg.yolo_model_path:
+                    raise RuntimeError("yolo_model_path is empty")
+                self._yolo_crop_model = YOLO(cfg.yolo_model_path)
+                log.info("yolo_crop.model_loaded", path=cfg.yolo_model_path)
+            except Exception as exc:
+                log.warning("yolo_crop.load_failed", error=str(exc))
+                self._yolo_crop_load_failed = True
+                self._yolo_crop_model = None
+
+        if self._yolo_crop_model is None:
+            self._yolo_crop_stats["fallback_error"] += len(frames)
+            self._yolo_crop_stats["total"] += len(frames)
+            return frames
+
+        # Decode JPEGs to numpy arrays for YOLO
+        try:
+            arrays = [np.array(Image.open(io.BytesIO(f.jpeg_bytes))) for f in frames]
+        except Exception as exc:
+            log.warning("yolo_crop.decode_failed", error=str(exc))
+            self._yolo_crop_stats["fallback_error"] += len(frames)
+            self._yolo_crop_stats["total"] += len(frames)
+            return frames
+
+        # Batched inference
+        try:
+            kwargs = {
+                "imgsz": cfg.yolo_grounding_inference_size,
+                "conf": cfg.yolo_crop_conf,
+                "verbose": False,
+            }
+            if not cfg.yolo_use_gpu:
+                kwargs["device"] = "cpu"
+            results = self._yolo_crop_model(arrays, **kwargs)
+        except Exception as exc:
+            log.warning("yolo_crop.inference_failed", error=str(exc))
+            self._yolo_crop_stats["fallback_error"] += len(frames)
+            self._yolo_crop_stats["total"] += len(frames)
+            return frames
+
+        person_ids = frozenset(int(c) for c in cfg.yolo_person_class_ids)
+        ball_id = int(cfg.yolo_ball_class_id)
+        pad = cfg.yolo_crop_pad_frac
+        min_area = cfg.yolo_crop_min_area_frac
+        max_area = cfg.yolo_crop_max_area_frac
+
+        out = []
+        for result, frame, arr in zip(results, frames, arrays):
+            self._yolo_crop_stats["total"] += 1
+            H, W = arr.shape[:2]
+
+            if not hasattr(result, "boxes") or result.boxes is None:
+                self._yolo_crop_stats["fallback_no_box"] += 1
+                out.append(frame)
+                continue
+            try:
+                classes = result.boxes.cls.cpu().numpy().astype(int)
+                xyxyn = result.boxes.xyxyn.cpu().numpy()
+            except (AttributeError, Exception):
+                self._yolo_crop_stats["fallback_no_box"] += 1
+                out.append(frame)
+                continue
+
+            keep = [xy for cls, xy in zip(classes, xyxyn)
+                    if int(cls) in person_ids or int(cls) == ball_id]
+            if not keep:
+                self._yolo_crop_stats["fallback_no_box"] += 1
+                out.append(frame)
+                continue
+
+            x1 = min(float(b[0]) for b in keep)
+            y1 = min(float(b[1]) for b in keep)
+            x2 = max(float(b[2]) for b in keep)
+            y2 = max(float(b[3]) for b in keep)
+
+            # Pad proportional to crop extent
+            pw = (x2 - x1) * pad
+            ph = (y2 - y1) * pad
+            x1 = max(0.0, x1 - pw)
+            y1 = max(0.0, y1 - ph)
+            x2 = min(1.0, x2 + pw)
+            y2 = min(1.0, y2 + ph)
+
+            area_frac = (x2 - x1) * (y2 - y1)
+            if area_frac < min_area:
+                self._yolo_crop_stats["fallback_too_small"] += 1
+                out.append(frame)
+                continue
+            if area_frac > max_area:
+                self._yolo_crop_stats["fallback_too_big"] += 1
+                out.append(frame)
+                continue
+
+            px1, py1 = int(x1 * W), int(y1 * H)
+            px2, py2 = int(x2 * W), int(y2 * H)
+            img_cropped = Image.fromarray(arr).crop((px1, py1, px2, py2))
+
+            buf = io.BytesIO()
+            img_cropped.save(buf, format="JPEG", quality=85)
+            # Preserve the SampledFrame NamedTuple structure
+            out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
+                                   jpeg_bytes=buf.getvalue()))
+            self._yolo_crop_stats["cropped"] += 1
+
+        return out
 
     def _single_pass_detect(
         self,
@@ -640,6 +788,10 @@ class DualPassDetector:
                 s = len(frames) / n_frames
                 indices = [int(i * s) for i in range(n_frames)]
                 frames = [frames[i] for i in indices]
+
+            # Run #47: optional YOLO-driven tight crop before VLM
+            if self._cfg.yolo_crop_enabled:
+                frames = self._yolo_crop_frames(frames)
 
             # Build prompt with images
             prompt = _DIRECT_CLASSIFY_PROMPT.format(
@@ -744,6 +896,10 @@ class DualPassDetector:
                  job_id=self._job_id,
                  windows=win_idx, events_raw=len(all_events),
                  nonempty_windows=n_nonempty)
+        if self._cfg.yolo_crop_enabled:
+            log.info("yolo_crop.summary",
+                     job_id=self._job_id,
+                     **self._yolo_crop_stats)
 
         # Deduplicate and post-filter (reuse existing methods)
         all_events = self._deduplicate_events(all_events)

@@ -203,6 +203,10 @@ SINGLE_PASS_WINDOW_SEC: float = _float("SINGLE_PASS_WINDOW_SEC", 15.0)
 SINGLE_PASS_FRAMES: int = _int("SINGLE_PASS_FRAMES", 5)
 """Number of frames per window in single-pass mode."""
 
+YOLO_CROP_ENABLED: bool = _bool("YOLO_CROP_ENABLED", False)
+"""Run #47 experiment: YOLO-driven tight crop of frames before VLM in single-pass
+mode. Attacks the pixel-per-player gap on zoomed-out cameras."""
+
 YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
 """Run #33 breakthrough: YOLO spatial-grounding gate on VLM events.
 Rejects throw_in/corner_kick/goal_kick detections where the ball isn't
@@ -435,6 +439,7 @@ class _Config:
             "SINGLE_PASS_STEP_SEC": ("SINGLE_PASS_STEP_SEC", "10.0"),
             "SINGLE_PASS_WINDOW_SEC": ("SINGLE_PASS_WINDOW_SEC", "15.0"),
             "SINGLE_PASS_FRAMES": ("SINGLE_PASS_FRAMES", "5"),
+            "YOLO_CROP_ENABLED": ("YOLO_CROP_ENABLED", "false"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),
