@@ -254,55 +254,40 @@ For each event: start_sec and end_sec should be the actual timestamps.
 Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
 "end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 
-BEFORE concluding "open play" — answer ONE question first: is play \
-CONTINUOUS across all frames, or is there ANY visible stoppage, \
-restart, or set-piece setup in any frame?
+BEFORE you conclude "open play" and return none, CHECK EACH OF THESE — \
+these events are routinely missed when the pose is only briefly visible:
 
-Signals that play has STOPPED or is RESTARTING (any single one is \
-sufficient — do NOT require all of these):
-  - Ball is STATIONARY on the pitch (not being dribbled or passed).
-  - A player is HOLDING the ball (any part of their body: hands, under \
-    an arm, on a hip). If a player has the ball in hand, play has \
-    stopped — even if it's the GK, a throw-in taker, or a referee.
-  - Players are in a SET-PIECE formation: a defensive wall of 3+ in a \
-    line; a cluster near the corner arc; the GK standing over a ball \
-    in the 6-yard box; a kicker standing over a stationary ball with \
-    opponents backed off.
-  - A player has WALKED to a touchline, corner, or goal area and is \
-    positioning the ball, or is reaching down to pick it up.
-  - The REFEREE has arms raised, is pointing, or players are clustered \
-    around them (foul, protest, injury pause, substitution).
-  - The ball has recently gone OUT OF BOUNDS (visible off the field of \
-    play, someone walking to retrieve it, a ball-boy tossing a new one).
-  - Players are repositioning around the CENTER CIRCLE without chasing \
-    the ball (post-goal reset, kickoff setup).
+  (a) THROW-IN check — scan the SIDELINES (top and bottom edges of the \
+      frame) in EVERY frame: is any player near the touchline holding a \
+      ball, reaching down to pick one up, walking toward the line with a \
+      ball, or mid-throw? The throw-in pose (ball overhead, both hands) \
+      is brief — you may only see the pre- or post-throw posture. Any of \
+      these = throw_in. Do NOT require a clear "ball overhead" pose.
 
-If play is CONTINUOUS across ALL frames (ball moving between players \
-in open play, no stoppage signals anywhere), emit "none". If ANY \
-stoppage or restart signal is present in ANY frame, identify the \
-specific event type from the catalog above. If you can see the \
-stoppage but cannot pin down the exact type, emit your best guess at \
-confidence 0.4-0.6 rather than defaulting to "none" — a near-miss on \
-type is more recoverable downstream than a missed event entirely.
+  (b) CATCH check — is the goalkeeper visible with a ball in their \
+      hands/arms, even briefly? Even if they are walking, bouncing the \
+      ball, or preparing to distribute — that is catch. If a shot or \
+      save preceded and the GK now has the ball = catch.
 
-Do NOT run through a fixed visual checklist ("can I see the sideline? \
-a corner flag? hands-on-ball?") and default to "none" when each \
-specific cue is missing. Different games have different camera angles, \
-zoom levels, and field backgrounds. The primitive signal is the ball \
-being stationary or held, or players being in formation — NOT whether \
-you can resolve a specific pose from this specific camera angle.
+  (c) CORNER check — is the ball anywhere near a CORNER FLAG, or is a \
+      player standing at the corner arc? Corner kicks are often shot \
+      from wide, so look at the four corners of the pitch specifically.
 
-NOTE: the "if in doubt, emit" policy here does NOT relax the \
-REQUIRES clauses on free_kick_shot — that event still needs its \
-specific evidence (visible defensive wall OR obvious pre-event foul \
-context), no exceptions. When in doubt about a stationary-ball \
-situation without wall/foul evidence, it is more likely a goal_kick, \
-throw-in setup, or paused play than a free_kick_shot.
+Only return "none" if ALL THREE checks are clearly negative AND the \
+frames show continuous open play (ball in motion mid-field, no stoppage). \
+If in doubt on any check, emit the event with confidence 0.5-0.7 rather \
+than skipping.
 
-If you see only continuous open play with no stoppage or restart \
-signal anywhere across the frames, return: \
+NOTE: the "if in doubt, emit" policy above applies ONLY to the three \
+check types (throw_in / catch / corner_kick). It does NOT relax the \
+REQUIRES clauses on free_kick_shot — that event still needs the specific \
+evidence listed in its definition (visible defensive wall OR foul \
+context), no exceptions. Speculative free_kick_shot emission is very \
+costly and must be avoided.
+
+If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
-"confidence": 0.9, "reasoning": "continuous open play, no stoppage signals in any frame"}}
+"confidence": 0.9, "reasoning": "open play (throw-in/catch/corner checks negative)"}}
 """
 
 
