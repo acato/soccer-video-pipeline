@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 46,
-  "run_label": "run_46",
-  "job_id": "a0c4d3d0-79a1-4c79-8351-710d1ac01a99",
-  "commit_sha": "3c7f555",
-  "submitted_at": "2026-04-23T17:37:00Z",
+  "run_number": 47,
+  "run_label": "run_47",
+  "job_id": "05d0a46b-9ed5-4280-9526-de40ee144e17",
+  "commit_sha": "c230b26",
+  "submitted_at": "2026-04-23T23:25:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -22,21 +22,20 @@
   "baseline": {
     "run": "43",
     "f1": 0.409,
-    "notes": "Run 43 ceiling-break baseline: F1 0.409, P 0.422, R 0.397, TP 62. Run 44 (7 frames) regressed to 0.369 and Run 45 (7 frames cross-game on sporting_ac) improved only marginally with coarse-firing rate unchanged, so density was rejected as the primary lever. Reverted to 5 frames. Run 46 ships prompt surgery: the templated 3-check 'throw-in?/catch?/corner? -> open play' default path is replaced with a broader stoppage-binary that asks whether play is continuous or any stoppage signal is visible anywhere (ball stationary; player holding ball; set-piece formation; touchline/corner walk; ref raised arm; OOB; center-circle reset)."
+    "notes": "Run 43 ceiling-break baseline: F1 0.409, P 0.422, R 0.397, TP 62. After rejecting density (Run 44) and prompt restructure (Run 46) as single-variable levers, Run 47 tests YOLO-driven tight cropping before the VLM. The hypothesis addresses a different root cause: VLM input pixel density, not VLM firing threshold. Smoke-test on 6 frames (3 sporting_ac + 3 Rush) showed dramatic improvement on sporting_ac (sky/mountains/parking removed, players ~2x larger) and neutral-to-positive on Rush (tight crops around goal area, ball zones)."
   },
   "targets": {
     "f1": 0.41,
     "tp_min": 62,
-    "precision_min": 0.38,
-    "notes": "Prompt restructure — Rush F1 can tolerate slight precision drop if recall rebounds, but F1 must not regress below Run 43's 0.409. Real prize is cross-game: if Rush holds, immediately run this prompt on sporting_ac (Run 47) to see if coarse-firing rate moves off 3.1% on non-Rush footage. FP inflation on Rush within tolerance (<=15 above baseline) is acceptable; recall jump on cross-game is the goal."
+    "precision_min": 0.40,
+    "notes": "Rush should hold baseline F1 0.409 at minimum. Real prize is cross-game: if Rush F1 holds, immediately queue Run 48 cross-game tests (sporting_ac, reign_wwsurf, reign_rush, capital_fc) with the same YOLO crop config. The cross-game signature to watch: coarse-pass firing rate on sporting_ac should move OFF 3.1% (old 5f baseline) toward Rush's 22.8% range if pixel density was the structural bottleneck."
   },
   "config_changes_vs_baseline": {
-    "single_pass_frames": {"old": 5, "new": 5, "reason": "unchanged — reverted after Run 44/45"},
-    "prompt_default_path": {
-      "old": "BEFORE you conclude open play, CHECK THROW-IN/CATCH/CORNER... only return none if ALL THREE checks are clearly negative",
-      "new": "BEFORE concluding open play, answer ONE question: is play CONTINUOUS or is ANY stoppage/restart visible in any frame? (primitive signals: ball stationary, player holding ball, set-piece formation, touchline walk, ref raised arm, OOB, center-reset)",
-      "reason": "The 3-check template was running reflexively on cross-game footage where those specific cues are harder to resolve. Switching to a broader stoppage-binary forces the VLM to engage with whole-frame play state rather than three framing-dependent pose cues. Free_kick_shot REQUIRES clause preserved (Run 43's FP 30->7 win)."
+    "yolo_crop_enabled": {
+      "old": false,
+      "new": true,
+      "reason": "Run #47 feature: soccer-tuned YOLO (yolov8_soccer_uisikdag.pt, classes: ball=0, person=1,2,3) runs on each sampled frame inside the single-pass loop; crops to union(person boxes + ball box) with 10% padding; falls back to full frame if bbox <15% or >85% of frame area. Cropped JPEG is sent to VLM at native crop resolution (not rescaled), so token cost scales with crop size. Integrates with existing YOLO infrastructure from yolo_grounding.py."
     }
   },
-  "notes": "Run #46 \u2014 prompt surgery only (frames reverted to 5). Commit 3c7f555. Pre-flight verification pending on the new job."
+  "notes": "Run #47 \u2014 YOLO tight-crop pre-pass (commit c230b26). Feature-flagged via YOLO_CROP_ENABLED=true in infra/.env. No other changes vs Run 43. Worker restarted on c230b26 @ 23:23:29Z, verified via runtime config check. Smoke test completed showing clean crops on 6/6 test frames (zero fallbacks, all crops visibly attacking the pixel-density gap)."
 }
