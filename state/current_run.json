@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 50,
   "run_label": "run_50_sporting_fieldcrop",
-  "job_id": "e5dab02e-438a-41f8-820b-0daa3a733c27",
+  "job_id": "4806aa26-0ae8-4da7-8d5d-245be46d25f8",
   "commit_sha": "aa172ab",
-  "submitted_at": "2026-04-24T08:59:28Z",
+  "submitted_at": "2026-04-24T14:55:16Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -52,5 +52,5 @@
     "f1": 0.25,
     "notes": "If field_crop recovers the sporting_ac gain (F1 >= 0.22) AND Run 49 held Rush baseline, the approach is positive-sum and ready for cross-game batch."
   },
-  "notes": "Run #50 (commit aa172ab): field-detection crop on sporting_ac. Auto-submitted by chain_run50.sh after Run 49 completed."
+  "notes": "Run #50 (RESUBMITTED). Original chained submission returned the existing completed Run 47 job id because the API dedupes by video SHA \u2014 worker_commit_matches_manifest=false flagged it. This submission: deleted the stale job, resubmitted fresh. Commit aa172ab / worker 12aa0fd both include field_crop code."
 }
