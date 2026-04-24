@@ -1,43 +1,37 @@
 {
   "$schema_version": 1,
-  "run_number": 47,
-  "run_label": "run_47_sporting_yolocrop",
-  "job_id": "e5dab02e-438a-41f8-820b-0daa3a733c27",
+  "run_number": 48,
+  "run_label": "run_48",
+  "job_id": "cb855fd8-e4c5-4c95-b38d-496b6578d135",
   "commit_sha": "c230b26",
-  "submitted_at": "2026-04-23T23:29:30Z",
+  "submitted_at": "2026-04-24T02:00:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": [
-    "--tolerance", "90",
-    "--video-offset", "396.0",
-    "--half2-start", "3396.0",
-    "--half2-game-offset", "2700.0",
-    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_1st Half.json",
-    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_2nd Half.json"
-  ],
-  "ground_truth_source": "/Volumes/transit/Games/1/ (Sporting AC — cross-game test, same calibration as Run 45)",
+  "evaluate_args": ["--tolerance", "45"],
+  "ground_truth_source": "NAS /Volumes/transit (Rush, evaluate_detection.py default paths)",
   "job_payload": {
-    "nas_path": "2025-01-01-ga-vs-sporting-ac.mp4",
+    "nas_path": "2026-02-07 - Rush - GA2008.mp4",
     "reel_types": ["keeper", "highlights"],
     "match_config": {
-      "team": {"team_name": "subject_team", "outfield_color": "white", "gk_color": "neon_yellow"},
-      "opponent": {"team_name": "opponent", "outfield_color": "blue", "gk_color": "neon_green"}
+      "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
+      "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
     }
   },
   "baseline": {
-    "run": "sporting_ac_5f_no_crop",
-    "f1": 0.153,
-    "notes": "Original sporting_ac batch run (5 frames, no YOLO crop): F1 0.153, P 0.733, R 0.085, TP 11/129. Coarse VLM firing rate 3.1% (22/672). This is the game where the pixel-per-player bottleneck is most severe. Run 45 with 7 frames nudged F1 to 0.208 but coarse firing rate didn't move (3.1%), rejecting density as the lever. Run 47 tests YOLO tight-crop: if pixel density IS the structural bottleneck, coarse firing rate should climb substantially from 3.1%, closing the gap with Rush's 22.8%."
+    "run": "43",
+    "f1": 0.409,
+    "notes": "Run 43 ceiling-break baseline: F1 0.409, P 0.422, R 0.397, TP 62. Run 47 on sporting_ac with YOLO crop validated the pixel-density hypothesis: coarse firing rate 3.1% -> 10.3%, F1 0.153 -> 0.215, TP 11 -> 19. Run 48 tests whether YOLO crop also holds or improves Rush, where baseline firing (22.8%) is already adequate. Rush has a smaller expected gain from cropping (camera already fills the frame with field), but also smaller regression risk. This run decides whether to ship the feature across all 4 games."
   },
   "targets": {
-    "f1": 0.30,
-    "coarse_firing_rate_min": 0.10,
-    "notes": "Two signals to evaluate. Primary diagnostic: coarse firing rate. If it doesn't move from 3.1%, the hypothesis is rejected regardless of F1 (crop didn't expose anything new to the VLM). If firing rate jumps to >=10%, the hypothesis is supported. Secondary: F1. A jump from 0.153 to 0.30+ would be a strong cross-game win. If firing rate moves but F1 barely moves, extra fires are FPs (like Run 46's prompt change); revisit. If both move, proceed to Run 48 on Rush for regression check, then batch all 4 games."
+    "f1": 0.409,
+    "tp_min": 62,
+    "precision_min": 0.40,
+    "notes": "Primary criterion: Rush F1 must hold >=0.409. If Rush F1 improves or holds, ship YOLO crop and re-run the cross-game batch (Run 49) with the new config. If Rush regresses by >0.02 F1, the feature is a cross-game trade-off — return to the drawing board. Secondary: coarse firing rate on Rush (baseline 22.8%) should stay similar; a big move either way is a red flag."
   },
   "config_changes_vs_baseline": {
-    "yolo_crop_enabled": {"old": false, "new": true, "reason": "Run 47 feature — YOLO tight-crop before VLM. Smoke test showed dramatic field-focus effect on sporting_ac (sky/mountains/parking removed, players ~2x larger)."}
+    "yolo_crop_enabled": {"old": false, "new": true, "reason": "YOLO tight-crop of each sampled frame to the bounding box of detected persons+ball. Validated on sporting_ac in Run 47 (firing rate 3x, F1 +0.062). Rush test determines whether the feature ships."}
   },
-  "notes": "Run #47 \u2014 diagnostic FIRST on sporting_ac (inverted from initial Rush-first plan). The hypothesis is that pixel density is the cross-game bottleneck; sporting_ac is where that bottleneck is most visible (3.1% vs Rush's 22.8% firing). Running the test on the game with the clearest failure mode gives the highest signal-to-noise for validating or rejecting the hypothesis. Rush regression check comes AFTER the hypothesis is validated. Commit c230b26 (same as killed Rush submission). Worker restarted on afebe70 @ 23:29:07Z."
+  "notes": "Run #48 \u2014 Rush regression check with YOLO_CROP_ENABLED=true. Same commit c230b26 as Run 47. Worker is on afebe70 with the same code loaded. Expected smoke-test observations: Run 47 pre-flight showed YOLO model loaded 1s after start; similar behavior expected here."
 }
