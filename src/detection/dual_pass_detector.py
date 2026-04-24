@@ -452,6 +452,23 @@ class DualPassConfig:
     yolo_crop_max_area_frac: float = 0.85  # Skip crop if bbox is >85% of frame (crop adds no value)
     yolo_crop_conf: float = 0.10         # Low conf threshold — we'd rather over-include than miss a player
 
+    # Run #49: field-detection crop (HSV green-pitch normalization). Unlike
+    # yolo_crop which tightens to the player cluster and strips spatial context
+    # (Rush goal_kick regression -3 TP: crop removed 6-yard box context),
+    # field_crop NORMALIZES image framing by removing only non-pitch regions
+    # (sky, parking, crowd). Per-video: sampled once at job start, applied
+    # to every VLM-bound frame. Rush camera already fills the frame with
+    # pitch => near-no-op crop. Sporting_ac camera shows sky/parking/tents
+    # above the pitch => crop removes that, keeps the full playing surface.
+    field_crop_enabled: bool = False
+    field_crop_n_samples: int = 20       # Frames to sample at job start for bbox computation
+    field_crop_pad_frac: float = 0.03    # Pad final bbox 3% of frame dim to preserve touchline margin
+    field_crop_row_density_threshold: float = 0.30  # Row counts as "pitch" if >=30% of its pixels are green on average
+    field_crop_hue_min: int = 40         # PIL HSV hue lower bound (~yellow-green)
+    field_crop_hue_max: int = 130        # PIL HSV hue upper bound (~blue-green)
+    field_crop_sat_min: int = 50         # Minimum saturation (turf isn't pale)
+    field_crop_val_min: int = 40         # Minimum value (turf isn't near-black)
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -579,6 +596,11 @@ class DualPassDetector:
         self._yolo_crop_stats = {"total": 0, "cropped": 0, "fallback_no_box": 0,
                                  "fallback_too_big": 0, "fallback_too_small": 0,
                                  "fallback_error": 0}
+        # Run #49: field-detection crop cache (computed once per job)
+        self._field_bbox = None            # (x1, y1, x2, y2) in normalized coords, or None
+        self._field_bbox_computed = False  # True once _compute_field_bbox has run (even if it failed)
+        self._field_crop_stats = {"total": 0, "cropped": 0, "fallback_no_bbox": 0,
+                                  "fallback_error": 0}
 
     def detect(
         self,
@@ -724,6 +746,161 @@ class DualPassDetector:
 
         return out
 
+    def _compute_field_bbox(self) -> Optional[tuple]:
+        """Detect the pitch region once per video via HSV green segmentation.
+
+        Samples N frames uniformly across the video, builds per-frame
+        green-turf masks, aggregates into a per-pixel green-frequency map,
+        then finds the tightest axis-aligned bbox of rows/columns where
+        green density exceeds the threshold.
+
+        Returns (x1, y1, x2, y2) in normalized coords [0, 1], or None if
+        field detection fails (e.g. no green pixels found — unusual video).
+        The caller falls back to the full frame on None.
+
+        Runs exactly once per detector instance — results cached in
+        self._field_bbox and self._field_bbox_computed.
+        """
+        import io
+        import numpy as np
+        from PIL import Image
+
+        cfg = self._cfg
+        n = cfg.field_crop_n_samples
+
+        # Sample frames uniformly across the video (avoid the first/last 1% edges
+        # which can contain black bars or title cards)
+        ts_list = [self._video_duration * (0.01 + 0.98 * (i + 0.5) / n)
+                   for i in range(n)]
+        agg_sum = None
+        agg_count = 0
+        for t in ts_list:
+            try:
+                jpeg = self._sampler._extract_single_frame(t)
+            except Exception:
+                continue
+            if not jpeg:
+                continue
+            try:
+                img = Image.open(io.BytesIO(jpeg)).convert("HSV")
+                arr = np.array(img)  # (H, W, 3)
+            except Exception:
+                continue
+            h = arr[..., 0]
+            s = arr[..., 1]
+            v = arr[..., 2]
+            mask = ((h >= cfg.field_crop_hue_min) & (h <= cfg.field_crop_hue_max)
+                    & (s >= cfg.field_crop_sat_min) & (v >= cfg.field_crop_val_min))
+            mask = mask.astype(np.float32)
+            if agg_sum is None:
+                agg_sum = mask
+            else:
+                # Resize if shape differs (shouldn't happen with consistent FrameSampler)
+                if mask.shape != agg_sum.shape:
+                    continue
+                agg_sum = agg_sum + mask
+            agg_count += 1
+
+        if agg_count == 0 or agg_sum is None:
+            log.warning("field_crop.no_samples", job_id=self._job_id)
+            return None
+
+        agg = agg_sum / float(agg_count)  # per-pixel green frequency in [0, 1]
+        H, W = agg.shape
+        row_density = agg.mean(axis=1)  # (H,)
+        col_density = agg.mean(axis=0)  # (W,)
+        thr = cfg.field_crop_row_density_threshold
+
+        row_mask = row_density >= thr
+        col_mask = col_density >= thr
+        if not row_mask.any() or not col_mask.any():
+            log.warning("field_crop.no_green_detected",
+                        job_id=self._job_id,
+                        row_max=float(row_density.max()),
+                        col_max=float(col_density.max()))
+            return None
+
+        # Tightest bbox containing all rows/cols above threshold
+        y1 = int(np.argmax(row_mask))
+        y2 = int(H - np.argmax(row_mask[::-1]))
+        x1 = int(np.argmax(col_mask))
+        x2 = int(W - np.argmax(col_mask[::-1]))
+
+        # Pad outward (in frame-fraction units)
+        pad_y = int(cfg.field_crop_pad_frac * H)
+        pad_x = int(cfg.field_crop_pad_frac * W)
+        y1 = max(0, y1 - pad_y)
+        y2 = min(H, y2 + pad_y)
+        x1 = max(0, x1 - pad_x)
+        x2 = min(W, x2 + pad_x)
+
+        bbox = (x1 / W, y1 / H, x2 / W, y2 / H)
+        log.info("field_crop.bbox_computed",
+                 job_id=self._job_id,
+                 samples=agg_count,
+                 bbox_norm=[round(v, 3) for v in bbox],
+                 area_frac=round((bbox[2] - bbox[0]) * (bbox[3] - bbox[1]), 3))
+        return bbox
+
+    def _field_crop_frames(self, frames: list) -> list:
+        """Apply the per-video field bbox to each frame.
+
+        Computes the bbox on first call and caches it. Every subsequent call
+        reuses the cached bbox. Frames are cropped at native resolution and
+        returned as new SampledFrame entries.
+
+        Falls back to the original frame if:
+          - bbox computation failed (no green detected)
+          - bbox covers >98% of the frame (crop would be a no-op, saving
+            the re-encode cost)
+        """
+        import io
+        import numpy as np
+        from PIL import Image
+
+        # Lazy compute
+        if not self._field_bbox_computed:
+            try:
+                self._field_bbox = self._compute_field_bbox()
+            except Exception as exc:
+                log.warning("field_crop.compute_failed", error=str(exc))
+                self._field_bbox = None
+            self._field_bbox_computed = True
+
+        bbox = self._field_bbox
+        if bbox is None:
+            self._field_crop_stats["fallback_no_bbox"] += len(frames)
+            self._field_crop_stats["total"] += len(frames)
+            return frames
+
+        x1, y1, x2, y2 = bbox
+        area = (x2 - x1) * (y2 - y1)
+        # If bbox is essentially the full frame, skip cropping — saves re-encode
+        if area >= 0.98:
+            self._field_crop_stats["fallback_no_bbox"] += len(frames)
+            self._field_crop_stats["total"] += len(frames)
+            return frames
+
+        out = []
+        for frame in frames:
+            self._field_crop_stats["total"] += 1
+            try:
+                img = Image.open(io.BytesIO(frame.jpeg_bytes))
+                W, H = img.size
+                px1, py1 = int(x1 * W), int(y1 * H)
+                px2, py2 = int(x2 * W), int(y2 * H)
+                cropped = img.crop((px1, py1, px2, py2))
+                buf = io.BytesIO()
+                cropped.save(buf, format="JPEG", quality=85)
+                out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
+                                       jpeg_bytes=buf.getvalue()))
+                self._field_crop_stats["cropped"] += 1
+            except Exception as exc:
+                log.warning("field_crop.frame_failed", error=str(exc))
+                out.append(frame)
+                self._field_crop_stats["fallback_error"] += 1
+        return out
+
     def _single_pass_detect(
         self,
         progress_callback: Optional[Callable[[float], None]] = None,
@@ -789,8 +966,12 @@ class DualPassDetector:
                 indices = [int(i * s) for i in range(n_frames)]
                 frames = [frames[i] for i in indices]
 
-            # Run #47: optional YOLO-driven tight crop before VLM
-            if self._cfg.yolo_crop_enabled:
+            # Run #49: optional field-detection crop (normalization) before VLM.
+            # Preferred over yolo_crop when both are enabled — field_crop preserves
+            # spatial context that yolo_crop strips.
+            if self._cfg.field_crop_enabled:
+                frames = self._field_crop_frames(frames)
+            elif self._cfg.yolo_crop_enabled:
                 frames = self._yolo_crop_frames(frames)
 
             # Build prompt with images
@@ -896,10 +1077,15 @@ class DualPassDetector:
                  job_id=self._job_id,
                  windows=win_idx, events_raw=len(all_events),
                  nonempty_windows=n_nonempty)
-        if self._cfg.yolo_crop_enabled:
+        if self._cfg.yolo_crop_enabled and not self._cfg.field_crop_enabled:
             log.info("yolo_crop.summary",
                      job_id=self._job_id,
                      **self._yolo_crop_stats)
+        if self._cfg.field_crop_enabled:
+            log.info("field_crop.summary",
+                     job_id=self._job_id,
+                     bbox_norm=self._field_bbox,
+                     **self._field_crop_stats)
 
         # Deduplicate and post-filter (reuse existing methods)
         all_events = self._deduplicate_events(all_events)
