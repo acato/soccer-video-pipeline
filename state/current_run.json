@@ -1,38 +1,56 @@
 {
   "$schema_version": 1,
-  "run_number": 49,
-  "run_label": "run_49",
-  "job_id": "8ad95f78-4f41-4462-a9e7-6111fd7be50c",
-  "commit_sha": "12aa0fd",
-  "submitted_at": "2026-04-24T07:07:30Z",
+  "run_number": 50,
+  "run_label": "run_50_sporting_fieldcrop",
+  "job_id": "e5dab02e-438a-41f8-820b-0daa3a733c27",
+  "commit_sha": "aa172ab",
+  "submitted_at": "2026-04-24T08:59:28Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": ["--tolerance", "45"],
-  "ground_truth_source": "NAS /Volumes/transit (Rush, evaluate_detection.py default paths)",
+  "evaluate_args": [
+    "--tolerance",
+    "90",
+    "--video-offset",
+    "396.0",
+    "--half2-start",
+    "3396.0",
+    "--half2-game-offset",
+    "2700.0",
+    "--gt-file",
+    "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_1st Half.json",
+    "--gt-file",
+    "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_2nd Half.json"
+  ],
+  "ground_truth_source": "/Volumes/transit/Games/1/ (Sporting AC)",
   "job_payload": {
-    "nas_path": "2026-02-07 - Rush - GA2008.mp4",
-    "reel_types": ["keeper", "highlights"],
+    "nas_path": "2025-01-01-ga-vs-sporting-ac.mp4",
+    "reel_types": [
+      "keeper",
+      "highlights"
+    ],
     "match_config": {
-      "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
-      "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
+      "team": {
+        "team_name": "subject_team",
+        "outfield_color": "white",
+        "gk_color": "neon_yellow"
+      },
+      "opponent": {
+        "team_name": "opponent",
+        "outfield_color": "blue",
+        "gk_color": "neon_green"
+      }
     }
   },
   "baseline": {
-    "run": "43",
-    "f1": 0.409,
-    "notes": "Run 43 baseline: F1 0.409. Run 48 (yolo_crop) regressed Rush to 0.360 (-0.049) because tightening to the player cluster stripped spatial context the prompt relies on for type discrimination (goal_kick -3 TP, throw_in -3 TP). Run 49 replaces that with field-detection crop: per-video HSV green segmentation finds the pitch region, crops out only non-pitch content (sky, parking, crowd). Smoke test on Rush frames showed bbox y=[0.24,1.0] full width -> only the top 24% (trees above far touchline) is removed, pitch content fully preserved."
+    "run": "sporting_ac_5f_no_crop",
+    "f1": 0.153,
+    "notes": "Original sporting_ac 5f batch baseline. Run 47 with yolo_crop reached F1 0.215 but stripped context on Rush (-0.049 F1). Run 50 tests field-detection crop: same intent as yolo_crop but removes only non-pitch regions, preserving the entire playing surface."
   },
   "targets": {
-    "f1": 0.409,
-    "tp_min": 62,
-    "precision_min": 0.40,
-    "notes": "Rush F1 MUST hold >=0.409. The whole premise of field-detection crop is that removing only non-pitch regions preserves the spatial context the prompt needs. If Rush still regresses, the hypothesis about spatial context being the issue was wrong and we need a different angle entirely. If Rush holds or improves, immediately queue Run 50 on sporting_ac."
+    "f1": 0.25,
+    "notes": "If field_crop recovers the sporting_ac gain (F1 >= 0.22) AND Run 49 held Rush baseline, the approach is positive-sum and ready for cross-game batch."
   },
-  "config_changes_vs_baseline": {
-    "field_crop_enabled": {"old": false, "new": true, "reason": "Per-video HSV field detection. Rush bbox: y=[0.236, 1.000], full x — removes only top 24% (trees above the field on far touchline)."},
-    "yolo_crop_enabled": {"old": false, "new": false, "reason": "Disabled — field_crop replaces it with the same intent but preserves spatial context."}
-  },
-  "notes": "Run #49 (commit 12aa0fd): field-detection crop on Rush. Worker restarted at 07:07:00Z, bbox smoke-tested visually on 3 sporting_ac + 3 Rush frames before submission. Expected: near-neutral effect on Rush since its camera already fills the frame with field. Pre-flight pending."
+  "notes": "Run #50 (commit aa172ab): field-detection crop on sporting_ac. Auto-submitted by chain_run50.sh after Run 49 completed."
 }
