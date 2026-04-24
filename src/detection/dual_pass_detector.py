@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import structlog
 
@@ -42,6 +42,21 @@ log = structlog.get_logger(__name__)
 class CanaryFailure(RuntimeError):
     """Raised when a canary check detects a likely pipeline regression."""
     pass
+
+
+class _DualViewFrame(NamedTuple):
+    """Run #52: dual-view frame output for the single-pass content builder.
+
+    Emitted by _ball_centric_crop_frames when ball_crop + field_crop are both
+    active. Each sampled moment becomes one "wide" frame (field_crop view) and
+    optionally one "ball_zoom" frame (ball-centric crop) with the same
+    timestamp. The content builder in _single_pass_detect detects view_kind
+    on each frame and appends a "(ball zoom)" suffix to the time label so
+    the VLM can distinguish the two views.
+    """
+    timestamp_sec: float
+    jpeg_bytes: bytes
+    view_kind: str  # "wide" or "ball_zoom"
 
 # ── 8B Observe prompt ──────────────────────────────────────────────────
 # Sent to 8B WITH images.  The 8B handles many frames + long prompts fine.
@@ -184,6 +199,15 @@ least one event. Do NOT return empty when the description contains events.
 # with TP=2 NVLink).
 _DIRECT_CLASSIFY_PROMPT = """\
 You are analyzing {n_frames} frames from a soccer match ({start:.0f}s – {end:.0f}s).
+
+Some moments may appear as a pair of images: a WIDE view of the pitch, \
+followed by a ZOOM view centered on the ball (labeled with "(ball zoom)" \
+after the timestamp). The two views share the same timestamp — treat them \
+as one moment in time with two levels of detail. Use the WIDE view for \
+positional context (is the ball at a corner, touchline, or inside the goal \
+area?) and the ZOOM view for action detail (player pose, ball-in-hands, \
+strike motion). Moments without a zoom companion had no confident ball \
+detection; judge those from the wide view alone.
 
 For each DISTINCT event you see, classify it. Work through this decision tree:
 
@@ -768,20 +792,26 @@ class DualPassDetector:
         return out
 
     def _ball_centric_crop_frames(self, frames: list) -> list:
-        """Run #52: crop each frame to a window centered on the detected ball.
+        """Run #52 (Option A — dual-view): emit wide + zoom per sampled moment.
 
-        Per-frame YOLO inference finds the highest-confidence ball box above
-        ball_crop_min_conf. A (ball_crop_width x ball_crop_height) window is
-        extracted, centered on the ball and clamped to the source frame.
+        For each input frame, ALWAYS emit a wide view (field_crop if
+        field_crop_enabled, else the original frame). In addition, if YOLO
+        detects the ball with confidence >= ball_crop_min_conf, emit a zoom
+        view cropped tightly around the ball. Each emitted frame is a
+        _DualViewFrame with view_kind="wide" or "ball_zoom".
 
-        Fallback hierarchy when ball not detected:
-          1. field_crop bbox (if field_crop_enabled) — preserves spatial context
-          2. full frame — last resort
+        This preserves set-piece discrimination (which depends on field-region
+        context via the wide view) while giving dynamic events (shots, saves)
+        a higher-pixel-density zoom view when the ball is visible.
 
-        Trade-off (known): set-piece types (goal_kick, corner_kick, throw_in)
-        may regress because the ball-centric view loses "where on the pitch"
-        context. Dynamic-event types (shot, save, catch) should benefit from
-        the pixel-density boost on the action region.
+        Output length per window varies: N sampled moments -> N wide frames
+        + [0, N] ball_zoom frames, interleaved in time order (wide first,
+        zoom second for each moment). The content builder in
+        _single_pass_detect appends "(ball zoom)" to the time label for
+        zoom frames so the VLM knows it's a second view of the same moment.
+
+        Fallback: if YOLO model fails to load OR inference errors, return
+        the wide-only path (field_crop or original frames).
         """
         import io
         import numpy as np
@@ -852,7 +882,26 @@ class DualPassDetector:
             self._ball_crop_stats["total"] += 1
             H, W = arr.shape[:2]
 
-            # Find highest-confidence ball detection
+            # --- Emit WIDE view (field_crop if available, else original) ---
+            wide_jpeg = frame.jpeg_bytes  # Default: original
+            if cfg.field_crop_enabled and self._field_bbox is not None:
+                try:
+                    fx1, fy1, fx2, fy2 = self._field_bbox
+                    img = Image.fromarray(arr)
+                    wide = img.crop((int(fx1 * W), int(fy1 * H),
+                                     int(fx2 * W), int(fy2 * H)))
+                    buf = io.BytesIO()
+                    wide.save(buf, format="JPEG", quality=85)
+                    wide_jpeg = buf.getvalue()
+                    self._ball_crop_stats["fallback_field"] += 1
+                except Exception:
+                    self._ball_crop_stats["fallback_error"] += 1
+            else:
+                self._ball_crop_stats["fallback_full"] += 1
+            out.append(_DualViewFrame(timestamp_sec=frame.timestamp_sec,
+                                      jpeg_bytes=wide_jpeg, view_kind="wide"))
+
+            # --- Find highest-confidence ball; emit ZOOM if found ---
             best_ball_xy = None
             best_ball_conf = 0.0
             try:
@@ -863,39 +912,18 @@ class DualPassDetector:
                     if int(cls) == ball_id and float(conf) >= cfg.ball_crop_min_conf:
                         if float(conf) > best_ball_conf:
                             best_ball_conf = float(conf)
-                            # xywhn: (center_x, center_y, w, h) normalized
                             best_ball_xy = (float(xy[0]), float(xy[1]))
             except (AttributeError, Exception):
                 best_ball_xy = None
 
             if best_ball_xy is None:
-                # Fall back to field_crop if enabled, else full frame
-                if cfg.field_crop_enabled and self._field_bbox is not None:
-                    try:
-                        x1, y1, x2, y2 = self._field_bbox
-                        img = Image.fromarray(arr)
-                        cropped = img.crop((int(x1 * W), int(y1 * H),
-                                            int(x2 * W), int(y2 * H)))
-                        buf = io.BytesIO()
-                        cropped.save(buf, format="JPEG", quality=85)
-                        out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
-                                               jpeg_bytes=buf.getvalue()))
-                        self._ball_crop_stats["fallback_field"] += 1
-                    except Exception:
-                        out.append(frame)
-                        self._ball_crop_stats["fallback_error"] += 1
-                else:
-                    out.append(frame)
-                    self._ball_crop_stats["fallback_full"] += 1
-                continue
+                continue  # No ball — only the wide view was emitted
 
-            # Ball found — crop a window centered on it
             bx, by = best_ball_xy
             cx_px = int(bx * W)
             cy_px = int(by * H)
             x1 = cx_px - cw // 2
             y1 = cy_px - ch // 2
-            # Clamp to frame bounds while preserving window size
             if x1 < 0:
                 x1 = 0
             if y1 < 0:
@@ -911,16 +939,17 @@ class DualPassDetector:
 
             try:
                 img = Image.fromarray(arr)
-                cropped = img.crop((x1, y1, x2, y2))
+                zoom = img.crop((x1, y1, x2, y2))
                 buf = io.BytesIO()
-                cropped.save(buf, format="JPEG", quality=85)
-                out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
-                                       jpeg_bytes=buf.getvalue()))
+                zoom.save(buf, format="JPEG", quality=85)
+                out.append(_DualViewFrame(
+                    timestamp_sec=frame.timestamp_sec,
+                    jpeg_bytes=buf.getvalue(),
+                    view_kind="ball_zoom",
+                ))
                 self._ball_crop_stats["cropped_ball"] += 1
             except Exception as exc:
                 log.warning("ball_crop.crop_failed", error=str(exc))
-                out.append(frame)
-                self._ball_crop_stats["fallback_error"] += 1
 
         return out
 
@@ -1180,10 +1209,13 @@ class DualPassDetector:
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
                 })
-                content.append({
-                    "type": "text",
-                    "text": f"t={frame.timestamp_sec:.1f}s",
-                })
+                # Run #52: _DualViewFrame carries a view_kind — append
+                # "(ball zoom)" to the timestamp label so the VLM knows
+                # this is the zoom-view companion to the preceding wide view.
+                label = f"t={frame.timestamp_sec:.1f}s"
+                if getattr(frame, "view_kind", "wide") == "ball_zoom":
+                    label += " (ball zoom)"
+                content.append({"type": "text", "text": label})
             content.append({"type": "text", "text": prompt})
 
             payload = {
