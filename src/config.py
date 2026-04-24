@@ -214,10 +214,18 @@ after Run 49 (Rush F1 0.409 -> 0.417, +0.008) and Run 50 (sporting_ac F1
 0.153 -> 0.210, +0.057) — first cross-game positive-sum intervention."""
 
 FIELD_CROP_UPSCALE_LONG_EDGE: int = _int("FIELD_CROP_UPSCALE_LONG_EDGE", 0)
-"""Run #51 experiment: after field_crop, upscale the crop to this long-edge
-pixel count via LANCZOS. 0 = disabled. Tests whether the VLM is bottlenecked
-by visual-token count on cropped images (more patches = more attention
-capacity). Only upscales, never downscales."""
+"""Run #51 experiment (REJECTED): after field_crop, upscale the crop to this
+long-edge pixel count via LANCZOS. 0 = disabled. Run 51 sporting_ac showed
+no firing-rate change (6.5% vs Run 50's 6.5%, +1 TP) — LANCZOS interpolation
+doesn't add information, so more attention over fabricated pixels doesn't
+surface anything new."""
+
+BALL_CROP_ENABLED: bool = _bool("BALL_CROP_ENABLED", False)
+"""Run #52 experiment: per-frame YOLO ball detection + crop window centered
+on ball. Higher effective pixel density on dynamic events (shots, saves,
+catches). Expected trade-off: set-pieces (throw_in, corner, goal_kick) may
+regress because ball-centric view loses field-region context that defines
+those types."""
 
 YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
 """Run #33 breakthrough: YOLO spatial-grounding gate on VLM events.
@@ -454,6 +462,7 @@ class _Config:
             "YOLO_CROP_ENABLED": ("YOLO_CROP_ENABLED", "false"),
             "FIELD_CROP_ENABLED": ("FIELD_CROP_ENABLED", "true"),
             "FIELD_CROP_UPSCALE_LONG_EDGE": ("FIELD_CROP_UPSCALE_LONG_EDGE", "0"),
+            "BALL_CROP_ENABLED": ("BALL_CROP_ENABLED", "false"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),

@@ -472,7 +472,19 @@ class DualPassConfig:
     # whether the VLM is compute-bound by visual-token count (more patches =
     # more attention capacity over the same content). 0 = disabled, >0 =
     # target long-edge in pixels. Only upscales, never downscales.
+    # REJECTED: Run 51 showed no firing-rate change on sporting_ac (6.5% vs
+    # Run 50's 6.5%). More patches over interpolated pixels add no info.
     field_crop_upscale_long_edge: int = 0
+
+    # Run #52: ball-centric crop. Per frame, run YOLO to find the ball and
+    # extract a crop window centered on it. Sends the actual-action region
+    # to the VLM at higher effective pixel density than a whole-field view.
+    # Falls back to field_crop (if enabled) or full frame when the ball
+    # isn't detected in a given frame.
+    ball_crop_enabled: bool = False
+    ball_crop_width: int = 640   # Crop window width in source pixels
+    ball_crop_height: int = 360  # Crop window height in source pixels (16:9)
+    ball_crop_min_conf: float = 0.15  # YOLO ball-conf threshold (matches yolo_grounding default)
 
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
@@ -606,6 +618,10 @@ class DualPassDetector:
         self._field_bbox_computed = False  # True once _compute_field_bbox has run (even if it failed)
         self._field_crop_stats = {"total": 0, "cropped": 0, "fallback_no_bbox": 0,
                                   "fallback_error": 0}
+        # Run #52: ball-centric crop stats
+        self._ball_crop_stats = {"total": 0, "cropped_ball": 0,
+                                 "fallback_field": 0, "fallback_full": 0,
+                                 "fallback_error": 0}
 
     def detect(
         self,
@@ -748,6 +764,163 @@ class DualPassDetector:
             out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
                                    jpeg_bytes=buf.getvalue()))
             self._yolo_crop_stats["cropped"] += 1
+
+        return out
+
+    def _ball_centric_crop_frames(self, frames: list) -> list:
+        """Run #52: crop each frame to a window centered on the detected ball.
+
+        Per-frame YOLO inference finds the highest-confidence ball box above
+        ball_crop_min_conf. A (ball_crop_width x ball_crop_height) window is
+        extracted, centered on the ball and clamped to the source frame.
+
+        Fallback hierarchy when ball not detected:
+          1. field_crop bbox (if field_crop_enabled) — preserves spatial context
+          2. full frame — last resort
+
+        Trade-off (known): set-piece types (goal_kick, corner_kick, throw_in)
+        may regress because the ball-centric view loses "where on the pitch"
+        context. Dynamic-event types (shot, save, catch) should benefit from
+        the pixel-density boost on the action region.
+        """
+        import io
+        import numpy as np
+        from PIL import Image
+
+        cfg = self._cfg
+
+        # Lazy-load YOLO (shares model instance with _yolo_crop_model)
+        if self._yolo_crop_model is None and not self._yolo_crop_load_failed:
+            try:
+                from ultralytics import YOLO
+                if not cfg.yolo_model_path:
+                    raise RuntimeError("yolo_model_path is empty")
+                self._yolo_crop_model = YOLO(cfg.yolo_model_path)
+                log.info("ball_crop.model_loaded", path=cfg.yolo_model_path)
+            except Exception as exc:
+                log.warning("ball_crop.load_failed", error=str(exc))
+                self._yolo_crop_load_failed = True
+                self._yolo_crop_model = None
+
+        if self._yolo_crop_model is None:
+            # No YOLO — fall back to field_crop (if enabled) or full frame
+            if cfg.field_crop_enabled:
+                return self._field_crop_frames(frames)
+            self._ball_crop_stats["fallback_error"] += len(frames)
+            self._ball_crop_stats["total"] += len(frames)
+            return frames
+
+        # Decode JPEGs
+        try:
+            arrays = [np.array(Image.open(io.BytesIO(f.jpeg_bytes))) for f in frames]
+        except Exception as exc:
+            log.warning("ball_crop.decode_failed", error=str(exc))
+            self._ball_crop_stats["fallback_error"] += len(frames)
+            self._ball_crop_stats["total"] += len(frames)
+            return frames
+
+        # Batched YOLO
+        try:
+            kwargs = {
+                "imgsz": cfg.yolo_grounding_inference_size,
+                "conf": cfg.ball_crop_min_conf,
+                "verbose": False,
+            }
+            if not cfg.yolo_use_gpu:
+                kwargs["device"] = "cpu"
+            results = self._yolo_crop_model(arrays, **kwargs)
+        except Exception as exc:
+            log.warning("ball_crop.inference_failed", error=str(exc))
+            self._ball_crop_stats["fallback_error"] += len(frames)
+            self._ball_crop_stats["total"] += len(frames)
+            return frames
+
+        ball_id = int(cfg.yolo_ball_class_id)
+        # Compute field bbox up-front for fallback path (no-op if already cached)
+        if cfg.field_crop_enabled and not self._field_bbox_computed:
+            try:
+                self._field_bbox = self._compute_field_bbox()
+            except Exception:
+                self._field_bbox = None
+            self._field_bbox_computed = True
+
+        out = []
+        cw = int(cfg.ball_crop_width)
+        ch = int(cfg.ball_crop_height)
+
+        for result, frame, arr in zip(results, frames, arrays):
+            self._ball_crop_stats["total"] += 1
+            H, W = arr.shape[:2]
+
+            # Find highest-confidence ball detection
+            best_ball_xy = None
+            best_ball_conf = 0.0
+            try:
+                classes = result.boxes.cls.cpu().numpy().astype(int)
+                confs = result.boxes.conf.cpu().numpy()
+                xywhn = result.boxes.xywhn.cpu().numpy()
+                for cls, conf, xy in zip(classes, confs, xywhn):
+                    if int(cls) == ball_id and float(conf) >= cfg.ball_crop_min_conf:
+                        if float(conf) > best_ball_conf:
+                            best_ball_conf = float(conf)
+                            # xywhn: (center_x, center_y, w, h) normalized
+                            best_ball_xy = (float(xy[0]), float(xy[1]))
+            except (AttributeError, Exception):
+                best_ball_xy = None
+
+            if best_ball_xy is None:
+                # Fall back to field_crop if enabled, else full frame
+                if cfg.field_crop_enabled and self._field_bbox is not None:
+                    try:
+                        x1, y1, x2, y2 = self._field_bbox
+                        img = Image.fromarray(arr)
+                        cropped = img.crop((int(x1 * W), int(y1 * H),
+                                            int(x2 * W), int(y2 * H)))
+                        buf = io.BytesIO()
+                        cropped.save(buf, format="JPEG", quality=85)
+                        out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
+                                               jpeg_bytes=buf.getvalue()))
+                        self._ball_crop_stats["fallback_field"] += 1
+                    except Exception:
+                        out.append(frame)
+                        self._ball_crop_stats["fallback_error"] += 1
+                else:
+                    out.append(frame)
+                    self._ball_crop_stats["fallback_full"] += 1
+                continue
+
+            # Ball found — crop a window centered on it
+            bx, by = best_ball_xy
+            cx_px = int(bx * W)
+            cy_px = int(by * H)
+            x1 = cx_px - cw // 2
+            y1 = cy_px - ch // 2
+            # Clamp to frame bounds while preserving window size
+            if x1 < 0:
+                x1 = 0
+            if y1 < 0:
+                y1 = 0
+            x2 = x1 + cw
+            y2 = y1 + ch
+            if x2 > W:
+                x2 = W
+                x1 = max(0, x2 - cw)
+            if y2 > H:
+                y2 = H
+                y1 = max(0, y2 - ch)
+
+            try:
+                img = Image.fromarray(arr)
+                cropped = img.crop((x1, y1, x2, y2))
+                buf = io.BytesIO()
+                cropped.save(buf, format="JPEG", quality=85)
+                out.append(type(frame)(timestamp_sec=frame.timestamp_sec,
+                                       jpeg_bytes=buf.getvalue()))
+                self._ball_crop_stats["cropped_ball"] += 1
+            except Exception as exc:
+                log.warning("ball_crop.crop_failed", error=str(exc))
+                out.append(frame)
+                self._ball_crop_stats["fallback_error"] += 1
 
         return out
 
@@ -982,10 +1155,13 @@ class DualPassDetector:
                 indices = [int(i * s) for i in range(n_frames)]
                 frames = [frames[i] for i in indices]
 
-            # Run #49: optional field-detection crop (normalization) before VLM.
-            # Preferred over yolo_crop when both are enabled — field_crop preserves
-            # spatial context that yolo_crop strips.
-            if self._cfg.field_crop_enabled:
+            # Crop preprocessing before VLM. Preference order:
+            #   1. ball_crop (Run #52) — per-frame YOLO ball detection, crop around ball
+            #   2. field_crop (Run #49) — per-video HSV field detection, static bbox
+            #   3. yolo_crop (Run #47, rejected) — tight player cluster crop
+            if self._cfg.ball_crop_enabled:
+                frames = self._ball_centric_crop_frames(frames)
+            elif self._cfg.field_crop_enabled:
                 frames = self._field_crop_frames(frames)
             elif self._cfg.yolo_crop_enabled:
                 frames = self._yolo_crop_frames(frames)
@@ -1102,6 +1278,10 @@ class DualPassDetector:
                      job_id=self._job_id,
                      bbox_norm=self._field_bbox,
                      **self._field_crop_stats)
+        if self._cfg.ball_crop_enabled:
+            log.info("ball_crop.summary",
+                     job_id=self._job_id,
+                     **self._ball_crop_stats)
 
         # Deduplicate and post-filter (reuse existing methods)
         all_events = self._deduplicate_events(all_events)
