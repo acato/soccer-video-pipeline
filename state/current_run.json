@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 51,
-  "run_label": "run_51_sporting_upscale",
-  "job_id": "0adfc8ac-b557-42d9-becf-a75c72cd4276",
-  "commit_sha": "21fd7e4",
-  "submitted_at": "2026-04-24T17:38:00Z",
+  "run_number": 52,
+  "run_label": "run_52_sporting_ball_dualview",
+  "job_id": "34e58d21-ffcd-4cd3-9997-01a20948b818",
+  "commit_sha": "20f862f",
+  "submitted_at": "2026-04-24T20:12:30Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -29,14 +29,14 @@
   "baseline": {
     "run": "50_sporting_fieldcrop",
     "f1": 0.210,
-    "notes": "Run 50 sporting_ac with field_crop (no upscale): F1 0.210, P 0.515, R 0.132, TP 17/129, FP 16. Coarse firing rate 6.5% vs Rush 30%. Run 51 adds LANCZOS upscale of the cropped image to long-edge=1920 (1280x~540 -> 1920x~810), keeping same field content but giving the VLM more 28x28 patches over it. Tests whether attention capacity on cropped images is the bottleneck."
+    "notes": "Run 50 sporting_ac with field_crop (no upscale, no ball_zoom): F1 0.210, P 0.515, R 0.132, TP 17/129, FP 16. Run 51 (upscale=1440) was a null change (F1 0.221, +0.011). Run 52 adds a second VLM view per moment: the field_crop (wide) + a 640x360 ball-centric zoom when YOLO detects the ball (~35% of frames). VLM sees 5-10 images per window depending on ball detection rate; prompt prefix explains pair structure."
   },
   "targets": {
     "f1": 0.25,
-    "notes": "If upscale is net positive, F1 climbs meaningfully. If ~flat, we've learned the VLM isn't bottlenecked by visual-token count — move to Run 52 (ball-centric crops) which would actually add new information via YOLO-driven framing."
+    "notes": "The dual-view is designed to preserve set-piece recall (throw_in/corner/goal_kick, which need field-region context) via the always-emitted wide view, while adding pixel-density gain for dynamic events (shot, save, catch) via the ball zoom. Watch per-type breakdown: throw_in should hold near Run 50 (field view unchanged), dynamic events should improve. Net F1 gain expected: +0.02 to +0.05 if ball_zoom is useful on the ~35% of frames where it fires."
   },
   "config_changes_vs_baseline": {
-    "field_crop_upscale_long_edge": {"old": 0, "new": 1440, "reason": "Upscale each field crop so its long edge = 1440 via LANCZOS. First attempt at 1920 busted max_model_len=8192 (Qwen3-VL emits ~1972 tokens per 1920x816 image, 5 images = ~9860 > limit). Recalculated budget: 1440x~612 crop = ~1071 tokens per image, 5 * 1071 = 5355 + prompt 600 + output 800 = 6755, fits with margin."}
+    "ball_crop_enabled": {"old": false, "new": true, "reason": "Run 52 Option A: always emit wide (field_crop) view; additionally emit ball-centric zoom when YOLO detects ball with conf >= 0.15. 5 moments -> 5-10 images per window (variable on ball detection rate). Prompt prefix explains pair structure."}
   },
-  "notes": "Run #51 (resubmitted at upscale=1440): first submission at upscale=1920 (job 0b84e055) busted max_model_len=8192 with every window returning HTTP 400 'Input length 9309 exceeds 8192'. My token math was wrong — Qwen3-VL does not apply the 2x2 merge I assumed. Lowered upscale target to 1440, resubmitted as job 0adfc8ac. Pre-flight verified zero api_errors since restart."
+  "notes": "Run #52 (commit 20f862f): ball_crop in dual-view mode. Smoke test confirmed correct interleaving — sporting 3 samples -> 3 wide frames (ball not detected); Rush 4 samples -> 5 frames (1 moment emitted wide+zoom). Ball detection sparsity known: sporting ~35% at conf=0.05, ~25% at conf=0.15. Pre-flight pending."
 }
