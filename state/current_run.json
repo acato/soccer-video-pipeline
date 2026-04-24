@@ -1,56 +1,42 @@
 {
   "$schema_version": 1,
-  "run_number": 50,
-  "run_label": "run_50_sporting_fieldcrop",
-  "job_id": "4806aa26-0ae8-4da7-8d5d-245be46d25f8",
-  "commit_sha": "aa172ab",
-  "submitted_at": "2026-04-24T14:55:16Z",
+  "run_number": 51,
+  "run_label": "run_51_sporting_upscale",
+  "job_id": "0b84e055-f3fa-4e78-a5d4-b9d150c630a0",
+  "commit_sha": "7e1c561",
+  "submitted_at": "2026-04-24T17:34:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
   "evaluate_args": [
-    "--tolerance",
-    "90",
-    "--video-offset",
-    "396.0",
-    "--half2-start",
-    "3396.0",
-    "--half2-game-offset",
-    "2700.0",
-    "--gt-file",
-    "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_1st Half.json",
-    "--gt-file",
-    "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_2nd Half.json"
+    "--tolerance", "90",
+    "--video-offset", "396.0",
+    "--half2-start", "3396.0",
+    "--half2-game-offset", "2700.0",
+    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_1st Half.json",
+    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_2nd Half.json"
   ],
   "ground_truth_source": "/Volumes/transit/Games/1/ (Sporting AC)",
   "job_payload": {
     "nas_path": "2025-01-01-ga-vs-sporting-ac.mp4",
-    "reel_types": [
-      "keeper",
-      "highlights"
-    ],
+    "reel_types": ["keeper", "highlights"],
     "match_config": {
-      "team": {
-        "team_name": "subject_team",
-        "outfield_color": "white",
-        "gk_color": "neon_yellow"
-      },
-      "opponent": {
-        "team_name": "opponent",
-        "outfield_color": "blue",
-        "gk_color": "neon_green"
-      }
+      "team": {"team_name": "subject_team", "outfield_color": "white", "gk_color": "neon_yellow"},
+      "opponent": {"team_name": "opponent", "outfield_color": "blue", "gk_color": "neon_green"}
     }
   },
   "baseline": {
-    "run": "sporting_ac_5f_no_crop",
-    "f1": 0.153,
-    "notes": "Original sporting_ac 5f batch baseline. Run 47 with yolo_crop reached F1 0.215 but stripped context on Rush (-0.049 F1). Run 50 tests field-detection crop: same intent as yolo_crop but removes only non-pitch regions, preserving the entire playing surface."
+    "run": "50_sporting_fieldcrop",
+    "f1": 0.210,
+    "notes": "Run 50 sporting_ac with field_crop (no upscale): F1 0.210, P 0.515, R 0.132, TP 17/129, FP 16. Coarse firing rate 6.5% vs Rush 30%. Run 51 adds LANCZOS upscale of the cropped image to long-edge=1920 (1280x~540 -> 1920x~810), keeping same field content but giving the VLM more 28x28 patches over it. Tests whether attention capacity on cropped images is the bottleneck."
   },
   "targets": {
     "f1": 0.25,
-    "notes": "If field_crop recovers the sporting_ac gain (F1 >= 0.22) AND Run 49 held Rush baseline, the approach is positive-sum and ready for cross-game batch."
+    "notes": "If upscale is net positive, F1 climbs meaningfully. If ~flat, we've learned the VLM isn't bottlenecked by visual-token count — move to Run 52 (ball-centric crops) which would actually add new information via YOLO-driven framing."
   },
-  "notes": "Run #50 (RESUBMITTED). Original chained submission returned the existing completed Run 47 job id because the API dedupes by video SHA \u2014 worker_commit_matches_manifest=false flagged it. This submission: deleted the stale job, resubmitted fresh. Commit aa172ab / worker 12aa0fd both include field_crop code."
+  "config_changes_vs_baseline": {
+    "field_crop_upscale_long_edge": {"old": 0, "new": 1920, "reason": "Upscale each field crop so its long edge = 1920 via LANCZOS. Visual token budget: 5 * 476 = 2380 tokens + prompt/output ~1400 = 3780, fits 8192 max_model_len with margin. Smoke test on sporting_ac t=428.2: orig 1280x720 -> crop 1280x~540 -> upscaled 1920x816, JPEG 59KB -> 147KB."}
+  },
+  "notes": "Run #51 (commit 7e1c561): field_crop + LANCZOS upscale. Worker restarted at 17:29:01Z, config verified live. Smoke test on one frame confirmed no visible artifacts from interpolation."
 }
