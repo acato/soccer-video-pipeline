@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 51,
   "run_label": "run_51_sporting_upscale",
-  "job_id": "0b84e055-f3fa-4e78-a5d4-b9d150c630a0",
-  "commit_sha": "7e1c561",
-  "submitted_at": "2026-04-24T17:34:00Z",
+  "job_id": "0adfc8ac-b557-42d9-becf-a75c72cd4276",
+  "commit_sha": "21fd7e4",
+  "submitted_at": "2026-04-24T17:38:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -36,7 +36,7 @@
     "notes": "If upscale is net positive, F1 climbs meaningfully. If ~flat, we've learned the VLM isn't bottlenecked by visual-token count — move to Run 52 (ball-centric crops) which would actually add new information via YOLO-driven framing."
   },
   "config_changes_vs_baseline": {
-    "field_crop_upscale_long_edge": {"old": 0, "new": 1920, "reason": "Upscale each field crop so its long edge = 1920 via LANCZOS. Visual token budget: 5 * 476 = 2380 tokens + prompt/output ~1400 = 3780, fits 8192 max_model_len with margin. Smoke test on sporting_ac t=428.2: orig 1280x720 -> crop 1280x~540 -> upscaled 1920x816, JPEG 59KB -> 147KB."}
+    "field_crop_upscale_long_edge": {"old": 0, "new": 1440, "reason": "Upscale each field crop so its long edge = 1440 via LANCZOS. First attempt at 1920 busted max_model_len=8192 (Qwen3-VL emits ~1972 tokens per 1920x816 image, 5 images = ~9860 > limit). Recalculated budget: 1440x~612 crop = ~1071 tokens per image, 5 * 1071 = 5355 + prompt 600 + output 800 = 6755, fits with margin."}
   },
-  "notes": "Run #51 (commit 7e1c561): field_crop + LANCZOS upscale. Worker restarted at 17:29:01Z, config verified live. Smoke test on one frame confirmed no visible artifacts from interpolation."
+  "notes": "Run #51 (resubmitted at upscale=1440): first submission at upscale=1920 (job 0b84e055) busted max_model_len=8192 with every window returning HTTP 400 'Input length 9309 exceeds 8192'. My token math was wrong — Qwen3-VL does not apply the 2x2 merge I assumed. Lowered upscale target to 1440, resubmitted as job 0adfc8ac. Pre-flight verified zero api_errors since restart."
 }
