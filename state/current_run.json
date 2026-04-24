@@ -1,42 +1,37 @@
 {
   "$schema_version": 1,
-  "run_number": 52,
-  "run_label": "run_52_sporting_ball_dualview",
-  "job_id": "34e58d21-ffcd-4cd3-9997-01a20948b818",
-  "commit_sha": "20f862f",
-  "submitted_at": "2026-04-24T20:12:30Z",
+  "run_number": 53,
+  "run_label": "run_53",
+  "job_id": "d3e795c3-a688-4cf6-96ae-ef61bb6137b1",
+  "commit_sha": "b86bdd1",
+  "submitted_at": "2026-04-24T22:26:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
   "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": [
-    "--tolerance", "90",
-    "--video-offset", "396.0",
-    "--half2-start", "3396.0",
-    "--half2-game-offset", "2700.0",
-    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_1st Half.json",
-    "--gt-file", "/Volumes/transit/Games/1/08 GA (U19) vs Sporting AC_2nd Half.json"
-  ],
-  "ground_truth_source": "/Volumes/transit/Games/1/ (Sporting AC)",
+  "evaluate_args": ["--tolerance", "45"],
+  "ground_truth_source": "NAS /Volumes/transit (Rush, evaluate_detection.py default paths)",
   "job_payload": {
-    "nas_path": "2025-01-01-ga-vs-sporting-ac.mp4",
+    "nas_path": "2026-02-07 - Rush - GA2008.mp4",
     "reel_types": ["keeper", "highlights"],
     "match_config": {
-      "team": {"team_name": "subject_team", "outfield_color": "white", "gk_color": "neon_yellow"},
-      "opponent": {"team_name": "opponent", "outfield_color": "blue", "gk_color": "neon_green"}
+      "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
+      "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
     }
   },
   "baseline": {
-    "run": "50_sporting_fieldcrop",
-    "f1": 0.210,
-    "notes": "Run 50 sporting_ac with field_crop (no upscale, no ball_zoom): F1 0.210, P 0.515, R 0.132, TP 17/129, FP 16. Run 51 (upscale=1440) was a null change (F1 0.221, +0.011). Run 52 adds a second VLM view per moment: the field_crop (wide) + a 640x360 ball-centric zoom when YOLO detects the ball (~35% of frames). VLM sees 5-10 images per window depending on ball detection rate; prompt prefix explains pair structure."
+    "run": "49",
+    "f1": 0.417,
+    "notes": "Run 49 Rush baseline (field_crop only): F1 0.417, P 0.417, R 0.417, TP 65, FP 91. Run 52 sporting_ac with field_crop+ball_crop dual-view blew past Run 50 baseline: F1 0.210 -> 0.367 (+0.157), TP 17 -> 33, precision INCREASED 0.515 -> 0.647. The throw_in class carried almost the whole win (+16 TP) because the ball zoom supplies the ball-in-hands pose detail the prompt was already looking for but couldn't resolve at wide 1280x540 resolution. Run 53 checks whether the same dual-view config also holds (or improves) Rush. If Rush holds, ship ball_crop as default."
   },
   "targets": {
-    "f1": 0.25,
-    "notes": "The dual-view is designed to preserve set-piece recall (throw_in/corner/goal_kick, which need field-region context) via the always-emitted wide view, while adding pixel-density gain for dynamic events (shot, save, catch) via the ball zoom. Watch per-type breakdown: throw_in should hold near Run 50 (field view unchanged), dynamic events should improve. Net F1 gain expected: +0.02 to +0.05 if ball_zoom is useful on the ~35% of frames where it fires."
+    "f1": 0.417,
+    "tp_min": 65,
+    "precision_min": 0.40,
+    "notes": "Rush F1 must hold >=0.417. Rush ball detection rate should be higher than sporting_ac's 16.7% (field fills the frame, ball is more prominent). If ball_zoom provides similar TP gain on Rush, F1 could jump to 0.45+. If ball_zoom confuses Rush's well-tuned baseline (e.g. misreads on specific types), we'll see which types regress and decide."
   },
   "config_changes_vs_baseline": {
-    "ball_crop_enabled": {"old": false, "new": true, "reason": "Run 52 Option A: always emit wide (field_crop) view; additionally emit ball-centric zoom when YOLO detects ball with conf >= 0.15. 5 moments -> 5-10 images per window (variable on ball detection rate). Prompt prefix explains pair structure."}
+    "ball_crop_enabled": {"old": false, "new": true, "reason": "Dual-view (wide field_crop + zoom ball_crop) — same config that drove Run 52 sporting_ac F1 0.210 -> 0.367. Commit 20f862f / state commit b86bdd1. Field_crop already shipped as default in Run 49."}
   },
-  "notes": "Run #52 (commit 20f862f): ball_crop in dual-view mode. Smoke test confirmed correct interleaving — sporting 3 samples -> 3 wide frames (ball not detected); Rush 4 samples -> 5 frames (1 moment emitted wide+zoom). Ball detection sparsity known: sporting ~35% at conf=0.05, ~25% at conf=0.15. Pre-flight pending."
+  "notes": "Run #53: Rush regression check for ball_crop dual-view. Worker running on commit 20f862f+ with FIELD_CROP_ENABLED=true and BALL_CROP_ENABLED=true. No new code since Run 52. Pre-flight pending."
 }
