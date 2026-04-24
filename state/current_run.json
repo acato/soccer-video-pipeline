@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 48,
-  "run_label": "run_48",
-  "job_id": "cb855fd8-e4c5-4c95-b38d-496b6578d135",
-  "commit_sha": "c230b26",
-  "submitted_at": "2026-04-24T02:00:00Z",
+  "run_number": 49,
+  "run_label": "run_49",
+  "job_id": "8ad95f78-4f41-4462-a9e7-6111fd7be50c",
+  "commit_sha": "12aa0fd",
+  "submitted_at": "2026-04-24T07:07:30Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -22,16 +22,17 @@
   "baseline": {
     "run": "43",
     "f1": 0.409,
-    "notes": "Run 43 ceiling-break baseline: F1 0.409, P 0.422, R 0.397, TP 62. Run 47 on sporting_ac with YOLO crop validated the pixel-density hypothesis: coarse firing rate 3.1% -> 10.3%, F1 0.153 -> 0.215, TP 11 -> 19. Run 48 tests whether YOLO crop also holds or improves Rush, where baseline firing (22.8%) is already adequate. Rush has a smaller expected gain from cropping (camera already fills the frame with field), but also smaller regression risk. This run decides whether to ship the feature across all 4 games."
+    "notes": "Run 43 baseline: F1 0.409. Run 48 (yolo_crop) regressed Rush to 0.360 (-0.049) because tightening to the player cluster stripped spatial context the prompt relies on for type discrimination (goal_kick -3 TP, throw_in -3 TP). Run 49 replaces that with field-detection crop: per-video HSV green segmentation finds the pitch region, crops out only non-pitch content (sky, parking, crowd). Smoke test on Rush frames showed bbox y=[0.24,1.0] full width -> only the top 24% (trees above far touchline) is removed, pitch content fully preserved."
   },
   "targets": {
     "f1": 0.409,
     "tp_min": 62,
     "precision_min": 0.40,
-    "notes": "Primary criterion: Rush F1 must hold >=0.409. If Rush F1 improves or holds, ship YOLO crop and re-run the cross-game batch (Run 49) with the new config. If Rush regresses by >0.02 F1, the feature is a cross-game trade-off — return to the drawing board. Secondary: coarse firing rate on Rush (baseline 22.8%) should stay similar; a big move either way is a red flag."
+    "notes": "Rush F1 MUST hold >=0.409. The whole premise of field-detection crop is that removing only non-pitch regions preserves the spatial context the prompt needs. If Rush still regresses, the hypothesis about spatial context being the issue was wrong and we need a different angle entirely. If Rush holds or improves, immediately queue Run 50 on sporting_ac."
   },
   "config_changes_vs_baseline": {
-    "yolo_crop_enabled": {"old": false, "new": true, "reason": "YOLO tight-crop of each sampled frame to the bounding box of detected persons+ball. Validated on sporting_ac in Run 47 (firing rate 3x, F1 +0.062). Rush test determines whether the feature ships."}
+    "field_crop_enabled": {"old": false, "new": true, "reason": "Per-video HSV field detection. Rush bbox: y=[0.236, 1.000], full x — removes only top 24% (trees above the field on far touchline)."},
+    "yolo_crop_enabled": {"old": false, "new": false, "reason": "Disabled — field_crop replaces it with the same intent but preserves spatial context."}
   },
-  "notes": "Run #48 \u2014 Rush regression check with YOLO_CROP_ENABLED=true. Same commit c230b26 as Run 47. Worker is on afebe70 with the same code loaded. Expected smoke-test observations: Run 47 pre-flight showed YOLO model loaded 1s after start; similar behavior expected here."
+  "notes": "Run #49 (commit 12aa0fd): field-detection crop on Rush. Worker restarted at 07:07:00Z, bbox smoke-tested visually on 3 sporting_ac + 3 Rush frames before submission. Expected: near-neutral effect on Rush since its camera already fills the frame with field. Pre-flight pending."
 }
