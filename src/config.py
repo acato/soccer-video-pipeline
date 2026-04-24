@@ -213,6 +213,12 @@ framing by removing only non-pitch regions (sky, parking, crowd). Default ON
 after Run 49 (Rush F1 0.409 -> 0.417, +0.008) and Run 50 (sporting_ac F1
 0.153 -> 0.210, +0.057) — first cross-game positive-sum intervention."""
 
+FIELD_CROP_UPSCALE_LONG_EDGE: int = _int("FIELD_CROP_UPSCALE_LONG_EDGE", 0)
+"""Run #51 experiment: after field_crop, upscale the crop to this long-edge
+pixel count via LANCZOS. 0 = disabled. Tests whether the VLM is bottlenecked
+by visual-token count on cropped images (more patches = more attention
+capacity). Only upscales, never downscales."""
+
 YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
 """Run #33 breakthrough: YOLO spatial-grounding gate on VLM events.
 Rejects throw_in/corner_kick/goal_kick detections where the ball isn't
@@ -447,6 +453,7 @@ class _Config:
             "SINGLE_PASS_FRAMES": ("SINGLE_PASS_FRAMES", "5"),
             "YOLO_CROP_ENABLED": ("YOLO_CROP_ENABLED", "false"),
             "FIELD_CROP_ENABLED": ("FIELD_CROP_ENABLED", "true"),
+            "FIELD_CROP_UPSCALE_LONG_EDGE": ("FIELD_CROP_UPSCALE_LONG_EDGE", "0"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),

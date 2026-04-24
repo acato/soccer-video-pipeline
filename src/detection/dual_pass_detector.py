@@ -468,6 +468,11 @@ class DualPassConfig:
     field_crop_hue_max: int = 130        # PIL HSV hue upper bound (~blue-green)
     field_crop_sat_min: int = 50         # Minimum saturation (turf isn't pale)
     field_crop_val_min: int = 40         # Minimum value (turf isn't near-black)
+    # Run #51: after cropping, upscale to target long-edge via LANCZOS. Tests
+    # whether the VLM is compute-bound by visual-token count (more patches =
+    # more attention capacity over the same content). 0 = disabled, >0 =
+    # target long-edge in pixels. Only upscales, never downscales.
+    field_crop_upscale_long_edge: int = 0
 
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
@@ -881,6 +886,8 @@ class DualPassDetector:
             self._field_crop_stats["total"] += len(frames)
             return frames
 
+        upscale_edge = max(0, int(self._cfg.field_crop_upscale_long_edge))
+
         out = []
         for frame in frames:
             self._field_crop_stats["total"] += 1
@@ -890,6 +897,15 @@ class DualPassDetector:
                 px1, py1 = int(x1 * W), int(y1 * H)
                 px2, py2 = int(x2 * W), int(y2 * H)
                 cropped = img.crop((px1, py1, px2, py2))
+                # Optional Run #51 upscale — target long-edge via LANCZOS, never downscale
+                if upscale_edge > 0:
+                    cw, ch = cropped.size
+                    long_edge = max(cw, ch)
+                    if long_edge < upscale_edge:
+                        scale = upscale_edge / long_edge
+                        new_w = int(cw * scale)
+                        new_h = int(ch * scale)
+                        cropped = cropped.resize((new_w, new_h), Image.LANCZOS)
                 buf = io.BytesIO()
                 cropped.save(buf, format="JPEG", quality=85)
                 out.append(type(frame)(timestamp_sec=frame.timestamp_sec,

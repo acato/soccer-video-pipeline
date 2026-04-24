@@ -366,6 +366,7 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         single_pass_frames=int(getattr(cfg, 'SINGLE_PASS_FRAMES', 5)),
         yolo_crop_enabled=_truthy(getattr(cfg, 'YOLO_CROP_ENABLED', 'false')),
         field_crop_enabled=_truthy(getattr(cfg, 'FIELD_CROP_ENABLED', 'false')),
+        field_crop_upscale_long_edge=int(getattr(cfg, 'FIELD_CROP_UPSCALE_LONG_EDGE', 0)),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,
