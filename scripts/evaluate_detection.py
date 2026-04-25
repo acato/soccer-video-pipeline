@@ -252,6 +252,45 @@ def match_events(
         "f1": overall_f1,
     }
 
+    # Reel-weighted aggregates — the product delivers two reels, so F1 over
+    # types that neither reel consumes (notably throw_in) is vanity. Compute
+    # TP/FN/FP per reel as the decision-relevant metric.
+    # Source: src/ingestion/models.py REEL_PRESETS.
+    KEEPER_TYPES = {
+        "shot_stop_diving", "shot_stop_standing", "punch", "catch", "goal_kick",
+        "distribution_short", "distribution_long", "one_on_one", "corner_kick",
+        "penalty", "goal", "shot_on_target",
+    }
+    HIGHLIGHTS_TYPES = {
+        "shot_on_target", "shot_off_target", "goal", "near_miss",
+        "penalty", "free_kick_shot",
+    }
+
+    def _aggregate(types: set) -> dict:
+        tp = fn = fp = 0
+        for t in types:
+            r = results.get(t)
+            if r is None:
+                continue
+            tp += r["tp"]
+            fn += r["fn"]
+            fp += r["fp"]
+        p = tp / (tp + fp) if (tp + fp) > 0 else 0
+        rc = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * p * rc / (p + rc) if (p + rc) > 0 else 0
+        return {"tp": tp, "fn": fn, "fp": fp, "precision": p, "recall": rc, "f1": f1}
+
+    results["__keeper__"] = _aggregate(KEEPER_TYPES)
+    results["__highlights__"] = _aggregate(HIGHLIGHTS_TYPES)
+    # Union of both reels — actually-shippable-content aggregate
+    results["__reels__"] = _aggregate(KEEPER_TYPES | HIGHLIGHTS_TYPES)
+    # Types that fire but neither reel consumes (mostly throw_in). Useful to
+    # see whether a change is moving vanity numbers or real-product numbers.
+    non_reel_types = set(results.keys()) - (KEEPER_TYPES | HIGHLIGHTS_TYPES) - {
+        "__overall__", "__keeper__", "__highlights__", "__reels__",
+    }
+    results["__non_reel__"] = _aggregate(non_reel_types)
+
     return results
 
 
@@ -265,18 +304,26 @@ def print_report(results: dict):
     print(f"\n{'Event Type':<20} {'GT':>4} {'Det':>4} {'TP':>4} {'FN':>4} {'FP':>4} {'Prec':>6} {'Rec':>6} {'F1':>6}")
     print("-" * 74)
 
+    special = {"__overall__", "__keeper__", "__highlights__", "__reels__", "__non_reel__"}
     for etype in sorted(results.keys()):
-        if etype == "__overall__":
+        if etype in special:
             continue
         r = results[etype]
         print(f"{etype:<20} {r['gt']:4d} {r['detected']:4d} {r['tp']:4d} {r['fn']:4d} {r['fp']:4d} "
               f"{r['precision']:6.2f} {r['recall']:6.2f} {r['f1']:6.2f}")
 
-    # Overall
+    # Reel-weighted aggregates — decision-relevant metrics (see match_events)
     print("-" * 74)
-    o = results["__overall__"]
-    print(f"{'OVERALL':<20} {'':>4} {'':>4} {o['tp']:4d} {o['fn']:4d} {o['fp']:4d} "
-          f"{o['precision']:6.2f} {o['recall']:6.2f} {o['f1']:6.2f}")
+    for key, label in [("__keeper__", "KEEPER REEL"),
+                       ("__highlights__", "HIGHLIGHTS REEL"),
+                       ("__reels__", "EITHER REEL"),
+                       ("__non_reel__", "NON-REEL (vanity)"),
+                       ("__overall__", "ALL EVENTS")]:
+        agg = results.get(key)
+        if agg is None:
+            continue
+        print(f"{label:<20} {'':>4} {'':>4} {agg['tp']:4d} {agg['fn']:4d} {agg['fp']:4d} "
+              f"{agg['precision']:6.2f} {agg['recall']:6.2f} {agg['f1']:6.2f}")
 
     # Missed events detail
     print("\n" + "=" * 80)
@@ -357,6 +404,7 @@ def main():
                 out[etype] = {k: v for k, v in r.items() if k != "fn_events"}
             return out
 
+        serialized = _serialize(results)
         payload = {
             "events_file": args.events_file,
             "tolerance_sec": args.tolerance,
@@ -367,8 +415,15 @@ def main():
             "gt_counts": dict(gt_counts),
             "detected_total": len(detected),
             "detected_counts": dict(det_counts),
-            "per_type": _serialize(results),
-            "overall": _serialize(results).get("__overall__", {}),
+            "per_type": serialized,
+            "overall": serialized.get("__overall__", {}),
+            # Reel-weighted aggregates at top level for easy consumption —
+            # the actually-shippable metrics (overall F1 counts throw_in etc
+            # which no reel consumes).
+            "keeper": serialized.get("__keeper__", {}),
+            "highlights": serialized.get("__highlights__", {}),
+            "reels": serialized.get("__reels__", {}),
+            "non_reel": serialized.get("__non_reel__", {}),
         }
         out_path = Path(args.json_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
