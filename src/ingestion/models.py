@@ -142,6 +142,12 @@ class Job(BaseModel):
     cancel_requested: bool = False
     last_processed_chunk: int = -1
     tag_only: bool = False
+    # Per-job override for ball-centric dual-view detection (Run #54+).
+    # None = defer to env-var BALL_CROP_ENABLED. True/False = explicit
+    # per-job decision (used for cameras where the operator knows the
+    # framing — sporting_ac-style wide shots benefit; Rush-style close
+    # cameras regress).
+    ball_crop_enabled: Optional[bool] = None
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""

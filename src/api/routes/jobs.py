@@ -34,6 +34,10 @@ class SubmitJobRequest(BaseModel):
     reel_types: list[str] = ["keeper", "highlights"]
     game_start_sec: float = 0.0
     tag_only: bool = False
+    # Per-job ball_crop override. Omit (None) to follow env-var default.
+    # Set true for zoomed-out cameras (drone-style, ~1.5km field views).
+    # Set false for close cameras already framing the action (Rush-style).
+    ball_crop_enabled: Optional[bool] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -126,7 +130,8 @@ def submit_job(request: SubmitJobRequest):
 
     job = create_job(video_file, request.reel_types, store, match_config,
                      game_start_sec=request.game_start_sec, reels=reel_specs,
-                     tag_only=request.tag_only)
+                     tag_only=request.tag_only,
+                     ball_crop_enabled=request.ball_crop_enabled)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job
