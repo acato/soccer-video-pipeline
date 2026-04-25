@@ -509,12 +509,6 @@ class DualPassConfig:
     ball_crop_width: int = 640   # Crop window width in source pixels
     ball_crop_height: int = 360  # Crop window height in source pixels (16:9)
     ball_crop_min_conf: float = 0.15  # YOLO ball-conf threshold (matches yolo_grounding default)
-    # Run #54 adaptive gate: ball_crop helps zoomed-out cameras (sporting_ac
-    # ~35 px players) but regresses close cameras (Rush ~70 px players;
-    # Run 53 lost 16 keeper TPs and 8 highlights TPs). At job start, sample
-    # 20 frames + YOLO; disable ball_crop for this video iff median player
-    # box height >= this threshold.
-    ball_crop_max_player_height_px: int = 50
 
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
@@ -652,10 +646,6 @@ class DualPassDetector:
         self._ball_crop_stats = {"total": 0, "cropped_ball": 0,
                                  "fallback_field": 0, "fallback_full": 0,
                                  "fallback_error": 0}
-        # Run #54: adaptive ball_crop gate. Median player box pixel height
-        # measured once per video; cached. None = not yet measured.
-        self._median_player_height_px: Optional[float] = None
-        self._ball_crop_active_for_video: Optional[bool] = None  # adaptive decision cache
 
     def detect(
         self,
@@ -850,20 +840,6 @@ class DualPassDetector:
             self._ball_crop_stats["total"] += len(frames)
             return frames
 
-        # Run #54: adaptive gate — measure median player box pixel height
-        # once per video; disable ball_crop if camera already frames players
-        # at high resolution (Run 53 showed -16 keeper TPs / -8 highlights
-        # TPs on Rush vs Run 49 baseline).
-        if self._ball_crop_active_for_video is None:
-            self._ball_crop_active_for_video = self._evaluate_adaptive_ball_crop_gate()
-        if not self._ball_crop_active_for_video:
-            # Camera too close — fall back to field_crop wide-only path
-            if cfg.field_crop_enabled:
-                return self._field_crop_frames(frames)
-            self._ball_crop_stats["fallback_full"] += len(frames)
-            self._ball_crop_stats["total"] += len(frames)
-            return frames
-
         # Decode JPEGs
         try:
             arrays = [np.array(Image.open(io.BytesIO(f.jpeg_bytes))) for f in frames]
@@ -976,108 +952,6 @@ class DualPassDetector:
                 log.warning("ball_crop.crop_failed", error=str(exc))
 
         return out
-
-    def _evaluate_adaptive_ball_crop_gate(self) -> bool:
-        """Run #54 adaptive gate: enable ball_crop only on cameras with small players.
-
-        Rationale: Run 53 on Rush (close camera, ~70px player heights) showed
-        keeper F1 0.430 -> 0.321 and highlights 0.446 -> 0.359 when ball_crop
-        was enabled — the ball zoom distracts the VLM from GK actions and
-        shots that the wide view was already catching correctly. On
-        sporting_ac (zoomed-out camera, ~35px player heights) ball_crop
-        gained keeper +0.062 F1.
-
-        Heuristic: at job start, sample 20 frames uniformly across the video,
-        run YOLO, compute the median height (in source pixels) of detected
-        person boxes. If median >= ball_crop_max_player_height_px (default
-        50), disable ball_crop for this video.
-
-        Fail-open: if YOLO fails or finds no persons, default to ENABLED
-        (the more aggressive option) so we don't silently regress to the
-        weaker config in unexpected video conditions.
-        """
-        import io
-        import numpy as np
-        from PIL import Image
-
-        cfg = self._cfg
-        threshold = cfg.ball_crop_max_player_height_px
-        n = max(5, cfg.field_crop_n_samples)
-
-        # Use the YOLO model already lazy-loaded by _ball_centric_crop_frames
-        if self._yolo_crop_model is None:
-            log.info("ball_crop.adaptive_gate_fail_open",
-                     reason="yolo_unavailable", decision="enabled")
-            return True
-
-        # Sample frames uniformly across the video
-        ts_list = [self._video_duration * (0.01 + 0.98 * (i + 0.5) / n)
-                   for i in range(n)]
-        arrays = []
-        for t in ts_list:
-            try:
-                jpeg = self._sampler._extract_single_frame(t)
-            except Exception:
-                continue
-            if not jpeg:
-                continue
-            try:
-                arrays.append(np.array(Image.open(io.BytesIO(jpeg))))
-            except Exception:
-                continue
-
-        if not arrays:
-            log.warning("ball_crop.adaptive_gate_fail_open",
-                        reason="no_frames", decision="enabled")
-            return True
-
-        try:
-            kwargs = {
-                "imgsz": cfg.yolo_grounding_inference_size,
-                "conf": cfg.ball_crop_min_conf,
-                "verbose": False,
-            }
-            if not cfg.yolo_use_gpu:
-                kwargs["device"] = "cpu"
-            results = self._yolo_crop_model(arrays, **kwargs)
-        except Exception as exc:
-            log.warning("ball_crop.adaptive_gate_fail_open",
-                        reason="yolo_inference_failed", error=str(exc),
-                        decision="enabled")
-            return True
-
-        person_ids = frozenset(int(c) for c in cfg.yolo_person_class_ids)
-        heights = []
-        for result, arr in zip(results, arrays):
-            H = arr.shape[0]
-            try:
-                classes = result.boxes.cls.cpu().numpy().astype(int)
-                xywhn = result.boxes.xywhn.cpu().numpy()
-                for cls, xy in zip(classes, xywhn):
-                    if int(cls) in person_ids:
-                        heights.append(float(xy[3]) * H)  # h normalized -> pixels
-            except (AttributeError, Exception):
-                continue
-
-        if not heights:
-            log.warning("ball_crop.adaptive_gate_fail_open",
-                        reason="no_persons_detected",
-                        n_frames_sampled=len(arrays),
-                        decision="enabled")
-            return True
-
-        heights.sort()
-        median = heights[len(heights) // 2]
-        self._median_player_height_px = median
-
-        decision = median < threshold
-        log.info("ball_crop.adaptive_gate_decision",
-                 median_player_height_px=round(median, 1),
-                 threshold_px=threshold,
-                 n_persons_sampled=len(heights),
-                 n_frames_sampled=len(arrays),
-                 decision="enabled" if decision else "disabled")
-        return decision
 
     def _compute_field_bbox(self) -> Optional[tuple]:
         """Detect the pitch region once per video via HSV green segmentation.
@@ -1439,8 +1313,6 @@ class DualPassDetector:
         if self._cfg.ball_crop_enabled:
             log.info("ball_crop.summary",
                      job_id=self._job_id,
-                     adaptive_active=self._ball_crop_active_for_video,
-                     median_player_height_px=self._median_player_height_px,
                      **self._ball_crop_stats)
 
         # Deduplicate and post-filter (reuse existing methods)
