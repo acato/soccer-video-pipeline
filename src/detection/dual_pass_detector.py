@@ -513,6 +513,17 @@ class DualPassConfig:
     ball_crop_height: int = 360  # Crop window height in source pixels (16:9)
     ball_crop_min_conf: float = 0.15  # YOLO ball-conf threshold (matches yolo_grounding default)
 
+    # QL1 Pass 2: per-event-type confirmation refinement. Each Pass 1
+    # candidate gets a sharper, type-specific VLM call with denser frames;
+    # only confirmed events pass through. Phase A showed VLM-emitted
+    # confidence is essentially noise (P at conf>=0.9 nearly identical to
+    # P at conf>=0.3 across types), so refinement re-examines frames
+    # rather than filtering on conf.
+    refinement_enabled: bool = False
+    refinement_n_frames: int = 8       # Frames per refinement call (denser than Pass 1's 5)
+    refinement_span_sec: float = 12.0  # Window centered on event for refinement sampling
+    refinement_timeout_sec: int = 60
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -1334,6 +1345,55 @@ class DualPassDetector:
             all_events = self._apply_yolo_grounding(all_events)
 
         all_events = self._post_filter_events(all_events)
+
+        # QL1 Pass 2 — per-event-type confirmation refinement
+        if self._cfg.refinement_enabled and all_events:
+            from src.detection import refiner as _refiner
+            log.info("refinement.start",
+                     job_id=self._job_id,
+                     n_candidates=len(all_events))
+            refined, ref_stats, ref_results = _refiner.refine_events(
+                events=all_events,
+                sampler=self._sampler,
+                video_duration=self._video_duration,
+                vllm_url=self._cfg.vllm_url,
+                model=self._cfg.tier2_model_name,
+                field_bbox=self._field_bbox if self._cfg.field_crop_enabled else None,
+                n_frames=self._cfg.refinement_n_frames,
+                span_sec=self._cfg.refinement_span_sec,
+                timeout_sec=self._cfg.refinement_timeout_sec,
+                job_id=self._job_id,
+            )
+            log.info("refinement.summary",
+                     job_id=self._job_id,
+                     total=ref_stats.total,
+                     confirmed=ref_stats.confirmed,
+                     rejected=ref_stats.rejected,
+                     api_errors=ref_stats.api_errors,
+                     no_evidence_clause=ref_stats.no_evidence_clause,
+                     by_type_in=ref_stats.by_type_in,
+                     by_type_confirmed=ref_stats.by_type_confirmed)
+            # Diagnostics: per-candidate verdict trail
+            try:
+                diag_dir = self._working_dir / "diagnostics"
+                diag_dir.mkdir(parents=True, exist_ok=True)
+                with open(diag_dir / "refinement_verdicts.jsonl", "w") as fh:
+                    for res in ref_results:
+                        e = res.event
+                        etype = e.event_type.value if hasattr(e.event_type, "value") else str(e.event_type)
+                        fh.write(json.dumps({
+                            "event_type": etype,
+                            "start_sec": e.timestamp_start,
+                            "end_sec": e.timestamp_end,
+                            "pass1_confidence": float(e.confidence) if hasattr(e, "confidence") else None,
+                            "confirmed": res.confirmed,
+                            "pass2_confidence": res.new_confidence,
+                            "reasoning": res.reasoning,
+                            "latency_sec": res.latency_sec,
+                        }) + "\n")
+            except Exception as exc:
+                log.warning("refinement.diag_write_failed", error=str(exc))
+            all_events = refined
 
         # Save final events
         self._save_classify_diagnostics([], all_events)

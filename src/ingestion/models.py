@@ -148,6 +148,10 @@ class Job(BaseModel):
     # framing — sporting_ac-style wide shots benefit; Rush-style close
     # cameras regress).
     ball_crop_enabled: Optional[bool] = None
+    # Per-job override for QL1 Pass 2 refinement.
+    # None = defer to env-var REFINEMENT_ENABLED. True = run refinement
+    # for this job (extra VLM cost in exchange for sharper type decisions).
+    refinement_enabled: Optional[bool] = None
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""

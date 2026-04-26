@@ -123,6 +123,7 @@ def create_job(
     reels: Optional[list[ReelSpec]] = None,
     tag_only: bool = False,
     ball_crop_enabled: Optional[bool] = None,
+    refinement_enabled: Optional[bool] = None,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
@@ -136,6 +137,7 @@ def create_job(
         game_start_sec=game_start_sec,
         tag_only=tag_only,
         ball_crop_enabled=ball_crop_enabled,
+        refinement_enabled=refinement_enabled,
     )
     store.save(job)
     log.info(

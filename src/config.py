@@ -227,6 +227,13 @@ catches). Expected trade-off: set-pieces (throw_in, corner, goal_kick) may
 regress because ball-centric view loses field-region context that defines
 those types."""
 
+REFINEMENT_ENABLED: bool = _bool("REFINEMENT_ENABLED", False)
+"""QL1 Pass 2: per-event-type confirmation refinement after Pass 1 candidates.
+Each candidate gets a sharper, type-specific VLM call with denser frames; only
+confirmed events pass through. Expensive (one extra VLM call per detection)
+but expected to lift F1 substantially by removing per-type misclassification
+that comes from Pass 1's generic 9-type decision tree."""
+
 YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
 """Run #33 breakthrough: YOLO spatial-grounding gate on VLM events.
 Rejects throw_in/corner_kick/goal_kick detections where the ball isn't
@@ -463,6 +470,7 @@ class _Config:
             "FIELD_CROP_ENABLED": ("FIELD_CROP_ENABLED", "true"),
             "FIELD_CROP_UPSCALE_LONG_EDGE": ("FIELD_CROP_UPSCALE_LONG_EDGE", "0"),
             "BALL_CROP_ENABLED": ("BALL_CROP_ENABLED", "false"),
+            "REFINEMENT_ENABLED": ("REFINEMENT_ENABLED", "false"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),

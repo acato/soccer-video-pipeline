@@ -373,6 +373,10 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         ball_crop_enabled=(job.ball_crop_enabled
                            if job.ball_crop_enabled is not None
                            else _truthy(getattr(cfg, 'BALL_CROP_ENABLED', 'false'))),
+        # QL1 Pass 2 refinement — per-job override mirrors ball_crop pattern
+        refinement_enabled=(job.refinement_enabled
+                            if getattr(job, 'refinement_enabled', None) is not None
+                            else _truthy(getattr(cfg, 'REFINEMENT_ENABLED', 'false'))),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,
