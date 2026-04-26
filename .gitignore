@@ -35,3 +35,20 @@ CLAUDE.md
 .vscode/
 .idea/
 *.swp
+
+# Local analysis dumps (frame extracts for visual inspection)
+analysis/
+
+# One-shot diagnostic / comparison scripts kept locally, not committed
+scripts/compare_run*.py
+scripts/analyze_run*.py
+scripts/analyze_ball_trajectory_coverage.py
+scripts/analyze_goal_gate.py
+scripts/calibrate_offset.py
+scripts/calibrate_v2.py
+scripts/calibrate_offsets.py
+scripts/chain_run50.sh
+scripts/fn_absorbed_by_shots.py
+scripts/simulate_precision_fixes.py
+scripts/test_yolo_crop.py
+*.bak
