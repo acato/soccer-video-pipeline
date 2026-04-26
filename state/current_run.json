@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 54,
-  "run_label": "run_54",
-  "job_id": "6b7ad58b-3d8d-4e22-8cbc-4d4a8e8aa42d",
-  "commit_sha": "d4fe075",
-  "submitted_at": "2026-04-26T01:08:00Z",
+  "run_number": 56,
+  "run_label": "run_56",
+  "job_id": "a69dab23-5d27-48b4-bc20-c3c792de5935",
+  "commit_sha": "a5a41bf",
+  "submitted_at": "2026-04-26T16:17:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -14,24 +14,25 @@
   "job_payload": {
     "nas_path": "2026-02-07 - Rush - GA2008.mp4",
     "reel_types": ["keeper", "highlights"],
+    "refinement_enabled": true,
     "match_config": {
       "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
       "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
     }
   },
   "baseline": {
-    "run": "49",
+    "run": "49 / 54",
     "f1": 0.417,
-    "notes": "Run 49 Rush field_crop only: F1 0.417, keeper 0.430, highlights 0.446. Run 53 with ball_crop dual-view regressed it badly (keeper 0.321, highlights 0.359). Adaptive auto-detection failed (player heights nearly identical between Rush and sporting_ac, 47 vs 43 px). New approach: per-job ball_crop_enabled flag in the job submission API. Run 54 omits the flag (defaults to BALL_CROP_ENABLED=false in env), so Rush should run with field_crop only and recover Run 49's reel-weighted numbers."
+    "notes": "Run 49 (and Run 54 v2 reproduction) Rush field_crop only baseline: F1 0.417, keeper 0.430, highlights 0.446. Run 56 adds QL1 Pass 2 refinement (commit a5a41bf): for each Pass 1 candidate, run a sharper type-specific confirmation VLM call with 8 frames @ 1.5s spacing and a per-type evidence clause. Phase A (analyze_confidence_signal.py) showed VLM-emitted confidence is noise so refinement re-examines frames rather than filtering on conf."
   },
   "targets": {
-    "f1": 0.417,
-    "tp_min": 65,
-    "notes": "Rush should match Run 49 numerically (or very close — same code path, same env). Per-reel: keeper F1 ~0.43, highlights ~0.45. If results don't match, the per-job override wiring is broken."
+    "f1": 0.50,
+    "tp_min": 60,
+    "precision_min": 0.55,
+    "notes": "Hypothesis: Pass 2 acts as precision filter, removing FPs that came from Pass 1's generic 9-type decision tree. Expect TP roughly preserved (60+ from Run 49's 65), FP cut substantially (Run 49 had 91, target ~50), precision 0.40 -> 0.55+, F1 0.42 -> 0.50+. Watch refinement.summary log for per-type confirmed/rejected ratios. If Pass 2 rejects too aggressively (TP drops below 50), the per-type evidence clauses are too strict and need tuning."
   },
   "config_changes_vs_baseline": {
-    "ball_crop_enabled (env)": {"old": true, "new": false, "reason": "Default off after Run 53 regression on Rush. Per-job flag opts in for zoomed-out cameras."},
-    "ball_crop_enabled (job)": {"old": "n/a", "new": "None (omitted)", "reason": "No override — defers to env-var default = false. Rush gets field_crop only."}
+    "refinement_enabled": {"old": false, "new": true, "reason": "Per-job flag in submission payload. Adds ~150 candidates × ~5s/call ≈ 12 min to scan. First test of QL1 Phase B."}
   },
-  "notes": "Run #54 (resubmitted at d4fe075): first submission (job cd6bbd4b, commit 87884f9) regressed Rush to F1 0.358 despite ball_crop being OFF. Root cause: commit 20f862f permanently added a 'WIDE+ZOOM dual-view' prefix to the prompt; when ball_crop is off the VLM still gets that prefix and over-fires throw_in (which matches the prefix's 'ball-in-hands' cue). Throw_in flags 126->214, shot_on_target -21, catch -22, etc. d4fe075 splits _DUAL_VIEW_PROMPT_PREFIX out and prepends only when ball_crop is active. Resubmitted as job 6b7ad58b. Expected: matches Run 49 baseline F1 0.417 / keeper 0.430 / highlights 0.446."
+  "notes": "Run #56 (commit a5a41bf): QL1 Pass 2 refinement. Per-job flag refinement_enabled=true in submission. Pre-flight will verify refinement.start logs after Pass 1 completes. Default deploy unchanged (REFINEMENT_ENABLED=false in .env)."
 }
