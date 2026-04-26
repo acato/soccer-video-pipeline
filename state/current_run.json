@@ -2,9 +2,9 @@
   "$schema_version": 1,
   "run_number": 54,
   "run_label": "run_54",
-  "job_id": "cd6bbd4b-782e-49e0-b6af-a7d91f0a760e",
-  "commit_sha": "87884f9",
-  "submitted_at": "2026-04-25T05:52:30Z",
+  "job_id": "6b7ad58b-3d8d-4e22-8cbc-4d4a8e8aa42d",
+  "commit_sha": "d4fe075",
+  "submitted_at": "2026-04-26T01:08:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -33,5 +33,5 @@
     "ball_crop_enabled (env)": {"old": true, "new": false, "reason": "Default off after Run 53 regression on Rush. Per-job flag opts in for zoomed-out cameras."},
     "ball_crop_enabled (job)": {"old": "n/a", "new": "None (omitted)", "reason": "No override — defers to env-var default = false. Rush gets field_crop only."}
   },
-  "notes": "Run #54 (commit 87884f9): per-job ball_crop opt-in flag. Job omits the flag, env BALL_CROP_ENABLED=false, so ball_crop is OFF. Should match Run 49 baseline within run-to-run noise. After it lands and confirms baseline restored, queue Run 55 on sporting_ac with explicit ball_crop_enabled=true."
+  "notes": "Run #54 (resubmitted at d4fe075): first submission (job cd6bbd4b, commit 87884f9) regressed Rush to F1 0.358 despite ball_crop being OFF. Root cause: commit 20f862f permanently added a 'WIDE+ZOOM dual-view' prefix to the prompt; when ball_crop is off the VLM still gets that prefix and over-fires throw_in (which matches the prefix's 'ball-in-hands' cue). Throw_in flags 126->214, shot_on_target -21, catch -22, etc. d4fe075 splits _DUAL_VIEW_PROMPT_PREFIX out and prepends only when ball_crop is active. Resubmitted as job 6b7ad58b. Expected: matches Run 49 baseline F1 0.417 / keeper 0.430 / highlights 0.446."
 }
