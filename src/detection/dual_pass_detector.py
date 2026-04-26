@@ -197,17 +197,20 @@ least one event. Do NOT return empty when the description contains events.
 # Sent to 32B WITH images.  Combines the observe and classify steps into
 # a single VLM call.  Requires a model that handles images well (32B FP8
 # with TP=2 NVLink).
+_DUAL_VIEW_PROMPT_PREFIX = (
+    "Some moments may appear as a pair of images: a WIDE view of the pitch, "
+    "followed by a ZOOM view centered on the ball (labeled with \"(ball zoom)\" "
+    "after the timestamp). The two views share the same timestamp — treat them "
+    "as one moment in time with two levels of detail. Use the WIDE view for "
+    "positional context (is the ball at a corner, touchline, or inside the goal "
+    "area?) and the ZOOM view for action detail (player pose, ball-in-hands, "
+    "strike motion). Moments without a zoom companion had no confident ball "
+    "detection; judge those from the wide view alone.\n\n"
+)
+
+
 _DIRECT_CLASSIFY_PROMPT = """\
 You are analyzing {n_frames} frames from a soccer match ({start:.0f}s – {end:.0f}s).
-
-Some moments may appear as a pair of images: a WIDE view of the pitch, \
-followed by a ZOOM view centered on the ball (labeled with "(ball zoom)" \
-after the timestamp). The two views share the same timestamp — treat them \
-as one moment in time with two levels of detail. Use the WIDE view for \
-positional context (is the ball at a corner, touchline, or inside the goal \
-area?) and the ZOOM view for action detail (player pose, ball-in-hands, \
-strike motion). Moments without a zoom companion had no confident ball \
-detection; judge those from the wide view alone.
 
 For each DISTINCT event you see, classify it. Work through this decision tree:
 
@@ -1195,12 +1198,19 @@ class DualPassDetector:
             elif self._cfg.yolo_crop_enabled:
                 frames = self._yolo_crop_frames(frames)
 
-            # Build prompt with images
+            # Build prompt with images. Only prepend the dual-view prefix when
+            # ball_crop is active — otherwise the prompt would tell the VLM to
+            # expect zoom companions that never arrive, biasing it toward the
+            # "ball-in-hands" cue that surfaces a throw_in over-fire pattern
+            # (Run 54 regression: prompt prefix stayed in-place even with
+            # ball_crop OFF, throw_in flags 126 -> 214 vs Run 49 baseline).
             prompt = _DIRECT_CLASSIFY_PROMPT.format(
                 n_frames=len(frames),
                 start=win_start,
                 end=win_end,
             )
+            if self._cfg.ball_crop_enabled:
+                prompt = _DUAL_VIEW_PROMPT_PREFIX + prompt
 
             content: list[dict] = []
             for frame in frames:
