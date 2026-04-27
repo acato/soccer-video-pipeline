@@ -524,6 +524,17 @@ class DualPassConfig:
     refinement_span_sec: float = 12.0  # Window centered on event for refinement sampling
     refinement_timeout_sec: int = 60
 
+    # QL2 Mode B + C: audio fusion for goal recall booster + confidence
+    # annotation. Phase A showed ~50% of GT goals have a detectable audio
+    # celebration peak (Cheering/Applause/Crowd/Shout/Whistle); the others
+    # are silent. Mode B promotes shots with nearby audio peaks to goals;
+    # Mode C tags every goal with audio_celebration_score for downstream
+    # ranking. No precision-filter gate (would discard silent real goals).
+    audio_fusion_enabled: bool = False
+    audio_fusion_promotion_threshold: float = 2.5  # ratio over per-video p99
+    audio_fusion_lookahead_sec: float = 25.0       # post-shot window for peak scan
+    audio_cache_dir: str = ""  # filled by worker (WORKING_DIR/audio_cache)
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -1345,6 +1356,23 @@ class DualPassDetector:
             all_events = self._apply_yolo_grounding(all_events)
 
         all_events = self._post_filter_events(all_events)
+
+        # QL2 Mode B + C: audio fusion (goal recall booster + annotation)
+        if self._cfg.audio_fusion_enabled and all_events:
+            from pathlib import Path as _Path
+            from src.detection import audio_fusion as _af
+            try:
+                cache_dir = _Path(self._cfg.audio_cache_dir) if self._cfg.audio_cache_dir else None
+                all_events, _af_stats = _af.apply_audio_fusion(
+                    events=all_events,
+                    video_path=self._source_file,
+                    cache_dir=cache_dir,
+                    promotion_threshold=self._cfg.audio_fusion_promotion_threshold,
+                    promotion_lookahead_sec=self._cfg.audio_fusion_lookahead_sec,
+                    job_id=self._job_id,
+                )
+            except Exception as exc:
+                log.warning("audio_fusion.failed", error=str(exc), job_id=self._job_id)
 
         # QL1 Pass 2 — per-event-type confirmation refinement
         if self._cfg.refinement_enabled and all_events:

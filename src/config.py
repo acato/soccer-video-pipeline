@@ -234,6 +234,12 @@ confirmed events pass through. Expensive (one extra VLM call per detection)
 but expected to lift F1 substantially by removing per-type misclassification
 that comes from Pass 1's generic 9-type decision tree."""
 
+AUDIO_FUSION_ENABLED: bool = _bool("AUDIO_FUSION_ENABLED", False)
+"""QL2 Mode B+C: audio fusion for goals.
+Mode B: promote shot_on_target → goal when audio celebration peak exists nearby.
+Mode C: annotate every goal with audio_celebration_score for downstream ranking.
+Cost: one-time ~20min PANN inference per video (cached by SHA)."""
+
 YOLO_GROUNDING_ENABLED: bool = _bool("YOLO_GROUNDING_ENABLED", False)
 """Run #33 breakthrough: YOLO spatial-grounding gate on VLM events.
 Rejects throw_in/corner_kick/goal_kick detections where the ball isn't
@@ -471,6 +477,7 @@ class _Config:
             "FIELD_CROP_UPSCALE_LONG_EDGE": ("FIELD_CROP_UPSCALE_LONG_EDGE", "0"),
             "BALL_CROP_ENABLED": ("BALL_CROP_ENABLED", "false"),
             "REFINEMENT_ENABLED": ("REFINEMENT_ENABLED", "false"),
+            "AUDIO_FUSION_ENABLED": ("AUDIO_FUSION_ENABLED", "false"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),

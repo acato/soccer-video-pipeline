@@ -40,6 +40,8 @@ class SubmitJobRequest(BaseModel):
     ball_crop_enabled: Optional[bool] = None
     # Per-job QL1 refinement override. Omit (None) to follow env-var default.
     refinement_enabled: Optional[bool] = None
+    # Per-job QL2 audio fusion override. Omit (None) to follow env-var default.
+    audio_fusion_enabled: Optional[bool] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -134,7 +136,8 @@ def submit_job(request: SubmitJobRequest):
                      game_start_sec=request.game_start_sec, reels=reel_specs,
                      tag_only=request.tag_only,
                      ball_crop_enabled=request.ball_crop_enabled,
-                     refinement_enabled=request.refinement_enabled)
+                     refinement_enabled=request.refinement_enabled,
+                     audio_fusion_enabled=request.audio_fusion_enabled)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job

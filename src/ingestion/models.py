@@ -152,6 +152,12 @@ class Job(BaseModel):
     # None = defer to env-var REFINEMENT_ENABLED. True = run refinement
     # for this job (extra VLM cost in exchange for sharper type decisions).
     refinement_enabled: Optional[bool] = None
+    # Per-job override for QL2 audio fusion (Mode B + C).
+    # None = defer to env-var AUDIO_FUSION_ENABLED. True = compute audio
+    # scores (~20min one-time per video, cached by SHA), promote shots
+    # with celebration peaks to goals, annotate goal events with
+    # audio_celebration_score.
+    audio_fusion_enabled: Optional[bool] = None
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""
