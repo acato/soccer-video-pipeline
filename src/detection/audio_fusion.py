@@ -263,13 +263,21 @@ def apply_audio_fusion(
             stats["promotion_blocked_existing_goal"] += 1
             continue
 
-        # Promote: clone the shot's spatial info, change type to goal,
-        # keep a reasonable end time covering shot + reaction window
+        # Promote: clone the shot's required Event fields (job_id, source_file,
+        # reel_targets, frame_start, frame_end), change type to goal, keep a
+        # reasonable end time covering shot + reaction window. Reel targets
+        # are recomputed for the new GOAL type since shot_on_target may map
+        # to different reels than goal.
         new_goal = Event(
+            job_id=e.job_id,
+            source_file=e.source_file,
             event_type=EventType.GOAL,
             timestamp_start=e.timestamp_start,
             timestamp_end=max(e.timestamp_end, e.timestamp_start + 15.0),
             confidence=min(0.9, 0.5 + score / 10.0),  # score-proportional
+            reel_targets=list(e.reel_targets),  # inherit shot's reel set
+            frame_start=e.frame_start,
+            frame_end=e.frame_end,
             metadata={
                 "audio_celebration_score": round(score, 3),
                 "audio_dominant_class": dom,
