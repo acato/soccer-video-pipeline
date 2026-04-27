@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 56,
-  "run_label": "run_56",
-  "job_id": "a69dab23-5d27-48b4-bc20-c3c792de5935",
-  "commit_sha": "a5a41bf",
-  "submitted_at": "2026-04-26T16:17:00Z",
+  "run_number": 57,
+  "run_label": "run_57",
+  "job_id": "6b06255f-66c9-453a-8dbb-ba590a0d0542",
+  "commit_sha": "8460dd9",
+  "submitted_at": "2026-04-27T06:01:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -14,7 +14,7 @@
   "job_payload": {
     "nas_path": "2026-02-07 - Rush - GA2008.mp4",
     "reel_types": ["keeper", "highlights"],
-    "refinement_enabled": true,
+    "audio_fusion_enabled": true,
     "match_config": {
       "team": {"team_name": "Rush", "outfield_color": "white", "gk_color": "neon_yellow"},
       "opponent": {"team_name": "GA 2008", "outfield_color": "blue", "gk_color": "neon_green"}
@@ -23,16 +23,15 @@
   "baseline": {
     "run": "49 / 54",
     "f1": 0.417,
-    "notes": "Run 49 (and Run 54 v2 reproduction) Rush field_crop only baseline: F1 0.417, keeper 0.430, highlights 0.446. Run 56 adds QL1 Pass 2 refinement (commit a5a41bf): for each Pass 1 candidate, run a sharper type-specific confirmation VLM call with 8 frames @ 1.5s spacing and a per-type evidence clause. Phase A (analyze_confidence_signal.py) showed VLM-emitted confidence is noise so refinement re-examines frames rather than filtering on conf."
+    "notes": "Run 49 / Run 54 v2 Rush baseline (field_crop only): F1 0.417, keeper 0.430, highlights 0.446. Goals: 4 GT, 2 TP, 6 FP, F1 0.333. QL2 Phase A measured 50% audio celebration peak alignment with GT goals (Rush 1+2 had clear cheering signal; Rush 3+4 silent). Run 57 enables audio fusion Mode B (shot+celebration peak → goal promotion) + Mode C (annotate goals with audio_celebration_score). Cached PANN scores already in WORKING_DIR/audio_cache so the pipeline reuses them without recomputing."
   },
   "targets": {
-    "f1": 0.50,
-    "tp_min": 60,
-    "precision_min": 0.55,
-    "notes": "Hypothesis: Pass 2 acts as precision filter, removing FPs that came from Pass 1's generic 9-type decision tree. Expect TP roughly preserved (60+ from Run 49's 65), FP cut substantially (Run 49 had 91, target ~50), precision 0.40 -> 0.55+, F1 0.42 -> 0.50+. Watch refinement.summary log for per-type confirmed/rejected ratios. If Pass 2 rejects too aggressively (TP drops below 50), the per-type evidence clauses are too strict and need tuning."
+    "f1": 0.417,
+    "tp_min": 65,
+    "notes": "Honest expectation: not a giant F1 mover. Mode B may recover 0-2 missed goals depending on whether VLM-flagged shot_on_target events coincide with audio peaks at GT goal times the VLM missed (Rush goals 3+4 are silent, so likely no recovery on Rush). Mode C is product-only (highlights reel ordering). PRIMARY validation criteria: (a) per-event audio_celebration_score appears in metadata for goal events; (b) refinement_verdicts.jsonl analog audio_fusion log fires; (c) Rush F1 holds baseline (refresher path is a safety check, not the win)."
   },
   "config_changes_vs_baseline": {
-    "refinement_enabled": {"old": false, "new": true, "reason": "Per-job flag in submission payload. Adds ~150 candidates × ~5s/call ≈ 12 min to scan. First test of QL1 Phase B."}
+    "audio_fusion_enabled": {"old": false, "new": true, "reason": "Per-job opt-in. PANN scores already cached for Rush."}
   },
-  "notes": "Run #56 (commit a5a41bf): QL1 Pass 2 refinement. Per-job flag refinement_enabled=true in submission. Pre-flight will verify refinement.start logs after Pass 1 completes. Default deploy unchanged (REFINEMENT_ENABLED=false in .env)."
+  "notes": "Run #57 (commit 8460dd9): QL2 audio fusion. Tests end-to-end wiring + Mode B/C effects. Audio cache for Rush at /tmp/soccer-pipeline/audio_cache/3192fa0766f11d5f.npz (pre-staged). Default deploy unchanged (AUDIO_FUSION_ENABLED=false in env)."
 }
