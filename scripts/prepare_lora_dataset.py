@@ -76,23 +76,25 @@ class GameSpec:
 # ──────────────────────────────────────────────────────────────────────────
 NAS = Path("/Volumes/transit/Games")
 
-# Calibrated games (offsets known from prior batch_generalization runs)
+# All 19 games — calibration recovered from the v4 8B finetune training data
+# (/Volumes/transit/soccer-finetune/stage2_all.jsonl _meta fields).
+# Per-game offsets back-computed from video_ts vs event_time_ms; zero variance
+# across all events in each (game, half), so this is the authoritative source.
+# Note: where batch_generalization auto-calibration disagreed with v4 (games
+# 1, 4 most notably), v4 wins — past F1 numbers on those games were partially
+# noise from calibration drift.
+#
+# split assignment:
+#   eval = the 5 games with established baselines (matches batch_generalization)
+#   train = the 14 remaining games
 CALIBRATED: list[GameSpec] = [
     # ── Held-out eval (existing benchmarks) ──
-    GameSpec(
-        game_id="game_11",  # Rush U19 — primary benchmark
-        video_path="/Users/aless/soccer-working/2026-02-07 - Rush - GA2008.mp4",
-        h1_json="/Volumes/transit/08 GA (U19) vs Washington Rush U19 (W)_1st Half.json",
-        h2_json="/Volumes/transit/08 GA (U19) vs Washington Rush U19 (W)_2nd Half.json",
-        video_offset=418.0, half2_video_start=3916.0, half2_game_offset=2700.0,
-        split="eval",
-    ),
     GameSpec(
         game_id="game_01",
         video_path=str(NAS / "1" / "1752784779079_video-3706a2d1-2dc5-4bc0-8dad-c94f0262e36c-1752785855.26862-encoded.mp4"),
         h1_json=str(NAS / "1" / "08 GA (U19) vs Sporting AC_1st Half.json"),
         h2_json=str(NAS / "1" / "08 GA (U19) vs Sporting AC_2nd Half.json"),
-        video_offset=396.0, half2_video_start=3396.0, half2_game_offset=2700.0,
+        video_offset=320.0, half2_video_start=3808.0, half2_game_offset=2700.0,
         split="eval",
     ),
     GameSpec(
@@ -100,7 +102,7 @@ CALIBRATED: list[GameSpec] = [
         video_path=str(NAS / "4" / "1768796597623_seattle-reign-academy-2011-ga-vs-ww-surf-2011-ga-11-ga-vs-ww-surf-jan-18-d74e23a0-0ae6-49de-8ebf-d05cfc700ce9-1768798011.373838-encoded.mp4"),
         h1_json=str(NAS / "4" / "2026-01-18_Seattle Reign 2011 GA (U15) vs NPSA WW Surf U15 (W)_1st Half.json"),
         h2_json=str(NAS / "4" / "2026-01-18_Seattle Reign 2011 GA (U15) vs NPSA WW Surf U15 (W)_2nd Half.json"),
-        video_offset=130.0, half2_video_start=2860.0, half2_game_offset=2400.0,
+        video_offset=325.0, half2_video_start=3375.0, half2_game_offset=2400.0,
         split="eval",
     ),
     GameSpec(
@@ -108,7 +110,15 @@ CALIBRATED: list[GameSpec] = [
         video_path=str(NAS / "10" / "1770526794598_reign-2011-vs-wa-rush-2026-02-07-fddf6486-a04f-40a7-96f6-73ecb7c9b548-1770527705.883494-encoded.mp4"),
         h1_json=str(NAS / "10" / "2026-02-07_Seattle Reign 2011 GA (U15) vs Washington Rush U15 (W)_1st Half.json"),
         h2_json=str(NAS / "10" / "2026-02-07_Seattle Reign 2011 GA (U15) vs Washington Rush U15 (W)_2nd Half.json"),
-        video_offset=236.0, half2_video_start=3301.0, half2_game_offset=2400.0,
+        video_offset=252.0, half2_video_start=3393.0, half2_game_offset=2400.0,
+        split="eval",
+    ),
+    GameSpec(
+        game_id="game_11",  # Rush U19 — primary benchmark
+        video_path="/Users/aless/soccer-working/2026-02-07 - Rush - GA2008.mp4",
+        h1_json="/Volumes/transit/08 GA (U19) vs Washington Rush U19 (W)_1st Half.json",
+        h2_json="/Volumes/transit/08 GA (U19) vs Washington Rush U19 (W)_2nd Half.json",
+        video_offset=416.0, half2_video_start=3880.0, half2_game_offset=2700.0,
         split="eval",
     ),
     GameSpec(
@@ -116,15 +126,128 @@ CALIBRATED: list[GameSpec] = [
         video_path=str(NAS / "13" / "1772040274070_07_08_GA_at_Capital_FC-47845ea7-c6f8-4118-9c56-cef1866addc8-1772040752.107228-encoded.mp4"),
         h1_json=str(NAS / "13" / "08 GA (U19)_1st Half.json"),
         h2_json=str(NAS / "13" / "08 GA (U19)_2nd Half.json"),
-        video_offset=284.0, half2_video_start=3864.0, half2_game_offset=2700.0,
+        video_offset=323.0, half2_video_start=3828.0, half2_game_offset=2700.0,
         split="eval",
+    ),
+    # ── Training set (14 games) ──
+    GameSpec(
+        game_id="game_02",
+        video_path=str(NAS / "2" / "2 event clips merged.mp4"),
+        h1_json=str(NAS / "2" / "08 GA (U19)_1st Half.json"),
+        h2_json=str(NAS / "2" / "08 GA (U19)_2nd Half.json"),
+        video_offset=0.0, half2_video_start=2700.0, half2_game_offset=2700.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_03",
+        video_path=str(NAS / "3" / "1768376237461_celtic-ga-vs-reign-fc-2025-12-12_1-6de0a0a3-d892-4f6d-8152-32c91d4d74bf-1768377809.843711-encoded.mp4"),
+        h1_json=str(NAS / "3" / "2025-12-13_Seattle Celtic U15 (W) vs Seattle Reign 2011 GA (U15)_1st Half.json"),
+        h2_json=str(NAS / "3" / "2025-12-13_Seattle Celtic U15 (W) vs Seattle Reign 2011 GA (U15)_2nd Half.json"),
+        video_offset=30.0, half2_video_start=3058.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_05",
+        video_path=str(NAS / "5" / "1768795314475_seattle-reign-academy-07-08-ga-vs-wwa-surf-07-08-ga-vs-wwa-surf-bbc88000-2fdc-46ad-a5fa-53387ddcfcde-1768796696.940759-encoded.mp4"),
+        h1_json=str(NAS / "5" / "08 GA (U19) vs NPSA WW Surf U19 (W)_1st Half.json"),
+        h2_json=str(NAS / "5" / "08 GA (U19) vs NPSA WW Surf U19 (W)_2nd Half.json"),
+        video_offset=195.0, half2_video_start=3760.0, half2_game_offset=2700.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_06",
+        video_path=str(NAS / "6" / "1770844071129_07_08_GA_vs_Spokane_Shadow-136c7e66-a7b7-47a2-8370-c3948156cf14-1770845042.758828-encoded.mp4"),
+        h1_json=str(NAS / "6" / "08 GA (U19)_1st Half.json"),
+        h2_json=str(NAS / "6" / "08 GA (U19)_2nd Half.json"),
+        video_offset=84.0, half2_video_start=3086.0, half2_game_offset=2700.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_07",
+        video_path=str(NAS / "7" / "1770162674539_recording-578ec162-e5ab-4194-89ca-835f96b4ac85-1770163416.24411-encoded.mp4"),
+        h1_json=str(NAS / "7" / "2026-01-31_Spokane Shadow U15 (W) vs Seattle Reign 2011 GA (U15)_1st Half.json"),
+        h2_json=str(NAS / "7" / "2026-01-31_Spokane Shadow U15 (W) vs Seattle Reign 2011 GA (U15)_2nd Half.json"),
+        video_offset=114.0, half2_video_start=2760.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_08",
+        video_path=str(NAS / "8" / "1770163303827_video-656d16fb-9adb-41c8-a104-0193e5c683d3-1770163984.213979-encoded.mp4"),
+        h1_json=str(NAS / "8" / "2026-02-01_Washington East Surf SC U15 (W) vs Seattle Reign 2011 GA (U15)_1st Half.json"),
+        h2_json=str(NAS / "8" / "2026-02-01_Washington East Surf SC U15 (W) vs Seattle Reign 2011 GA (U15)_2nd Half.json"),
+        video_offset=615.0, half2_video_start=3712.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_09",
+        video_path=str(NAS / "9" / "1770842972307_07_08_GA_vs_WE_Surf-bd754842-cff9-443b-b193-b034ae773ba0-1770843677.884134-encoded.mp4"),
+        h1_json=str(NAS / "9" / "08 GA (U19)_1st Half.json"),
+        h2_json=str(NAS / "9" / "08 GA (U19)_2nd Half.json"),
+        video_offset=768.0, half2_video_start=4262.0, half2_game_offset=2700.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_12",
+        video_path=str(NAS / "12" / "1771957218570_video_2-1993afe5-f90c-4229-8fba-2bf5773733c3-1771958315.041616-encoded.mp4"),
+        h1_json=str(NAS / "12" / "2026-02-21_Capital FC U15 (W) vs Seattle Reign 2011 GA (U15)_1st Half.json"),
+        h2_json=str(NAS / "12" / "2026-02-21_Capital FC U15 (W) vs Seattle Reign 2011 GA (U15)_2nd Half.json"),
+        video_offset=1453.0, half2_video_start=4614.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_14",
+        video_path=str(NAS / "14" / "1771956414386_video_1-0f3811c9-a14e-4efd-97d9-e4250db90231-1771957281.538088-encoded.mp4"),
+        h1_json=str(NAS / "14" / "2026-02-22_Eugene Metro FC U15 (W) vs Seattle Reign 2011 GA (U15)_1st Half.json"),
+        h2_json=str(NAS / "14" / "2026-02-22_Eugene Metro FC U15 (W) vs Seattle Reign 2011 GA (U15)_2nd Half.json"),
+        video_offset=87.0, half2_video_start=3194.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_15",
+        video_path=str(NAS / "15" / "1772132552044_07_08_GA_at_Eugene_Metros-9efd30af-f4d7-4259-9b0e-1033d7582d15-1772133003.51557-encoded.mp4"),
+        h1_json=str(NAS / "15" / "08 GA (U19)_1st Half.json"),
+        h2_json=str(NAS / "15" / "08 GA (U19)_2nd Half.json"),
+        video_offset=130.0, half2_video_start=3591.0, half2_game_offset=2700.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_16",
+        video_path=str(NAS / "16" / "1773129740515_2011-ga-vs-cp-2026-03-07-37c9ed14-bcf9-4ed2-a1ff-e08fbb215c61-1773131555.006324-encoded.mp4"),
+        h1_json=str(NAS / "16" / "2026-03-07_Seattle Reign 2011 GA (U15) vs Columbia Premier SC U15 (W)_1st Half.json"),
+        h2_json=str(NAS / "16" / "2026-03-07_Seattle Reign 2011 GA (U15) vs Columbia Premier SC U15 (W)_2nd Half.json"),
+        video_offset=0.0, half2_video_start=2980.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_17",
+        video_path=str(NAS / "17" / "1773178741853_0708-ga-vs-columbia-premier-2026-03-07-252c83eb-1e2c-4cfe-ae1d-755422d15f00-1773179894.895267-encoded.mp4"),
+        h1_json=str(NAS / "17" / "08 GA (U19) vs Columbia Premier SC U19 (W)_1st Half.json"),
+        h2_json=str(NAS / "17" / "08 GA (U19) vs Columbia Premier SC U19 (W)_2nd Half.json"),
+        video_offset=56.0, half2_video_start=3608.0, half2_game_offset=2700.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_18",
+        video_path=str(NAS / "18" / "1773550996606_seattle-reign-academy-2011-ga-vs-westside-metros-2011-ga-seattle-reign-academy-2011-ga-vs-ws-metros-85985259-4639-47c6-899f-76080b93eb9b-1773555300.926346-encoded.mp4"),
+        h1_json=str(NAS / "18" / "2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_1st Half.json"),
+        h2_json=str(NAS / "18" / "2026-03-14_Seattle Reign 2011 GA (U15) vs Westside Metros FC U15 (W)_2nd Half.json"),
+        video_offset=78.0, half2_video_start=3223.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_19",
+        video_path=str(NAS / "19" / "1773631328983_seattle-reign-academy-2011-ga-vs-oregon-premier-2011-ga-seattle-reign-academy-2011-ga-vs-oregon-premier-2011-ga-1aa48cf7-b31f-41c9-aa17-cef4b4c22267-1773632512.672041-encoded.mp4"),
+        h1_json=str(NAS / "19" / "2026-03-15_Seattle Reign 2011 GA (U15) vs Oregon Premier FC U15 (W)_1st Half.json"),
+        h2_json=str(NAS / "19" / "2026-03-15_Seattle Reign 2011 GA (U15) vs Oregon Premier FC U15 (W)_2nd Half.json"),
+        video_offset=0.0, half2_video_start=2863.0, half2_game_offset=2400.0,
+        split="train",
     ),
 ]
 
-# Uncalibrated games (need video_offset / half2_video_start discovery).
-# Listed here so we have the complete inventory in one place; calibration
-# values populated by a separate calibration-discovery pass before training.
-UNCALIBRATED: list[dict] = [
+# All 19 games calibrated above. Legacy placeholder retained as []
+# so existing manifest emit logic doesn't break.
+UNCALIBRATED: list[dict] = []
+_LEGACY_UNCALIBRATED_REFERENCE: list[dict] = [
     {"game_id": "game_02", "subdir": "2",
      "video_filename": "2 event clips merged.mp4",
      "h1_filename": "08 GA (U19)_1st Half.json",
@@ -498,11 +621,17 @@ def main():
             print(f"\n  FAILED on {spec.game_id}: {exc}", file=sys.stderr)
             summaries.append({"game_id": spec.game_id, "error": str(exc)})
 
+    train_games = [s["game_id"] for s in summaries
+                   if "error" not in s and s.get("split") == "train"]
+    eval_games = [s["game_id"] for s in summaries
+                  if "error" not in s and s.get("split") == "eval"]
     manifest = {
-        "calibrated_games_processed": [s for s in summaries if "error" not in s],
+        "games_processed": [s for s in summaries if "error" not in s],
         "failures": [s for s in summaries if "error" in s],
-        "uncalibrated_games_pending": [u["game_id"] for u in UNCALIBRATED],
+        "train_games": train_games,
+        "eval_games": eval_games,
         "field_crop_applied": not args.no_field_crop,
+        "calibration_source": "v4 8B finetune training data (stage2_all.jsonl _meta)",
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"\nDataset prep done. Manifest: {output_dir / 'manifest.json'}")
