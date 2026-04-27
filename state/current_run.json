@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
-  "run_number": 57,
-  "run_label": "run_57",
-  "job_id": "6b06255f-66c9-453a-8dbb-ba590a0d0542",
-  "commit_sha": "8460dd9",
-  "submitted_at": "2026-04-27T06:01:00Z",
+  "run_number": 59,
+  "run_label": "run_59",
+  "job_id": "312783e9-f370-4d84-8978-1732402cc874",
+  "commit_sha": "6d2ef5d",
+  "submitted_at": "2026-04-27T14:46:00Z",
   "host": "mac",
   "api_url": "http://127.0.0.1:8088",
   "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
@@ -21,17 +21,17 @@
     }
   },
   "baseline": {
-    "run": "49 / 54",
+    "run": "57 (silently no-op due to Pydantic bug; result was Run 49 baseline)",
     "f1": 0.417,
-    "notes": "Run 49 / Run 54 v2 Rush baseline (field_crop only): F1 0.417, keeper 0.430, highlights 0.446. Goals: 4 GT, 2 TP, 6 FP, F1 0.333. QL2 Phase A measured 50% audio celebration peak alignment with GT goals (Rush 1+2 had clear cheering signal; Rush 3+4 silent). Run 57 enables audio fusion Mode B (shot+celebration peak → goal promotion) + Mode C (annotate goals with audio_celebration_score). Cached PANN scores already in WORKING_DIR/audio_cache so the pipeline reuses them without recomputing."
+    "notes": "Run 57 had audio_fusion enabled but the new Event construction in audio_fusion.apply_audio_fusion() was missing 5 required Pydantic fields (job_id, source_file, reel_targets, frame_start, frame_end). The pipeline's try/except caught the validation error and silently fell back to un-augmented events — Run 57's final F1 0.417 / TP 65 / FP 91 was bit-identical to Run 49 baseline. Commit 6d2ef5d propagates the required fields from the source shot_on_target event being promoted. Audio cache for Rush at /tmp/soccer-pipeline/audio_cache/3192fa07*.npz is already built, so Run 59 audio scoring is ~5s lookup not 20min recompute."
   },
   "targets": {
     "f1": 0.417,
     "tp_min": 65,
-    "notes": "Honest expectation: not a giant F1 mover. Mode B may recover 0-2 missed goals depending on whether VLM-flagged shot_on_target events coincide with audio peaks at GT goal times the VLM missed (Rush goals 3+4 are silent, so likely no recovery on Rush). Mode C is product-only (highlights reel ordering). PRIMARY validation criteria: (a) per-event audio_celebration_score appears in metadata for goal events; (b) refinement_verdicts.jsonl analog audio_fusion log fires; (c) Rush F1 holds baseline (refresher path is a safety check, not the win)."
+    "notes": "Mode B (shot+celebration → goal promotion) and Mode C (audio_celebration_score on goals). Validation criteria: (a) audio_fusion.summary log fires with non-zero stats this time; (b) refinement_verdicts.jsonl analog (audio_fusion stats in pipeline log) shows shots_examined > 0 and either confirmed_with_audio > 0 or shots_promoted > 0; (c) F1 holds baseline 0.417 (no precision filter applied so should not regress). Modest expected impact on goal recall since only ~50% of Rush goals had audio peaks."
   },
   "config_changes_vs_baseline": {
-    "audio_fusion_enabled": {"old": false, "new": true, "reason": "Per-job opt-in. PANN scores already cached for Rush."}
+    "audio_fusion_enabled": {"old": false, "new": true, "reason": "Per-job opt-in. Audio scores cached for Rush — no recompute."}
   },
-  "notes": "Run #57 (commit 8460dd9): QL2 audio fusion. Tests end-to-end wiring + Mode B/C effects. Audio cache for Rush at /tmp/soccer-pipeline/audio_cache/3192fa0766f11d5f.npz (pre-staged). Default deploy unchanged (AUDIO_FUSION_ENABLED=false in env)."
+  "notes": "Run #59 (commit 6d2ef5d): retry of Run 57 after audio_fusion.apply_audio_fusion bug fix. Worker restarted. Pre-flight pending — should fire audio_fusion.summary log line at end of run."
 }
