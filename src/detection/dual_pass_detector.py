@@ -281,6 +281,17 @@ For each event: start_sec and end_sec should be the actual timestamps.
 Reply as a JSON array. Each element: {{"event_type": "...", "start_sec": N, \
 "end_sec": N, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
 
+REQUIRED for shots: every shot_on_target and shot_off_target MUST include an
+additional field "outcome", whose value is exactly one of:
+  "save"        — GK held, dove for, or punched the ball away
+  "corner_kick" — ball deflected out past the end line off a defender
+  "goal_kick"   — ball went past the end line untouched (over or wide)
+  "goal"        — ball crossed the goal line into the net
+A shot without an "outcome" is invalid; choose the most likely from the four.
+Use "outcome": "goal" ONLY when you see ball clearly behind the goal line OR
+unambiguous post-goal celebration / kickoff setup — same evidence bar as the
+standalone goal event type.
+
 BEFORE you conclude "open play" and return none, CHECK EACH OF THESE — \
 these events are routinely missed when the pose is only briefly visible:
 
@@ -1947,6 +1958,25 @@ class DualPassDetector:
                 from src.detection.models import is_gk_event_type
                 is_gk = is_gk_event_type(event_type)
 
+                # Parse the new "outcome" field for shots (Run 64+).
+                outcome = None
+                if event_type in (EventType.SHOT_ON_TARGET, EventType.SHOT_OFF_TARGET):
+                    raw_outcome = item.get("outcome")
+                    if isinstance(raw_outcome, str) and raw_outcome in (
+                        "save", "corner_kick", "goal_kick", "goal"
+                    ):
+                        outcome = raw_outcome
+
+                shot_metadata: dict = {
+                    "detection_method": "dual_pass",
+                    "triage_labels": list(set(window.labels)),
+                    "vlm_reasoning": reasoning,
+                    "vlm_model": self._cfg.tier2_model_name,
+                    "vlm_confidence": conf,
+                }
+                if outcome is not None:
+                    shot_metadata["shot_outcome"] = outcome
+
                 events.append(Event(
                     event_id=str(uuid.uuid4()),
                     job_id=self._job_id,
@@ -1961,14 +1991,39 @@ class DualPassDetector:
                     frame_end=int(end * 30),
                     reviewed=False,
                     review_override=None,
-                    metadata={
-                        "detection_method": "dual_pass",
-                        "triage_labels": list(set(window.labels)),
-                        "vlm_reasoning": reasoning,
-                        "vlm_model": self._cfg.tier2_model_name,
-                        "vlm_confidence": conf,
-                    },
+                    metadata=shot_metadata,
                 ))
+
+                # Run 64: when a shot declares outcome=goal, emit a paired goal
+                # event. The model commits to the verdict structurally instead
+                # of relying on a separate goal emission. Confidence inherited
+                # from the shot.
+                if outcome == "goal":
+                    goal_end = max(end, start + 15.0)
+                    events.append(Event(
+                        event_id=str(uuid.uuid4()),
+                        job_id=self._job_id,
+                        source_file=self._source_file,
+                        event_type=EventType.GOAL,
+                        timestamp_start=start,
+                        timestamp_end=goal_end,
+                        confidence=conf,
+                        reel_targets=[],
+                        is_goalkeeper_event=False,
+                        frame_start=int(start * 30),
+                        frame_end=int(goal_end * 30),
+                        reviewed=False,
+                        review_override=None,
+                        metadata={
+                            "detection_method": "shot_outcome",
+                            "promoted_from_shot": True,
+                            "source_event_type": event_type.value,
+                            "triage_labels": list(set(window.labels)),
+                            "vlm_reasoning": f"Shot outcome=goal. {reasoning}",
+                            "vlm_model": self._cfg.tier2_model_name,
+                            "vlm_confidence": conf,
+                        },
+                    ))
             except (KeyError, TypeError, ValueError) as exc:
                 log.debug("dual_pass.event_parse_error", error=str(exc))
                 continue
