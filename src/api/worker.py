@@ -382,6 +382,10 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
                               if getattr(job, 'audio_fusion_enabled', None) is not None
                               else _truthy(getattr(cfg, 'AUDIO_FUSION_ENABLED', 'false'))),
         audio_cache_dir=str(Path(cfg.WORKING_DIR) / "audio_cache"),
+        # Temporal fusion — per-job override; silent-goal recall booster
+        temporal_fusion_enabled=(getattr(job, 'temporal_fusion_enabled', None)
+                                 if getattr(job, 'temporal_fusion_enabled', None) is not None
+                                 else _truthy(getattr(cfg, 'TEMPORAL_FUSION_ENABLED', 'false'))),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,

@@ -535,6 +535,14 @@ class DualPassConfig:
     audio_fusion_lookahead_sec: float = 25.0       # post-shot window for peak scan
     audio_cache_dir: str = ""  # filled by worker (WORKING_DIR/audio_cache)
 
+    # Temporal fusion: promote shot_on_target → goal when the post-shot window
+    # contains zero VLM activity for >= min_dead_time_sec. Complements audio
+    # fusion (catches silent goals); runs AFTER audio fusion so it skips shots
+    # that audio already promoted.
+    temporal_fusion_enabled: bool = False
+    temporal_fusion_min_dead_time_sec: float = 25.0
+    temporal_fusion_lookahead_sec: float = 45.0
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -1373,6 +1381,20 @@ class DualPassDetector:
                 )
             except Exception as exc:
                 log.warning("audio_fusion.failed", error=str(exc), job_id=self._job_id)
+
+        # Temporal fusion: silent-goal recall booster (runs after audio fusion
+        # so it skips shots audio already promoted).
+        if self._cfg.temporal_fusion_enabled and all_events:
+            from src.detection import temporal_fusion as _tf
+            try:
+                all_events, _tf_stats = _tf.apply_temporal_fusion(
+                    events=all_events,
+                    min_dead_time_sec=self._cfg.temporal_fusion_min_dead_time_sec,
+                    lookahead_sec=self._cfg.temporal_fusion_lookahead_sec,
+                    job_id=self._job_id,
+                )
+            except Exception as exc:
+                log.warning("temporal_fusion.failed", error=str(exc), job_id=self._job_id)
 
         # QL1 Pass 2 — per-event-type confirmation refinement
         if self._cfg.refinement_enabled and all_events:

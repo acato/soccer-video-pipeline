@@ -158,6 +158,11 @@ class Job(BaseModel):
     # with celebration peaks to goals, annotate goal events with
     # audio_celebration_score.
     audio_fusion_enabled: Optional[bool] = None
+    # Per-job override for temporal fusion. None = defer to env-var
+    # TEMPORAL_FUSION_ENABLED. True = promote shot_on_target → goal when the
+    # post-shot lookahead window contains zero VLM activity for >= 25s
+    # (the celebration-pause signature). Complements audio fusion.
+    temporal_fusion_enabled: Optional[bool] = None
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""

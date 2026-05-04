@@ -125,6 +125,7 @@ def create_job(
     ball_crop_enabled: Optional[bool] = None,
     refinement_enabled: Optional[bool] = None,
     audio_fusion_enabled: Optional[bool] = None,
+    temporal_fusion_enabled: Optional[bool] = None,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
@@ -140,6 +141,7 @@ def create_job(
         ball_crop_enabled=ball_crop_enabled,
         refinement_enabled=refinement_enabled,
         audio_fusion_enabled=audio_fusion_enabled,
+        temporal_fusion_enabled=temporal_fusion_enabled,
     )
     store.save(job)
     log.info(
