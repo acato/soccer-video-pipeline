@@ -563,6 +563,13 @@ class DualPassConfig:
     kickoff_verifier_central_box: float = 0.10        # ball within 0.5±0.10
     kickoff_verifier_min_persons: int = 8
     kickoff_verifier_max_half_imbalance: float = 0.30
+    # Verifier-specific YOLO settings — separate from yolo_grounding so we can
+    # tune the kickoff probe without affecting other spatial gates. Run 65
+    # diagnostic: production conf=0.15 misses small distant balls in 15/16
+    # wide-angle kickoff probes; conf=0.05 + imgsz=1024 catches signature in
+    # 4/16 probes covering 3/4 Rush GT goals.
+    kickoff_verifier_ball_conf: float = 0.05
+    kickoff_verifier_inference_size: int = 1024
 
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
@@ -1397,8 +1404,8 @@ class DualPassDetector:
                     sampler=self._sampler,
                     video_duration=self._video_duration,
                     model_path=self._cfg.yolo_model_path or None,
-                    inference_size=self._cfg.yolo_grounding_inference_size,
-                    ball_conf=self._cfg.yolo_grounding_ball_conf,
+                    inference_size=self._cfg.kickoff_verifier_inference_size,
+                    ball_conf=self._cfg.kickoff_verifier_ball_conf,
                     use_gpu=self._cfg.yolo_use_gpu,
                     ball_class_id=self._cfg.yolo_ball_class_id,
                     person_class_ids=frozenset(int(c) for c in self._cfg.yolo_person_class_ids),
