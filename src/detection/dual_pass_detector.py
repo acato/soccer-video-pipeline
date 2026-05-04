@@ -554,6 +554,16 @@ class DualPassConfig:
     temporal_fusion_min_dead_time_sec: float = 25.0
     temporal_fusion_lookahead_sec: float = 45.0
 
+    # Kickoff-frame verifier (Run 65): YOLO precision gate on shot.outcome=goal
+    # paired goal events. Probes 3-4 frames at fixed offsets after the shot;
+    # a real goal scene shows ball-at-center, ≥8 persons, balanced halves.
+    # Fail-open: only drops a goal on positive negative evidence.
+    kickoff_verifier_enabled: bool = False
+    kickoff_verifier_probe_offsets_sec: tuple[float, ...] = (20.0, 30.0, 40.0, 50.0)
+    kickoff_verifier_central_box: float = 0.10        # ball within 0.5±0.10
+    kickoff_verifier_min_persons: int = 8
+    kickoff_verifier_max_half_imbalance: float = 0.30
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -1375,6 +1385,31 @@ class DualPassDetector:
             all_events = self._apply_yolo_grounding(all_events)
 
         all_events = self._post_filter_events(all_events)
+
+        # Kickoff-frame verifier (Run 65) — YOLO precision gate on
+        # shot.outcome=goal events. Runs BEFORE audio fusion so audio can
+        # rescue any goals the verifier drops on weak visual evidence.
+        if self._cfg.kickoff_verifier_enabled and all_events:
+            from src.detection import kickoff_verifier as _kv
+            try:
+                all_events, _kv_stats = _kv.verify_outcome_goals(
+                    events=all_events,
+                    sampler=self._sampler,
+                    video_duration=self._video_duration,
+                    model_path=self._cfg.yolo_model_path or None,
+                    inference_size=self._cfg.yolo_grounding_inference_size,
+                    ball_conf=self._cfg.yolo_grounding_ball_conf,
+                    use_gpu=self._cfg.yolo_use_gpu,
+                    ball_class_id=self._cfg.yolo_ball_class_id,
+                    person_class_ids=frozenset(int(c) for c in self._cfg.yolo_person_class_ids),
+                    probe_offsets_sec=self._cfg.kickoff_verifier_probe_offsets_sec,
+                    central_box=self._cfg.kickoff_verifier_central_box,
+                    min_persons=self._cfg.kickoff_verifier_min_persons,
+                    max_half_imbalance=self._cfg.kickoff_verifier_max_half_imbalance,
+                    job_id=self._job_id,
+                )
+            except Exception as exc:
+                log.warning("kickoff_verifier.failed", error=str(exc), job_id=self._job_id)
 
         # QL2 Mode B + C: audio fusion (goal recall booster + annotation)
         if self._cfg.audio_fusion_enabled and all_events:

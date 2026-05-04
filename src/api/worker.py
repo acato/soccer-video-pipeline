@@ -386,6 +386,11 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         temporal_fusion_enabled=(getattr(job, 'temporal_fusion_enabled', None)
                                  if getattr(job, 'temporal_fusion_enabled', None) is not None
                                  else _truthy(getattr(cfg, 'TEMPORAL_FUSION_ENABLED', 'false'))),
+        # Kickoff-frame verifier — per-job override; YOLO precision gate on
+        # shot.outcome=goal paired goals (Run 65).
+        kickoff_verifier_enabled=(getattr(job, 'kickoff_verifier_enabled', None)
+                                  if getattr(job, 'kickoff_verifier_enabled', None) is not None
+                                  else _truthy(getattr(cfg, 'KICKOFF_VERIFIER_ENABLED', 'false'))),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,

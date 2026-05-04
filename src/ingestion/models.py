@@ -163,6 +163,11 @@ class Job(BaseModel):
     # post-shot lookahead window contains zero VLM activity for >= 25s
     # (the celebration-pause signature). Complements audio fusion.
     temporal_fusion_enabled: Optional[bool] = None
+    # Per-job override for the kickoff-frame verifier (Run 65). None = defer
+    # to env-var KICKOFF_VERIFIER_ENABLED. True = run a YOLO precision gate
+    # on shot.outcome=goal paired events; drops goals lacking a kickoff-shaped
+    # frame at +20-50s after the shot.
+    kickoff_verifier_enabled: Optional[bool] = None
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""
