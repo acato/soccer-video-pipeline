@@ -74,7 +74,10 @@ class GameSpec:
 # ──────────────────────────────────────────────────────────────────────────
 # Manifest of all games we have GT for
 # ──────────────────────────────────────────────────────────────────────────
-NAS = Path("/Volumes/transit/Games")
+import os as _os
+# Override via SOCCER_GAMES_ROOT env var so this script can run on llm
+# (/mnt/transit/Games) as well as Mac (/Volumes/transit/Games).
+NAS = Path(_os.environ.get("SOCCER_GAMES_ROOT", "/Volumes/transit/Games"))
 
 # All 19 games — calibration recovered from the v4 8B finetune training data
 # (/Volumes/transit/soccer-finetune/stage2_all.jsonl _meta fields).
@@ -240,6 +243,33 @@ CALIBRATED: list[GameSpec] = [
         h1_json=str(NAS / "19" / "2026-03-15_Seattle Reign 2011 GA (U15) vs Oregon Premier FC U15 (W)_1st Half.json"),
         h2_json=str(NAS / "19" / "2026-03-15_Seattle Reign 2011 GA (U15) vs Oregon Premier FC U15 (W)_2nd Half.json"),
         video_offset=0.0, half2_video_start=2863.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    # ── New-camera games (high+wide angle filmed at the new home venue) ──
+    # Detected via scripts/find_video_offsets.py (YOLO ball-at-center + person-split signature).
+    # Game 20 → eval (9 GT goals — strongest goal-recall signal). Games 21, 22 → train.
+    GameSpec(
+        game_id="game_20",
+        video_path=str(NAS / "20" / "2026-04-18 Celtic - Reign GA 11.mp4"),
+        h1_json=str(NAS / "20" / "2026-04-18_Seattle Reign 2011 GA (U15) vs Seattle Celtic U15 (W)_1st Half.json"),
+        h2_json=str(NAS / "20" / "2026-04-18_Seattle Reign 2011 GA (U15) vs Seattle Celtic U15 (W)_2nd Half.json"),
+        video_offset=124.0, half2_video_start=3554.0, half2_game_offset=2400.0,
+        split="eval",
+    ),
+    GameSpec(
+        game_id="game_21",
+        video_path=str(NAS / "21" / "2026-04-25 Eastern WA Surf - Reign GA11.mp4"),
+        h1_json=str(NAS / "21" / "2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_1st Half.json"),
+        h2_json=str(NAS / "21" / "2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_2nd Half.json"),
+        video_offset=250.0, half2_video_start=4130.0, half2_game_offset=2400.0,
+        split="train",
+    ),
+    GameSpec(
+        game_id="game_22",
+        video_path=str(NAS / "22" / "2026-04-26 Spokane Shadow - Reign GA11.mp4"),
+        h1_json=str(NAS / "22" / "2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_1st Half.json"),
+        h2_json=str(NAS / "22" / "2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_2nd Half.json"),
+        video_offset=90.0, half2_video_start=2900.0, half2_game_offset=2700.0,
         split="train",
     ),
 ]
@@ -464,6 +494,31 @@ def label_for_window(events_in_win: list[dict], win_start: float,
     return out
 
 
+def _extract_window_frames_batch(sampler: FrameSampler, win_start: float,
+                                   win_end: float, n_frames: int = 5) -> list:
+    """Extract n_frames in a single ffmpeg call via the fps-filter batch path.
+
+    FrameSampler.sample_range falls back to per-frame ffmpeg invocations for
+    small ranges (expected_count <= 10), which is wildly inefficient for our
+    15s windows: 5 ffmpeg starts × ~200-500ms overhead each. This bypasses
+    that and uses _extract_batch directly — 1 ffmpeg call per window.
+
+    Returns a list of (timestamp_sec, jpeg_bytes) tuples, capped to n_frames.
+    """
+    from src.detection.frame_sampler import SampledFrame
+    duration = win_end - win_start
+    if duration <= 0:
+        return []
+    # fps tuned so we get >=n_frames evenly spaced; we slice to n_frames after
+    fps = n_frames / duration  # e.g. 5/15 = 0.333 → 5 frames at t=0,3,6,9,12
+    jpegs = sampler._extract_batch(start_sec=win_start, end_sec=win_end, fps=fps)
+    out = []
+    for i, jpeg in enumerate(jpegs[:n_frames]):
+        ts = win_start + i / fps
+        out.append(SampledFrame(timestamp_sec=ts, jpeg_bytes=jpeg))
+    return out
+
+
 def process_game(spec: GameSpec, output_dir: Path, *,
                   field_crop_enabled: bool = True,
                   step_sec: float = 10.0,
@@ -519,16 +574,26 @@ def process_game(spec: GameSpec, output_dir: Path, *,
             half_span = (win_end - win_start) / 2
             interval = max(1.0, (win_end - win_start) / n_frames)
 
-            frames = sampler.sample_range(
-                center_sec=center, window_sec=half_span,
-                interval_sec=interval, duration_sec=duration,
-            )
+            # Per-window batch extraction (1 ffmpeg call vs 5 sequential).
+            # Falls back to sample_range if batch fails.
+            try:
+                frames = _extract_window_frames_batch(
+                    sampler, win_start, win_end, n_frames=n_frames,
+                )
+            except Exception:
+                frames = []
+            if not frames:
+                # Last-resort fallback: original sequential path
+                frames = sampler.sample_range(
+                    center_sec=center, window_sec=half_span,
+                    interval_sec=interval, duration_sec=duration,
+                )
+                if frames and len(frames) > n_frames:
+                    s = len(frames) / n_frames
+                    idxs = [int(i * s) for i in range(n_frames)]
+                    frames = [frames[i] for i in idxs]
             if not frames:
                 t += step_sec; win_idx += 1; continue
-            if len(frames) > n_frames:
-                s = len(frames) / n_frames
-                idxs = [int(i * s) for i in range(n_frames)]
-                frames = [frames[i] for i in idxs]
 
             # Save frames (with field_crop applied) to disk
             frame_paths = []
@@ -586,6 +651,17 @@ def process_game(spec: GameSpec, output_dir: Path, *,
     }
 
 
+def _process_game_worker(args_tuple):
+    """multiprocessing worker — top-level so it pickles."""
+    spec, output_dir_str, field_crop_enabled, max_windows = args_tuple
+    try:
+        return process_game(spec, Path(output_dir_str),
+                             field_crop_enabled=field_crop_enabled,
+                             max_windows=max_windows)
+    except Exception as exc:
+        return {"game_id": spec.game_id, "error": str(exc)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", required=True)
@@ -595,6 +671,8 @@ def main():
                     help="Skip field_crop (default: apply, matching deployment)")
     ap.add_argument("--max-windows", type=int, default=None,
                     help="Cap windows per game (for smoke testing)")
+    ap.add_argument("--workers", type=int, default=8,
+                    help="Parallel workers (default 8). 1 = sequential debug mode.")
     args = ap.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -610,16 +688,17 @@ def main():
     else:
         targets = list(CALIBRATED)
 
-    summaries = []
-    for spec in targets:
-        try:
-            s = process_game(spec, output_dir,
-                              field_crop_enabled=not args.no_field_crop,
-                              max_windows=args.max_windows)
-            summaries.append(s)
-        except Exception as exc:
-            print(f"\n  FAILED on {spec.game_id}: {exc}", file=sys.stderr)
-            summaries.append({"game_id": spec.game_id, "error": str(exc)})
+    print(f"Processing {len(targets)} games with {args.workers} parallel workers...")
+
+    work = [(spec, str(output_dir), not args.no_field_crop, args.max_windows)
+            for spec in targets]
+
+    if args.workers == 1:
+        summaries = [_process_game_worker(w) for w in work]
+    else:
+        from multiprocessing import Pool
+        with Pool(processes=args.workers) as pool:
+            summaries = pool.map(_process_game_worker, work)
 
     train_games = [s["game_id"] for s in summaries
                    if "error" not in s and s.get("split") == "train"]
