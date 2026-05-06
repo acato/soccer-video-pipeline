@@ -31,13 +31,17 @@ declare -a GAMES=(
   "game_22|2026-04-26 Spokane Shadow - Reign GA11.mp4|game22|90.0|2900.0|2700|2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_1st Half.json|2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_2nd Half.json"
 )
 
-# Known team configs (best-guess colors; doesn't affect eval F1)
-declare -A MATCH_CONFIGS=(
-  [rush]='{"team":{"team_name":"Rush","outfield_color":"white","gk_color":"neon_yellow"},"opponent":{"team_name":"GA 2008","outfield_color":"blue","gk_color":"neon_green"}}'
-  [game_20]='{"team":{"team_name":"Reign 2011 GA","outfield_color":"red","gk_color":"neon_yellow"},"opponent":{"team_name":"Seattle Celtic U15","outfield_color":"green","gk_color":"neon_green"}}'
-  [game_21]='{"team":{"team_name":"Reign 2011 GA","outfield_color":"red","gk_color":"neon_yellow"},"opponent":{"team_name":"East WA Surf U15","outfield_color":"blue","gk_color":"neon_green"}}'
-  [game_22]='{"team":{"team_name":"Reign 2011 GA","outfield_color":"red","gk_color":"neon_yellow"},"opponent":{"team_name":"Spokane Shadow U15","outfield_color":"green","gk_color":"neon_green"}}'
-)
+# Known team configs (best-guess colors; doesn't affect eval F1).
+# Bash 3.2 (default on macOS) lacks associative arrays — use a function.
+match_config_for() {
+  case "$1" in
+    rush)    echo '{"team":{"team_name":"Rush","outfield_color":"white","gk_color":"neon_yellow"},"opponent":{"team_name":"GA 2008","outfield_color":"blue","gk_color":"neon_green"}}' ;;
+    game_20) echo '{"team":{"team_name":"Reign 2011 GA","outfield_color":"red","gk_color":"neon_yellow"},"opponent":{"team_name":"Seattle Celtic U15","outfield_color":"green","gk_color":"neon_green"}}' ;;
+    game_21) echo '{"team":{"team_name":"Reign 2011 GA","outfield_color":"red","gk_color":"neon_yellow"},"opponent":{"team_name":"East WA Surf U15","outfield_color":"blue","gk_color":"neon_green"}}' ;;
+    game_22) echo '{"team":{"team_name":"Reign 2011 GA","outfield_color":"red","gk_color":"neon_yellow"},"opponent":{"team_name":"Spokane Shadow U15","outfield_color":"green","gk_color":"neon_green"}}' ;;
+    *)       echo '' ;;
+  esac
+}
 
 EVALS=()
 
@@ -63,7 +67,7 @@ for entry in "${GAMES[@]}"; do
   done
 
   # Build job_payload
-  mc="${MATCH_CONFIGS[$game_id]}"
+  mc="$(match_config_for "$game_id")"
   payload=$(python3 -c "
 import json
 print(json.dumps({
