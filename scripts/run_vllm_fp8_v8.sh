@@ -10,6 +10,17 @@ if [ ! -d "$MODEL_DIR" ]; then
 fi
 
 source ~/vllm-env/bin/activate
+
+# HARD PIN: 0.20.0+ silently breaks Qwen3-VL-32B-FP8 (model emits EOS on every
+# request → empty completions → pipeline returns 0 events). Lost hours to
+# this bug three times. Refuse to launch if vllm is not exactly 0.19.1.
+VLLM_VER=$(python -c "import vllm; print(vllm.__version__)" 2>/dev/null)
+if [ "$VLLM_VER" != "0.19.1" ]; then
+  echo "ERROR: vllm version is '$VLLM_VER' — must be exactly 0.19.1." >&2
+  echo "Fix: ~/vllm-env/bin/pip install vllm==0.19.1" >&2
+  exit 1
+fi
+
 exec ~/run-vllm.sh vllm serve "$MODEL_DIR" \
   --tensor-parallel-size 2 \
   --max-model-len 8192 \
