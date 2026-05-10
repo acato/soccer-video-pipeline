@@ -10,6 +10,12 @@
 
 set -euo pipefail
 
+# torch 2.11+cu130 needs libnvrtc-builtins.so.13.0 at runtime; the bundled
+# copy lives under the venv but isn't on LD_LIBRARY_PATH by default.
+# Without this, .prod()/.sum() reductions crash during val with:
+#   "nvrtc: error: failed to open libnvrtc-builtins.so.13.0"
+export LD_LIBRARY_PATH="/home/aless/quant-env/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+
 DATA="/mnt/transit/soccer-finetune/yolo_ball_v9/data.yaml"
 BASE="/home/aless/yolov8_soccer_uisikdag.pt"
 PROJECT="/home/aless/yolo_v9_runs"
