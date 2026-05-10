@@ -168,6 +168,11 @@ class Job(BaseModel):
     # on shot.outcome=goal paired events; drops goals lacking a kickoff-shaped
     # frame at +20-50s after the shot.
     kickoff_verifier_enabled: Optional[bool] = None
+    # Per-job override for the v9b ball-presence verifier. None = defer to
+    # env-var BALL_PRESENCE_VERIFIER_ENABLED. True = run a single-class
+    # ball-detector (v9b, new-venue-tuned) over the goal window; drop the
+    # goal when 0/N probe frames register a ball.
+    ball_presence_verifier_enabled: Optional[bool] = None
 
     def get_reel_specs(self) -> list[ReelSpec]:
         """Return reel specs, auto-converting legacy reel_types if needed."""

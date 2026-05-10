@@ -46,6 +46,8 @@ class SubmitJobRequest(BaseModel):
     temporal_fusion_enabled: Optional[bool] = None
     # Per-job kickoff-verifier override. Omit (None) to follow env-var default.
     kickoff_verifier_enabled: Optional[bool] = None
+    # Per-job v9b ball-presence verifier override. Omit (None) to follow env-var.
+    ball_presence_verifier_enabled: Optional[bool] = None
 
 
 class JobStatusResponse(BaseModel):
@@ -143,7 +145,8 @@ def submit_job(request: SubmitJobRequest):
                      refinement_enabled=request.refinement_enabled,
                      audio_fusion_enabled=request.audio_fusion_enabled,
                      temporal_fusion_enabled=request.temporal_fusion_enabled,
-                     kickoff_verifier_enabled=request.kickoff_verifier_enabled)
+                     kickoff_verifier_enabled=request.kickoff_verifier_enabled,
+                     ball_presence_verifier_enabled=request.ball_presence_verifier_enabled)
     process_match_task.delay(job.job_id)
     log.info("jobs.submitted", job_id=job.job_id, filename=video_file.filename)
     return job

@@ -571,6 +571,18 @@ class DualPassConfig:
     kickoff_verifier_ball_conf: float = 0.05
     kickoff_verifier_inference_size: int = 1024
 
+    # Ball-presence verifier (v9b) — single-class new-venue ball detector.
+    # Drops shot.outcome=goal events when v9b finds no ball in any of the
+    # probe frames sampled across the goal window. Complementary to
+    # kickoff_verifier (which checks the post-goal kickoff scene).
+    ball_presence_verifier_enabled: bool = False
+    ball_presence_verifier_model_path: str = ""
+    ball_presence_verifier_conf: float = 0.10
+    ball_presence_verifier_inference_size: int = 1920
+    ball_presence_verifier_n_frames: int = 4
+    ball_presence_verifier_ball_class_id: int = 0   # v9b is single-class
+    ball_presence_verifier_fail_open: bool = True
+
     # 8B triage model
     tier1_model_name: str = "qwen3-vl-8b"
     tier1_model_path: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -1417,6 +1429,28 @@ class DualPassDetector:
                 )
             except Exception as exc:
                 log.warning("kickoff_verifier.failed", error=str(exc), job_id=self._job_id)
+
+        # Ball-presence verifier (v9b) — additional precision gate using a
+        # new-venue-tuned single-class ball detector. Drops shot-outcome
+        # paired goals where v9b finds no ball anywhere in the goal window.
+        if self._cfg.ball_presence_verifier_enabled and all_events:
+            from src.detection import ball_presence_verifier as _bpv
+            try:
+                all_events, _bpv_stats = _bpv.verify_goal_events(
+                    events=all_events,
+                    sampler=self._sampler,
+                    video_duration=self._video_duration,
+                    model_path=self._cfg.ball_presence_verifier_model_path or None,
+                    inference_size=self._cfg.ball_presence_verifier_inference_size,
+                    ball_conf=self._cfg.ball_presence_verifier_conf,
+                    use_gpu=self._cfg.yolo_use_gpu,
+                    ball_class_id=self._cfg.ball_presence_verifier_ball_class_id,
+                    n_frames=self._cfg.ball_presence_verifier_n_frames,
+                    fail_open=self._cfg.ball_presence_verifier_fail_open,
+                    job_id=self._job_id,
+                )
+            except Exception as exc:
+                log.warning("ball_presence_verifier.failed", error=str(exc), job_id=self._job_id)
 
         # QL2 Mode B + C: audio fusion (goal recall booster + annotation)
         if self._cfg.audio_fusion_enabled and all_events:

@@ -1,0 +1,199 @@
+{
+  "events_file": "/tmp/soccer-pipeline/43bd28b8-15ba-4783-b8eb-4212c7542d4e/diagnostics/dual_pass_events.jsonl",
+  "tolerance_sec": 45.0,
+  "video_offset_sec": 418.0,
+  "half2_video_start_sec": 3916.0,
+  "half2_game_offset_sec": 2700.0,
+  "gt_total": 156,
+  "gt_counts": {
+    "goal_kick": 23,
+    "throw_in": 48,
+    "shot_on_target": 47,
+    "catch": 12,
+    "goal": 4,
+    "shot_stop_diving": 5,
+    "corner_kick": 9,
+    "free_kick_shot": 7,
+    "penalty": 1
+  },
+  "detected_total": 63,
+  "detected_counts": {
+    "throw_in": 28,
+    "shot_on_target": 6,
+    "corner_kick": 9,
+    "goal_kick": 16,
+    "free_kick_shot": 4
+  },
+  "per_type": {
+    "catch": {
+      "gt": 12,
+      "detected": 0,
+      "tp": 0,
+      "fn": 12,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "corner_kick": {
+      "gt": 9,
+      "detected": 9,
+      "tp": 7,
+      "fn": 2,
+      "fp": 2,
+      "precision": 0.7777777777777778,
+      "recall": 0.7777777777777778,
+      "f1": 0.7777777777777778
+    },
+    "free_kick_shot": {
+      "gt": 7,
+      "detected": 4,
+      "tp": 3,
+      "fn": 4,
+      "fp": 1,
+      "precision": 0.75,
+      "recall": 0.42857142857142855,
+      "f1": 0.5454545454545454
+    },
+    "goal": {
+      "gt": 4,
+      "detected": 0,
+      "tp": 0,
+      "fn": 4,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "goal_kick": {
+      "gt": 23,
+      "detected": 16,
+      "tp": 12,
+      "fn": 11,
+      "fp": 4,
+      "precision": 0.75,
+      "recall": 0.5217391304347826,
+      "f1": 0.6153846153846153
+    },
+    "penalty": {
+      "gt": 1,
+      "detected": 0,
+      "tp": 0,
+      "fn": 1,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "shot_on_target": {
+      "gt": 47,
+      "detected": 6,
+      "tp": 5,
+      "fn": 42,
+      "fp": 1,
+      "precision": 0.8333333333333334,
+      "recall": 0.10638297872340426,
+      "f1": 0.18867924528301885
+    },
+    "shot_stop_diving": {
+      "gt": 5,
+      "detected": 0,
+      "tp": 0,
+      "fn": 5,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "throw_in": {
+      "gt": 48,
+      "detected": 28,
+      "tp": 27,
+      "fn": 21,
+      "fp": 1,
+      "precision": 0.9642857142857143,
+      "recall": 0.5625,
+      "f1": 0.7105263157894737
+    },
+    "__overall__": {
+      "tp": 54,
+      "fn": 102,
+      "fp": 9,
+      "precision": 0.8571428571428571,
+      "recall": 0.34615384615384615,
+      "f1": 0.4931506849315069
+    },
+    "__keeper__": {
+      "tp": 24,
+      "fn": 77,
+      "fp": 7,
+      "precision": 0.7741935483870968,
+      "recall": 0.2376237623762376,
+      "f1": 0.3636363636363636
+    },
+    "__highlights__": {
+      "tp": 8,
+      "fn": 51,
+      "fp": 2,
+      "precision": 0.8,
+      "recall": 0.13559322033898305,
+      "f1": 0.23188405797101452
+    },
+    "__reels__": {
+      "tp": 27,
+      "fn": 81,
+      "fp": 8,
+      "precision": 0.7714285714285715,
+      "recall": 0.25,
+      "f1": 0.37762237762237766
+    },
+    "__non_reel__": {
+      "tp": 27,
+      "fn": 21,
+      "fp": 1,
+      "precision": 0.9642857142857143,
+      "recall": 0.5625,
+      "f1": 0.7105263157894737
+    }
+  },
+  "overall": {
+    "tp": 54,
+    "fn": 102,
+    "fp": 9,
+    "precision": 0.8571428571428571,
+    "recall": 0.34615384615384615,
+    "f1": 0.4931506849315069
+  },
+  "keeper": {
+    "tp": 24,
+    "fn": 77,
+    "fp": 7,
+    "precision": 0.7741935483870968,
+    "recall": 0.2376237623762376,
+    "f1": 0.3636363636363636
+  },
+  "highlights": {
+    "tp": 8,
+    "fn": 51,
+    "fp": 2,
+    "precision": 0.8,
+    "recall": 0.13559322033898305,
+    "f1": 0.23188405797101452
+  },
+  "reels": {
+    "tp": 27,
+    "fn": 81,
+    "fp": 8,
+    "precision": 0.7714285714285715,
+    "recall": 0.25,
+    "f1": 0.37762237762237766
+  },
+  "non_reel": {
+    "tp": 27,
+    "fn": 21,
+    "fp": 1,
+    "precision": 0.9642857142857143,
+    "recall": 0.5625,
+    "f1": 0.7105263157894737
+  }
+}

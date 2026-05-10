@@ -388,9 +388,13 @@ def load_gt_events(spec: GameSpec) -> list[dict]:
 
 
 def video_duration(video_path: str) -> float:
+    import shutil as _shutil
     import subprocess
+    # Resolve ffprobe via PATH so this works on Mac (/opt/homebrew/bin) and
+    # llm (/usr/bin) without baking the host in.
+    ffprobe = _shutil.which("ffprobe") or "/opt/homebrew/bin/ffprobe"
     p = subprocess.run(
-        ["/opt/homebrew/bin/ffprobe", "-v", "error", "-show_entries",
+        [ffprobe, "-v", "error", "-show_entries",
          "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
          video_path],
         capture_output=True, text=True, check=True,

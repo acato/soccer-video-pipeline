@@ -391,6 +391,15 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         kickoff_verifier_enabled=(getattr(job, 'kickoff_verifier_enabled', None)
                                   if getattr(job, 'kickoff_verifier_enabled', None) is not None
                                   else _truthy(getattr(cfg, 'KICKOFF_VERIFIER_ENABLED', 'false'))),
+        # Ball-presence verifier (v9b) — per-job override; new-venue ball
+        # detector precision gate on shot.outcome=goal events.
+        ball_presence_verifier_enabled=(getattr(job, 'ball_presence_verifier_enabled', None)
+                                        if getattr(job, 'ball_presence_verifier_enabled', None) is not None
+                                        else _truthy(getattr(cfg, 'BALL_PRESENCE_VERIFIER_ENABLED', 'false'))),
+        ball_presence_verifier_model_path=str(getattr(cfg, 'BALL_PRESENCE_VERIFIER_MODEL_PATH', '') or ''),
+        ball_presence_verifier_conf=float(getattr(cfg, 'BALL_PRESENCE_VERIFIER_CONF', 0.10)),
+        ball_presence_verifier_inference_size=int(getattr(cfg, 'BALL_PRESENCE_VERIFIER_INFERENCE_SIZE', 1920)),
+        ball_presence_verifier_n_frames=int(getattr(cfg, 'BALL_PRESENCE_VERIFIER_N_FRAMES', 4)),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,

@@ -235,6 +235,19 @@ but expected to lift F1 substantially by removing per-type misclassification
 that comes from Pass 1's generic 9-type decision tree."""
 
 AUDIO_FUSION_ENABLED: bool = _bool("AUDIO_FUSION_ENABLED", False)
+
+# Ball-presence verifier (v9b) — single-class new-venue ball detector used as
+# precision gate on shot.outcome=goal events. Path here is the v9b weights;
+# kept separate from YOLO_MODEL_PATH (which is the multi-class production
+# YOLO used for persons/GK).
+BALL_PRESENCE_VERIFIER_ENABLED: bool = _bool("BALL_PRESENCE_VERIFIER_ENABLED", False)
+BALL_PRESENCE_VERIFIER_MODEL_PATH: str = _opt(
+    "BALL_PRESENCE_VERIFIER_MODEL_PATH",
+    "/Volumes/transit/soccer-finetune/yolo_ball_v9/weights/v9b_best.pt",
+)
+BALL_PRESENCE_VERIFIER_CONF: float = _float("BALL_PRESENCE_VERIFIER_CONF", 0.10)
+BALL_PRESENCE_VERIFIER_INFERENCE_SIZE: int = _int("BALL_PRESENCE_VERIFIER_INFERENCE_SIZE", 1920)
+BALL_PRESENCE_VERIFIER_N_FRAMES: int = _int("BALL_PRESENCE_VERIFIER_N_FRAMES", 4)
 """QL2 Mode B+C: audio fusion for goals.
 Mode B: promote shot_on_target → goal when audio celebration peak exists nearby.
 Mode C: annotate every goal with audio_celebration_score for downstream ranking.

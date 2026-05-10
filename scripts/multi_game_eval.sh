@@ -76,6 +76,7 @@ print(json.dumps({
   'audio_fusion_enabled': False,
   'temporal_fusion_enabled': False,
   'kickoff_verifier_enabled': True,
+  'ball_presence_verifier_enabled': True,
   'match_config': $mc,
 }))
 ")

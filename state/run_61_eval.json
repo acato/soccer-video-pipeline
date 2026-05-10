@@ -1,0 +1,199 @@
+{
+  "events_file": "/tmp/soccer-pipeline/a10458d0-3605-4fdd-a6f4-ef1bad72501e/diagnostics/dual_pass_events.jsonl",
+  "tolerance_sec": 45.0,
+  "video_offset_sec": 418.0,
+  "half2_video_start_sec": 3916.0,
+  "half2_game_offset_sec": 2700.0,
+  "gt_total": 156,
+  "gt_counts": {
+    "goal_kick": 23,
+    "throw_in": 48,
+    "shot_on_target": 47,
+    "catch": 12,
+    "goal": 4,
+    "shot_stop_diving": 5,
+    "corner_kick": 9,
+    "free_kick_shot": 7,
+    "penalty": 1
+  },
+  "detected_total": 64,
+  "detected_counts": {
+    "throw_in": 31,
+    "goal_kick": 12,
+    "shot_on_target": 8,
+    "free_kick_shot": 6,
+    "corner_kick": 7
+  },
+  "per_type": {
+    "catch": {
+      "gt": 12,
+      "detected": 0,
+      "tp": 0,
+      "fn": 12,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "corner_kick": {
+      "gt": 9,
+      "detected": 7,
+      "tp": 7,
+      "fn": 2,
+      "fp": 0,
+      "precision": 1.0,
+      "recall": 0.7777777777777778,
+      "f1": 0.8750000000000001
+    },
+    "free_kick_shot": {
+      "gt": 7,
+      "detected": 6,
+      "tp": 3,
+      "fn": 4,
+      "fp": 3,
+      "precision": 0.5,
+      "recall": 0.42857142857142855,
+      "f1": 0.4615384615384615
+    },
+    "goal": {
+      "gt": 4,
+      "detected": 0,
+      "tp": 0,
+      "fn": 4,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "goal_kick": {
+      "gt": 23,
+      "detected": 12,
+      "tp": 10,
+      "fn": 13,
+      "fp": 2,
+      "precision": 0.8333333333333334,
+      "recall": 0.43478260869565216,
+      "f1": 0.5714285714285714
+    },
+    "penalty": {
+      "gt": 1,
+      "detected": 0,
+      "tp": 0,
+      "fn": 1,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "shot_on_target": {
+      "gt": 47,
+      "detected": 8,
+      "tp": 6,
+      "fn": 41,
+      "fp": 2,
+      "precision": 0.75,
+      "recall": 0.1276595744680851,
+      "f1": 0.2181818181818182
+    },
+    "shot_stop_diving": {
+      "gt": 5,
+      "detected": 0,
+      "tp": 0,
+      "fn": 5,
+      "fp": 0,
+      "precision": 0,
+      "recall": 0.0,
+      "f1": 0
+    },
+    "throw_in": {
+      "gt": 48,
+      "detected": 31,
+      "tp": 25,
+      "fn": 23,
+      "fp": 6,
+      "precision": 0.8064516129032258,
+      "recall": 0.5208333333333334,
+      "f1": 0.6329113924050633
+    },
+    "__overall__": {
+      "tp": 51,
+      "fn": 105,
+      "fp": 13,
+      "precision": 0.796875,
+      "recall": 0.3269230769230769,
+      "f1": 0.4636363636363637
+    },
+    "__keeper__": {
+      "tp": 23,
+      "fn": 78,
+      "fp": 4,
+      "precision": 0.8518518518518519,
+      "recall": 0.22772277227722773,
+      "f1": 0.35937500000000006
+    },
+    "__highlights__": {
+      "tp": 9,
+      "fn": 50,
+      "fp": 5,
+      "precision": 0.6428571428571429,
+      "recall": 0.15254237288135594,
+      "f1": 0.2465753424657534
+    },
+    "__reels__": {
+      "tp": 26,
+      "fn": 82,
+      "fp": 7,
+      "precision": 0.7878787878787878,
+      "recall": 0.24074074074074073,
+      "f1": 0.36879432624113473
+    },
+    "__non_reel__": {
+      "tp": 25,
+      "fn": 23,
+      "fp": 6,
+      "precision": 0.8064516129032258,
+      "recall": 0.5208333333333334,
+      "f1": 0.6329113924050633
+    }
+  },
+  "overall": {
+    "tp": 51,
+    "fn": 105,
+    "fp": 13,
+    "precision": 0.796875,
+    "recall": 0.3269230769230769,
+    "f1": 0.4636363636363637
+  },
+  "keeper": {
+    "tp": 23,
+    "fn": 78,
+    "fp": 4,
+    "precision": 0.8518518518518519,
+    "recall": 0.22772277227722773,
+    "f1": 0.35937500000000006
+  },
+  "highlights": {
+    "tp": 9,
+    "fn": 50,
+    "fp": 5,
+    "precision": 0.6428571428571429,
+    "recall": 0.15254237288135594,
+    "f1": 0.2465753424657534
+  },
+  "reels": {
+    "tp": 26,
+    "fn": 82,
+    "fp": 7,
+    "precision": 0.7878787878787878,
+    "recall": 0.24074074074074073,
+    "f1": 0.36879432624113473
+  },
+  "non_reel": {
+    "tp": 25,
+    "fn": 23,
+    "fp": 6,
+    "precision": 0.8064516129032258,
+    "recall": 0.5208333333333334,
+    "f1": 0.6329113924050633
+  }
+}

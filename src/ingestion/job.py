@@ -127,6 +127,7 @@ def create_job(
     audio_fusion_enabled: Optional[bool] = None,
     temporal_fusion_enabled: Optional[bool] = None,
     kickoff_verifier_enabled: Optional[bool] = None,
+    ball_presence_verifier_enabled: Optional[bool] = None,
 ) -> Job:
     """
     Create a new Job record, persist it, and enqueue for processing.
@@ -144,6 +145,7 @@ def create_job(
         audio_fusion_enabled=audio_fusion_enabled,
         temporal_fusion_enabled=temporal_fusion_enabled,
         kickoff_verifier_enabled=kickoff_verifier_enabled,
+        ball_presence_verifier_enabled=ball_presence_verifier_enabled,
     )
     store.save(job)
     log.info(

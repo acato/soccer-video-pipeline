@@ -1,48 +1,41 @@
 #!/usr/bin/env bash
-# Train Qwen3-VL-32B LoRA on the v5 dataset.
+# Train Qwen3-VL-32B LoRA on the v6 dataset (rebalanced for rare classes).
 #
-# Runs on the LLM server (10.10.2.222) which has 2x RTX 3090 + NVLink.
-# Tensor parallelism via DeepSpeed ZeRO-3 splits the bf16 base across both
-# GPUs, leaving room for LoRA adapters + activations within each 24 GB.
+# v6 differences from v5 (see scripts/rebalance_v5_to_v6.py for details):
+#   - rare classes (catch / goal / shot_stop_diving) oversampled 6-13× to
+#     give them comparable gradient signal to throw_in (~1500 windows each)
+#   - hard-negative "none" windows (within ±90s of shot/goal in same game)
+#     kept verbatim — gives the model contrast for shot_on_target
+#   - penalty class dropped from training (5 examples, hopeless)
+#   - val_small built from goal-rich game_13 (instead of stratified random)
+#     so eval_loss actually reflects rare-class quality
 #
-# Memory budget (estimated):
-#   QLoRA: base in 4-bit (NF4, BitsAndBytes), LoRA adapters in bf16
-#   Base 4-bit total: 32B * 0.5 = 16 GB
-#   We use single-process model parallelism (device_map=auto) so the 4-bit
-#   weights are split across both GPUs — ~8 GB of weights per GPU, plus
-#   LoRA adapters + Adam state + activations + overhead ≈ 14-16 GB / GPU.
+# Wall time: ~81h (v6 train is 12,103 examples vs v5's 8854; v5 took 59.5h).
 #
-# Why not DDP (NPROC=2)?
-#   With DDP, each rank materializes a *full* model copy. Even with bnb 4-bit
-#   the load path goes through bf16 first (≈64 GB transient) before quantizing,
-#   which OOMs on 24 GB cards. Single-process device_map=auto avoids this:
-#   transformers shards the load across both GPUs from the start.
-#
-# Earlier attempts that OOM'd:
-#   - bf16 + ZeRO-3: 32 GB / GPU just for weights, exceeds 24 GB.
-#   - bnb 4-bit + DDP NPROC=2: each rank loads full bf16 first, OOM at load.
+# Same memory budget + flags as v5 (proven to fit on 2× RTX 3090):
+#   QLoRA (NF4 + double quant) + device_map=auto + paged_adamw_8bit + ViT frozen.
 #
 # Pre-requisites on LLM server:
 #   - vLLM stopped (training and inference share the GPUs)
 #   - swift-env activated, ms-swift installed
-#   - Dataset converted (run convert_v5_to_swift.py on Mac first)
+#   - Dataset converted: scripts/convert_v5_to_swift.py against v6 with
+#     --frames-prefix /mnt/transit/soccer-finetune/lora_dataset_v5/ (frames
+#     live in v5; v6 records reference them by relative path)
 #
 # Usage:
 #   # On the LLM server:
-#   bash train_lora_v5.sh [smoke|full]
-#     smoke = 2 steps for memory-fit test
-#     full  = real training run
+#   bash train_lora_v6.sh [smoke|full]
 
 set -euo pipefail
 
 MODE="${1:-smoke}"
-DATA_DIR="/mnt/transit/soccer-finetune/lora_dataset_v5_swift"
-OUT_DIR="/mnt/transit/soccer-finetune/checkpoints/v5-32b"
+DATA_DIR="/mnt/transit/soccer-finetune/lora_dataset_v6_swift"
+OUT_DIR="/mnt/transit/soccer-finetune/checkpoints/v6-32b"
 
 if [ "$MODE" = "smoke" ]; then
     DATA="$DATA_DIR/smoke.jsonl"
     EXTRA="--max_steps 2"
-    OUT_DIR="/mnt/transit/soccer-finetune/checkpoints/v5-32b-smoke"
+    OUT_DIR="/mnt/transit/soccer-finetune/checkpoints/v6-32b-smoke"
 elif [ "$MODE" = "full" ]; then
     DATA="$DATA_DIR/train.jsonl"
     EXTRA="--num_train_epochs 1"
@@ -63,9 +56,6 @@ mkdir -p "$OUT_DIR"
 
 source ~/swift-env/bin/activate
 
-# QLoRA + single-process model parallelism via device_map=auto.
-# Both GPUs participate in forward/backward as transformers shards the
-# 4-bit base across them; NVLink keeps activation transfer fast.
 CUDA_VISIBLE_DEVICES=0,1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True swift sft \
     --device_map auto \
     --max_memory '{0: "22GiB", 1: "14GiB"}' \
@@ -96,9 +86,9 @@ CUDA_VISIBLE_DEVICES=0,1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True swift 
     --bnb_4bit_use_double_quant true \
     --save_strategy steps \
     --save_steps 200 \
-    --save_total_limit 3 \
+    --save_total_limit 4 \
     --eval_strategy steps \
-    --eval_steps 400 \
+    --eval_steps 200 \
     --logging_steps 5 \
     --dataloader_num_workers 4 \
     --dataloader_pin_memory true \
