@@ -19,7 +19,7 @@ export LD_LIBRARY_PATH="/home/aless/quant-env/lib/python3.12/site-packages/nvidi
 DATA="/mnt/transit/soccer-finetune/yolo_ball_v9/data.yaml"
 BASE="/home/aless/yolov8_soccer_uisikdag.pt"
 PROJECT="/home/aless/yolo_v9_runs"
-NAME="v9"
+NAME="${NAME:-v9}"
 EPOCHS="${EPOCHS:-120}"
 IMGSZ="${IMGSZ:-1280}"
 BATCH="${BATCH:-8}"          # batch=8 @ 1280 fits one 3090 (~18GB)
@@ -64,7 +64,7 @@ echo "===================================================================="
   exist_ok=True
 
 # Find the best.pt (ultralytics may suffix the run dir if name conflicts)
-BEST=$(ls -t "$PROJECT"/v9*/weights/best.pt 2>/dev/null | head -1)
+BEST=$(ls -t "$PROJECT"/${NAME}*/weights/best.pt 2>/dev/null | head -1)
 if [ -z "$BEST" ]; then
   echo "ERROR: best.pt not found under $PROJECT" >&2
   exit 1
@@ -74,9 +74,9 @@ echo
 echo "best weights: $BEST"
 DEST_DIR="/mnt/transit/soccer-finetune/yolo_ball_v9/weights"
 mkdir -p "$DEST_DIR"
-cp -v "$BEST" "$DEST_DIR/v9_best.pt"
+cp -v "$BEST" "$DEST_DIR/${NAME}_best.pt"
 LAST="$(dirname "$BEST")/last.pt"
-[ -f "$LAST" ] && cp -v "$LAST" "$DEST_DIR/v9_last.pt"
+[ -f "$LAST" ] && cp -v "$LAST" "$DEST_DIR/${NAME}_last.pt"
 
 # Validation summary
 echo
@@ -87,8 +87,8 @@ echo "=== val summary ==="
   imgsz="$IMGSZ" \
   device="$DEVICE" \
   project="$PROJECT" \
-  name="v9_val" \
+  name="${NAME}_val" \
   exist_ok=True 2>&1 | tail -25
 
 echo
-echo "DONE. v9 weights at $DEST_DIR/v9_best.pt"
+echo "DONE. ${NAME} weights at $DEST_DIR/${NAME}_best.pt"
