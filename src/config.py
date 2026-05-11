@@ -500,6 +500,18 @@ class _Config:
             "BALL_CROP_ENABLED": ("BALL_CROP_ENABLED", "false"),
             "REFINEMENT_ENABLED": ("REFINEMENT_ENABLED", "false"),
             "AUDIO_FUSION_ENABLED": ("AUDIO_FUSION_ENABLED", "false"),
+            # Ball-presence verifier (v9b)
+            "BALL_PRESENCE_VERIFIER_ENABLED": ("BALL_PRESENCE_VERIFIER_ENABLED", "false"),
+            "BALL_PRESENCE_VERIFIER_MODEL_PATH": ("BALL_PRESENCE_VERIFIER_MODEL_PATH", ""),
+            "BALL_PRESENCE_VERIFIER_CONF": ("BALL_PRESENCE_VERIFIER_CONF", "0.10"),
+            "BALL_PRESENCE_VERIFIER_INFERENCE_SIZE": ("BALL_PRESENCE_VERIFIER_INFERENCE_SIZE", "1920"),
+            "BALL_PRESENCE_VERIFIER_N_FRAMES": ("BALL_PRESENCE_VERIFIER_N_FRAMES", "4"),
+            # Ball-context (v9b coords into 32B prompt)
+            "BALL_CONTEXT_ENABLED": ("BALL_CONTEXT_ENABLED", "false"),
+            "BALL_CONTEXT_MODEL_PATH": ("BALL_CONTEXT_MODEL_PATH", ""),
+            "BALL_CONTEXT_CONF": ("BALL_CONTEXT_CONF", "0.05"),
+            "BALL_CONTEXT_INFERENCE_SIZE": ("BALL_CONTEXT_INFERENCE_SIZE", "1920"),
+            "BALL_CONTEXT_MAX_DETS": ("BALL_CONTEXT_MAX_DETS", "3"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),
