@@ -24,11 +24,16 @@ SUMMARY_FILE="$STATE_DIR/multi_game_run_${RUN_BASE}_summary.json"
 mkdir -p "$STATE_DIR"
 
 # Game configs: game_id, video_filename, gt_subdir, video-offset, half2-start, half2-game-offset, h1_json, h2_json
+#
+# ORDER: most goal-rich new-venue game first; Rush last. Rush is the
+# baseline-confirmation case — running it first means waiting ~75 min before
+# we see whether the change actually helps on new venue (which is where every
+# regression / breakthrough has lived). Always lead with new venue.
 declare -a GAMES=(
-  "rush|2026-02-07 - Rush - GA2008.mp4||418.0|3916.0|2700|/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_1st Half.json|/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_2nd Half.json"
   "game_20|2026-04-18 Celtic - Reign GA 11.mp4|game20|124.0|3554.0|2400|2026-04-18_Seattle Reign 2011 GA (U15) vs Seattle Celtic U15 (W)_1st Half.json|2026-04-18_Seattle Reign 2011 GA (U15) vs Seattle Celtic U15 (W)_2nd Half.json"
-  "game_21|2026-04-25 Eastern WA Surf - Reign GA11.mp4|game21|250.0|4130.0|2400|2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_1st Half.json|2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_2nd Half.json"
   "game_22|2026-04-26 Spokane Shadow - Reign GA11.mp4|game22|90.0|2900.0|2700|2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_1st Half.json|2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_2nd Half.json"
+  "game_21|2026-04-25 Eastern WA Surf - Reign GA11.mp4|game21|250.0|4130.0|2400|2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_1st Half.json|2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_2nd Half.json"
+  "rush|2026-02-07 - Rush - GA2008.mp4||418.0|3916.0|2700|/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_1st Half.json|/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_2nd Half.json"
 )
 
 # Known team configs (best-guess colors; doesn't affect eval F1).
