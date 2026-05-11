@@ -1284,6 +1284,11 @@ class DualPassDetector:
 
             # Ball-context (v9b) annotations — lazy-load the model on first use.
             ball_annotations: list[str] = []
+            if win_idx == 0:
+                log.info("ball_context.config_check",
+                         enabled=self._cfg.ball_context_enabled,
+                         path=self._cfg.ball_context_model_path,
+                         conf=self._cfg.ball_context_conf)
             if self._cfg.ball_context_enabled and self._cfg.ball_context_model_path:
                 if self._ball_context_model is None and not self._ball_context_load_failed:
                     from src.detection import ball_context as _bc
