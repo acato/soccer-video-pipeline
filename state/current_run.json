@@ -1,46 +1,37 @@
 {
   "$schema_version": 1,
-  "run_number": 75,
-  "run_label": "run_75-78 (multi-game v8 c300 + v9b BPV)",
-  "status": "complete",
-  "commit_sha": "3b5cf9a",
-  "submitted_at": "2026-05-10T10:09:55Z",
-  "completed_at": "2026-05-10T16:53:00Z",
+  "run_number": 79,
+  "run_label": "run_79-82 (multi-game v8 c300 + ball_context v9b)",
+  "status": "in_flight",
+  "commit_sha": "798c681",
+  "submitted_at": "2026-05-11T04:47:59Z",
   "host": "mac",
-  "summary_file": "~/soccer-runs/state/multi_game_run_75_summary.json",
-  "log_file": "~/soccer-runs/state/multi_game_75.log",
+  "log_file": "~/soccer-runs/state/multi_game_79.log",
+  "summary_file": "~/soccer-runs/state/multi_game_run_79_summary.json",
   "games_in_order": ["rush", "game_20", "game_21", "game_22"],
-  "result": {
-    "aggregate": {
-      "f1": 0.321,
-      "precision": 0.371,
-      "recall": 0.283,
-      "tp": 168,
-      "fp": 285,
-      "fn": 426
-    },
-    "per_game": {
-      "rush":    {"f1": 0.507, "goal_recall": 0.50, "goal_precision": 0.50, "goal_gt": 4, "goal_det": 4},
-      "game_20": {"f1": 0.267, "goal_recall": 0.00, "goal_precision": 0.00, "goal_gt": 9, "goal_det": 1},
-      "game_21": {"f1": 0.215, "goal_recall": 0.00, "goal_precision": 0.00, "goal_gt": 2, "goal_det": 0},
-      "game_22": {"f1": 0.257, "goal_recall": 0.00, "goal_precision": 0.00, "goal_gt": 5, "goal_det": 2}
-    },
-    "new_venue_goal_recall": "0/16 (identical to v8 baseline runs 71-74)"
+  "config_change_vs_baseline": {
+    "name": "ball_context (v9b)",
+    "what": "Inject per-frame ball coordinates from v9b YOLO into the 32B classification prompt. Each frame's timestamp label gets a `[ball@(x,y):conf;...]` suffix; a prompt prefix explains the format and tells 32B to treat detections as hints to verify visually.",
+    "config": "BALL_CONTEXT_ENABLED=true, conf=0.05 (high recall), imgsz=1920, max_dets=3"
+  },
+  "v9b_first_in_game_evidence": {
+    "win_idx_50_sample": "stats: 73/255 frames had ball detections (~29% rate)",
+    "per_frame_overhead": "0.54s for 5 frames via MPS on Mac",
+    "annotation_quality": "Multi-candidate per frame, conf range 0.09-0.47"
   },
   "baseline_comparison": {
-    "v8_baseline_71_74": {"agg_f1": 0.321, "new_venue_goals": "0/16"},
-    "delta": "no change — BPV no-op in-pipeline because goals lack detection_method tag"
+    "v8_run_75": {
+      "agg_f1": 0.321,
+      "new_venue_goals": "0/16",
+      "rush_f1": 0.507,
+      "rush_goals": "2/4"
+    }
   },
-  "bpv_offline_simulation": {
-    "rush":    {"pre_goal_f1": 0.500, "post_goal_f1": 0.571, "drops": "1 FP / 0 TP"},
-    "game_20": {"pre_goal_f1": 0.000, "post_goal_f1": 0.000, "drops": "0 / 0  (1 FP kept; v9b saw ball)"},
-    "game_21": {"pre_goal_f1": 0.000, "post_goal_f1": 0.000, "drops": "n/a (0 goals emitted)"},
-    "game_22": {"pre_goal_f1": 0.000, "post_goal_f1": 0.000, "drops": "0 / 0  (2 FPs kept; v9b saw ball)"}
+  "targets": {
+    "hypothesis": "32B has the visual but cannot perceive the 3-5 px ball on new venue. Giving it explicit coordinates should unlock goal/shot classification.",
+    "success_criteria": "agg F1 > 0.40 OR new-venue goal recall > 4/16",
+    "neutral": "agg F1 ~0.32 with same goal recall — 32B ignores the annotations",
+    "regression": "agg F1 < 0.30 — annotations confuse 32B (e.g., it over-fires shot_on_target on every ball detection)"
   },
-  "verdict": "v9b BPV adds value only when upstream 32B emits goal candidates AND the FP candidates show no ball motion. On new venue, 32B emits few/no goal candidates (recall=0), so BPV cannot help. The new-venue goal-detection problem is structural and upstream of any verifier.",
-  "next_step_options": [
-    "Inject v9b ball trajectories as additional CONTEXT to the 32B prompt (upstream signal)",
-    "Build independent score-change / audio-cue / ball-trajectory goal detector that doesn't rely on 32B classification",
-    "Accept Rush-only win and lock-in v9b BPV in pipeline by removing the detection_method filter"
-  ]
+  "notes": "Run #79: first test of upstream-signal injection. v9b annotations only — no derived trajectory features yet. If MVP shows signal, Phase 2 adds velocity / zone-entry features."
 }
