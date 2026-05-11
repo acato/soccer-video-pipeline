@@ -1,53 +1,46 @@
 {
   "$schema_version": 1,
-  "run_number": 66,
-  "run_label": "run_66",
-  "job_id": "28377a43-4973-44c1-ba46-b386f6bd3bf7",
-  "commit_sha": "2d19838",
-  "submitted_at": "2026-05-04T19:53:30Z",
+  "run_number": 75,
+  "run_label": "run_75-78 (multi-game v8 c300 + v9b BPV)",
+  "status": "complete",
+  "commit_sha": "3b5cf9a",
+  "submitted_at": "2026-05-10T10:09:55Z",
+  "completed_at": "2026-05-10T16:53:00Z",
   "host": "mac",
-  "api_url": "http://127.0.0.1:8088",
-  "events_file_template": "/tmp/soccer-pipeline/{job_id}/diagnostics/dual_pass_events.jsonl",
-  "evaluate_script": "scripts/evaluate_detection.py",
-  "evaluate_args": [
-    "--tolerance", "45",
-    "--video-offset", "124.0",
-    "--half2-start", "3554.0",
-    "--half2-game-offset", "2400",
-    "--gt-file", "/Users/aless/soccer-runs/gt/game20/2026-04-18_Seattle Reign 2011 GA (U15) vs Seattle Celtic U15 (W)_1st Half.json",
-    "--gt-file", "/Users/aless/soccer-runs/gt/game20/2026-04-18_Seattle Reign 2011 GA (U15) vs Seattle Celtic U15 (W)_2nd Half.json"
-  ],
-  "ground_truth_source": "Mac local copy at ~/soccer-runs/gt/game20/ (staged from llm:/mnt/transit/Games/20/)",
-  "job_payload": {
-    "nas_path": "2026-04-18 Celtic - Reign GA 11.mp4",
-    "reel_types": ["keeper", "highlights"],
-    "audio_fusion_enabled": false,
-    "temporal_fusion_enabled": false,
-    "kickoff_verifier_enabled": true,
-    "match_config": {
-      "team": {"team_name": "Reign 2011 GA", "outfield_color": "red", "gk_color": "neon_yellow"},
-      "opponent": {"team_name": "Seattle Celtic U15", "outfield_color": "green", "gk_color": "neon_green"}
-    }
-  },
-  "baseline": {
-    "run": "65 (v6 c757 + outcome-on-shots + kickoff_verifier on Rush)",
-    "f1": null,
-    "notes": "Run 65 result still pending. Run 66 generalizes to a new game (Game 20: Reign vs Celtic, U15) with 9 GT goals (4 1H + 5 2H) — much better statistical sample than Rush's n=4. Same code stack as Run 65."
-  },
-  "targets": {
-    "f1": null,
-    "tp_min": null,
-    "notes": "First test of v6 c757 + new fusion architecture on a non-Rush game. Watch goal recall on n=9. If goal recall ≥ 0.75 with goal precision ≥ 0.5 we're holding the gain. If recall collapses, the model overfit to Rush characteristics. If precision collapses, kickoff_verifier signature doesn't generalize."
-  },
-  "config_changes_vs_baseline": {
-    "video": {
-      "old": "Rush vs GA 2008, U19, 45-min halves",
-      "new": "Reign 2011 GA vs Celtic, U15, 40-min halves. Offsets: video_offset=124, half2_start=3554, half2_game_offset=2400 (auto-detected via scripts/find_video_offsets.py)"
+  "summary_file": "~/soccer-runs/state/multi_game_run_75_summary.json",
+  "log_file": "~/soccer-runs/state/multi_game_75.log",
+  "games_in_order": ["rush", "game_20", "game_21", "game_22"],
+  "result": {
+    "aggregate": {
+      "f1": 0.321,
+      "precision": 0.371,
+      "recall": 0.283,
+      "tp": 168,
+      "fp": 285,
+      "fn": 426
     },
-    "fusion_path": {
-      "old": "Run 65 same as below",
-      "new": "audio_fusion=false, temporal_fusion=false, kickoff_verifier=true (unchanged from Run 65)"
-    }
+    "per_game": {
+      "rush":    {"f1": 0.507, "goal_recall": 0.50, "goal_precision": 0.50, "goal_gt": 4, "goal_det": 4},
+      "game_20": {"f1": 0.267, "goal_recall": 0.00, "goal_precision": 0.00, "goal_gt": 9, "goal_det": 1},
+      "game_21": {"f1": 0.215, "goal_recall": 0.00, "goal_precision": 0.00, "goal_gt": 2, "goal_det": 0},
+      "game_22": {"f1": 0.257, "goal_recall": 0.00, "goal_precision": 0.00, "goal_gt": 5, "goal_det": 2}
+    },
+    "new_venue_goal_recall": "0/16 (identical to v8 baseline runs 71-74)"
   },
-  "notes": "Run #66: first non-Rush evaluation. match_config team colors (Reign red, Celtic green) are best-guess; if reels look wrong the colors need tuning but won't affect F1. Submission blocked on Run 65 completion (vLLM bottleneck — single-endpoint serial)."
+  "baseline_comparison": {
+    "v8_baseline_71_74": {"agg_f1": 0.321, "new_venue_goals": "0/16"},
+    "delta": "no change — BPV no-op in-pipeline because goals lack detection_method tag"
+  },
+  "bpv_offline_simulation": {
+    "rush":    {"pre_goal_f1": 0.500, "post_goal_f1": 0.571, "drops": "1 FP / 0 TP"},
+    "game_20": {"pre_goal_f1": 0.000, "post_goal_f1": 0.000, "drops": "0 / 0  (1 FP kept; v9b saw ball)"},
+    "game_21": {"pre_goal_f1": 0.000, "post_goal_f1": 0.000, "drops": "n/a (0 goals emitted)"},
+    "game_22": {"pre_goal_f1": 0.000, "post_goal_f1": 0.000, "drops": "0 / 0  (2 FPs kept; v9b saw ball)"}
+  },
+  "verdict": "v9b BPV adds value only when upstream 32B emits goal candidates AND the FP candidates show no ball motion. On new venue, 32B emits few/no goal candidates (recall=0), so BPV cannot help. The new-venue goal-detection problem is structural and upstream of any verifier.",
+  "next_step_options": [
+    "Inject v9b ball trajectories as additional CONTEXT to the 32B prompt (upstream signal)",
+    "Build independent score-change / audio-cue / ball-trajectory goal detector that doesn't rely on 32B classification",
+    "Accept Rush-only win and lock-in v9b BPV in pipeline by removing the detection_method filter"
+  ]
 }
