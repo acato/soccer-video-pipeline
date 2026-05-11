@@ -257,6 +257,9 @@ BALL_CONTEXT_MODEL_PATH: str = _opt("BALL_CONTEXT_MODEL_PATH", "")
 BALL_CONTEXT_CONF: float = _float("BALL_CONTEXT_CONF", 0.05)
 BALL_CONTEXT_INFERENCE_SIZE: int = _int("BALL_CONTEXT_INFERENCE_SIZE", 1920)
 BALL_CONTEXT_MAX_DETS: int = _int("BALL_CONTEXT_MAX_DETS", 3)
+# Ball-trajectory (v9b, Phase 2) — replace per-frame coords with a derived
+# trajectory summary (velocity, direction, end-zone) per window.
+BALL_TRAJECTORY_ENABLED: bool = _bool("BALL_TRAJECTORY_ENABLED", False)
 """QL2 Mode B+C: audio fusion for goals.
 Mode B: promote shot_on_target → goal when audio celebration peak exists nearby.
 Mode C: annotate every goal with audio_celebration_score for downstream ranking.
@@ -512,6 +515,7 @@ class _Config:
             "BALL_CONTEXT_CONF": ("BALL_CONTEXT_CONF", "0.05"),
             "BALL_CONTEXT_INFERENCE_SIZE": ("BALL_CONTEXT_INFERENCE_SIZE", "1920"),
             "BALL_CONTEXT_MAX_DETS": ("BALL_CONTEXT_MAX_DETS", "3"),
+            "BALL_TRAJECTORY_ENABLED": ("BALL_TRAJECTORY_ENABLED", "false"),
             # YOLO spatial grounding (Run #33 breakthrough)
             "YOLO_GROUNDING_ENABLED": ("YOLO_GROUNDING_ENABLED", "false"),
             "YOLO_GROUNDING_FAIL_OPEN": ("YOLO_GROUNDING_FAIL_OPEN", "true"),

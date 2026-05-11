@@ -1,17 +1,10 @@
-"""v9b ball-location annotation for 32B classification prompts.
+"""v9b per-frame ball detection for 32B classification prompts.
 
-Per-frame, runs v9b at low conf and returns a short text annotation the
-32B can reason over alongside the visual frames. Designed for the
-single-pass classification loop where each frame already has a timestamp
-label.
-
-Output examples:
-  "ball@(0.42,0.58):0.34"                  # one detection
-  "ball@(0.42,0.58):0.34;ball@(0.21,0.35):0.12"  # up to max_dets
-  "no_ball"                                # nothing above conf threshold
-
-Coordinates are normalized to the JPEG image dimensions (which match what
-the 32B sees — same crop applied beforehand).
+Provides two output modes:
+  - annotate_frame() — returns a terse per-frame text string for inline
+    timestamp-label annotation (Phase 1, ~flat result on new venue).
+  - detect_balls() — returns structured top-K detections, consumed by
+    ball_trajectory to derive temporal features (Phase 2).
 """
 from __future__ import annotations
 
@@ -46,20 +39,21 @@ def load_model(model_path: str):
         return None
 
 
-def annotate_frame(model, frame_jpeg: bytes, *, conf: float = 0.05,
-                   imgsz: int = 1920, max_dets: int = 3,
-                   use_gpu: bool = True) -> str:
-    """Run v9b on one frame, return the text annotation."""
+def detect_balls(model, frame_jpeg: bytes, *, conf: float = 0.05,
+                 imgsz: int = 1920, max_dets: int = 3,
+                 use_gpu: bool = True) -> list[dict]:
+    """Run v9b on one frame. Returns list of top-K detections sorted by conf desc:
+        [{'cx': float, 'cy': float, 'conf': float}, ...]
+    Empty list if no detections or YOLO failure (silent fail-safe)."""
     if model is None:
-        return "no_ball"
+        return []
     import cv2
     import numpy as np
 
     arr = np.frombuffer(frame_jpeg, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        return "no_ball"
-    H, W = img.shape[:2]
+        return []
     kwargs = {"imgsz": imgsz, "conf": conf, "verbose": False}
     if not use_gpu:
         kwargs["device"] = "cpu"
@@ -67,27 +61,37 @@ def annotate_frame(model, frame_jpeg: bytes, *, conf: float = 0.05,
         results = model([img], **kwargs)
     except Exception as exc:  # pragma: no cover
         log.warning("ball_context.inference_error", error=str(exc))
-        return "no_ball"
+        return []
     if not results:
-        return "no_ball"
+        return []
     boxes = getattr(results[0], "boxes", None)
     if boxes is None or len(boxes) == 0:
-        return "no_ball"
+        return []
     try:
         confs = boxes.conf.cpu().numpy()
         xywhn = boxes.xywhn.cpu().numpy()
     except AttributeError:
-        return "no_ball"
-    # Sort by conf desc, take top-K
+        return []
     order = confs.argsort()[::-1][:max_dets]
-    parts = []
-    for i in order:
-        cx, cy = float(xywhn[i][0]), float(xywhn[i][1])
-        c = float(confs[i])
-        parts.append(f"ball@({cx:.2f},{cy:.2f}):{c:.2f}")
-    return ";".join(parts) if parts else "no_ball"
+    return [
+        {"cx": float(xywhn[i][0]), "cy": float(xywhn[i][1]), "conf": float(confs[i])}
+        for i in order
+    ]
+
+
+def annotate_frame(model, frame_jpeg: bytes, *, conf: float = 0.05,
+                   imgsz: int = 1920, max_dets: int = 3,
+                   use_gpu: bool = True) -> str:
+    """Per-frame text string for inline timestamp annotation. Phase 1 format."""
+    dets = detect_balls(model, frame_jpeg, conf=conf, imgsz=imgsz,
+                        max_dets=max_dets, use_gpu=use_gpu)
+    if not dets:
+        return "no_ball"
+    return ";".join(
+        f"ball@({d['cx']:.2f},{d['cy']:.2f}):{d['conf']:.2f}" for d in dets
+    )
 
 
 def prompt_prefix() -> str:
-    """Prefix to prepend to the 32B classification prompt when annotations are active."""
+    """Phase 1 prompt prefix — per-frame annotation explanation."""
     return _BALL_CONTEXT_PROMPT_PREFIX

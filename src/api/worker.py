@@ -406,6 +406,7 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         ball_context_conf=float(getattr(cfg, 'BALL_CONTEXT_CONF', 0.05)),
         ball_context_inference_size=int(getattr(cfg, 'BALL_CONTEXT_INFERENCE_SIZE', 1920)),
         ball_context_max_dets=int(getattr(cfg, 'BALL_CONTEXT_MAX_DETS', 3)),
+        ball_trajectory_enabled=_truthy(getattr(cfg, 'BALL_TRAJECTORY_ENABLED', 'false')),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,

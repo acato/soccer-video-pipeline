@@ -579,6 +579,10 @@ class DualPassConfig:
     ball_context_conf: float = 0.05      # low conf → high recall; let 32B filter
     ball_context_inference_size: int = 1920
     ball_context_max_dets: int = 3       # top-K per frame by conf
+    # Ball-trajectory features (v9b, Phase 2) — derive temporal signal across
+    # the window (velocity, direction, end-zone) instead of per-frame coords.
+    # Replaces per-frame annotations when enabled.
+    ball_trajectory_enabled: bool = False
 
     # Ball-presence verifier (v9b) — single-class new-venue ball detector.
     # Drops shot.outcome=goal events when v9b finds no ball in any of the
@@ -1282,14 +1286,18 @@ class DualPassDetector:
             elif self._cfg.yolo_crop_enabled:
                 frames = self._yolo_crop_frames(frames)
 
-            # Ball-context (v9b) annotations — lazy-load the model on first use.
+            # Ball signal (v9b) — Phase 1 = per-frame coords, Phase 2 = trajectory.
+            # Both can coexist; trajectory replaces per-frame annotations when on.
             ball_annotations: list[str] = []
+            trajectory_summary: Optional[str] = None
+            ball_enabled = (self._cfg.ball_context_enabled or self._cfg.ball_trajectory_enabled)
             if win_idx == 0:
                 log.info("ball_context.config_check",
-                         enabled=self._cfg.ball_context_enabled,
+                         context_enabled=self._cfg.ball_context_enabled,
+                         trajectory_enabled=self._cfg.ball_trajectory_enabled,
                          path=self._cfg.ball_context_model_path,
                          conf=self._cfg.ball_context_conf)
-            if self._cfg.ball_context_enabled and self._cfg.ball_context_model_path:
+            if ball_enabled and self._cfg.ball_context_model_path:
                 if self._ball_context_model is None and not self._ball_context_load_failed:
                     from src.detection import ball_context as _bc
                     self._ball_context_model = _bc.load_model(self._cfg.ball_context_model_path)
@@ -1299,24 +1307,42 @@ class DualPassDetector:
                     from src.detection import ball_context as _bc
                     import time as _t
                     _t_bc_start = _t.monotonic()
+                    per_frame_dets: list[list[dict]] = []
                     for frame in frames:
-                        ann = _bc.annotate_frame(
+                        dets = _bc.detect_balls(
                             self._ball_context_model, frame.jpeg_bytes,
                             conf=self._cfg.ball_context_conf,
                             imgsz=self._cfg.ball_context_inference_size,
                             max_dets=self._cfg.ball_context_max_dets,
                             use_gpu=self._cfg.yolo_use_gpu,
                         )
-                        ball_annotations.append(ann)
+                        per_frame_dets.append(dets)
                         self._ball_context_stats["frames_annotated"] += 1
-                        if ann != "no_ball":
+                        if dets:
                             self._ball_context_stats["frames_with_ball"] += 1
-                            self._ball_context_stats["total_dets"] += ann.count("ball@")
+                            self._ball_context_stats["total_dets"] += len(dets)
+                        # Phase 1 per-frame text (used only if trajectory off)
+                        if self._cfg.ball_context_enabled and not self._cfg.ball_trajectory_enabled:
+                            if dets:
+                                ball_annotations.append(";".join(
+                                    f"ball@({d['cx']:.2f},{d['cy']:.2f}):{d['conf']:.2f}"
+                                    for d in dets))
+                            else:
+                                ball_annotations.append("no_ball")
+
+                    # Phase 2 trajectory summary (replaces per-frame annotations)
+                    if self._cfg.ball_trajectory_enabled:
+                        from src.detection import ball_trajectory as _bt
+                        traj = _bt.compute_track(
+                            per_frame_dets, [f.timestamp_sec for f in frames])
+                        trajectory_summary = _bt.format_track(traj)
+
                     if win_idx < 2 or win_idx % 50 == 0:
                         log.info("ball_context.window_sample",
                                  win_idx=win_idx,
                                  elapsed=round(_t.monotonic() - _t_bc_start, 2),
-                                 annotations=ball_annotations,
+                                 mode=("trajectory" if self._cfg.ball_trajectory_enabled else "per_frame"),
+                                 summary=trajectory_summary or ball_annotations,
                                  stats=dict(self._ball_context_stats))
             # Build prompt with images. Only prepend the dual-view prefix when
             # ball_crop is active — otherwise the prompt would tell the VLM to
@@ -1331,7 +1357,10 @@ class DualPassDetector:
             )
             if self._cfg.ball_crop_enabled:
                 prompt = _DUAL_VIEW_PROMPT_PREFIX + prompt
-            if ball_annotations:
+            if trajectory_summary is not None:
+                from src.detection import ball_trajectory as _bt
+                prompt = _bt.prompt_prefix() + prompt + "\n\n" + trajectory_summary
+            elif ball_annotations:
                 from src.detection import ball_context as _bc
                 prompt = _bc.prompt_prefix() + prompt
 
