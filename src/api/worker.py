@@ -400,6 +400,12 @@ def _run_dual_pass_pipeline(job_id: str, job: Any, store: Any, cfg: Any, working
         ball_presence_verifier_conf=float(getattr(cfg, 'BALL_PRESENCE_VERIFIER_CONF', 0.10)),
         ball_presence_verifier_inference_size=int(getattr(cfg, 'BALL_PRESENCE_VERIFIER_INFERENCE_SIZE', 1920)),
         ball_presence_verifier_n_frames=int(getattr(cfg, 'BALL_PRESENCE_VERIFIER_N_FRAMES', 4)),
+        # Ball-context (v9b) — inject per-frame ball coordinates into 32B prompt.
+        ball_context_enabled=_truthy(getattr(cfg, 'BALL_CONTEXT_ENABLED', 'false')),
+        ball_context_model_path=str(getattr(cfg, 'BALL_CONTEXT_MODEL_PATH', '') or ''),
+        ball_context_conf=float(getattr(cfg, 'BALL_CONTEXT_CONF', 0.05)),
+        ball_context_inference_size=int(getattr(cfg, 'BALL_CONTEXT_INFERENCE_SIZE', 1920)),
+        ball_context_max_dets=int(getattr(cfg, 'BALL_CONTEXT_MAX_DETS', 3)),
         tier1_model_name=cfg.DUAL_PASS_TIER1_NAME,
         tier1_model_path=cfg.DUAL_PASS_TIER1_PATH,
         tier2_model_name=cfg.DUAL_PASS_TIER2_NAME,

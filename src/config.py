@@ -248,6 +248,15 @@ BALL_PRESENCE_VERIFIER_MODEL_PATH: str = _opt(
 BALL_PRESENCE_VERIFIER_CONF: float = _float("BALL_PRESENCE_VERIFIER_CONF", 0.10)
 BALL_PRESENCE_VERIFIER_INFERENCE_SIZE: int = _int("BALL_PRESENCE_VERIFIER_INFERENCE_SIZE", 1920)
 BALL_PRESENCE_VERIFIER_N_FRAMES: int = _int("BALL_PRESENCE_VERIFIER_N_FRAMES", 4)
+
+# Ball-context (v9b) — inject per-frame ball coordinates into 32B prompt.
+# Same v9b weights as BPV; tuned for high recall (low conf) since 32B can
+# filter false positives via reasoning.
+BALL_CONTEXT_ENABLED: bool = _bool("BALL_CONTEXT_ENABLED", False)
+BALL_CONTEXT_MODEL_PATH: str = _opt("BALL_CONTEXT_MODEL_PATH", "")
+BALL_CONTEXT_CONF: float = _float("BALL_CONTEXT_CONF", 0.05)
+BALL_CONTEXT_INFERENCE_SIZE: int = _int("BALL_CONTEXT_INFERENCE_SIZE", 1920)
+BALL_CONTEXT_MAX_DETS: int = _int("BALL_CONTEXT_MAX_DETS", 3)
 """QL2 Mode B+C: audio fusion for goals.
 Mode B: promote shot_on_target → goal when audio celebration peak exists nearby.
 Mode C: annotate every goal with audio_celebration_score for downstream ranking.

@@ -571,6 +571,15 @@ class DualPassConfig:
     kickoff_verifier_ball_conf: float = 0.05
     kickoff_verifier_inference_size: int = 1024
 
+    # Ball-context annotations (v9b) — inject per-frame ball coordinates into
+    # the 32B classification prompt as upstream signal. Designed to help on
+    # new venue where 32B alone can't perceive a 3-5 px ball.
+    ball_context_enabled: bool = False
+    ball_context_model_path: str = ""
+    ball_context_conf: float = 0.05      # low conf → high recall; let 32B filter
+    ball_context_inference_size: int = 1920
+    ball_context_max_dets: int = 3       # top-K per frame by conf
+
     # Ball-presence verifier (v9b) — single-class new-venue ball detector.
     # Drops shot.outcome=goal events when v9b finds no ball in any of the
     # probe frames sampled across the goal window. Complementary to
@@ -719,6 +728,11 @@ class DualPassDetector:
         self._ball_crop_stats = {"total": 0, "cropped_ball": 0,
                                  "fallback_field": 0, "fallback_full": 0,
                                  "fallback_error": 0}
+        # Ball-context (v9b) — lazy-loaded annotator for 32B prompts
+        self._ball_context_model = None
+        self._ball_context_load_failed = False
+        self._ball_context_stats = {"frames_annotated": 0, "frames_with_ball": 0,
+                                    "total_dets": 0}
 
     def detect(
         self,
@@ -1268,6 +1282,29 @@ class DualPassDetector:
             elif self._cfg.yolo_crop_enabled:
                 frames = self._yolo_crop_frames(frames)
 
+            # Ball-context (v9b) annotations — lazy-load the model on first use.
+            ball_annotations: list[str] = []
+            if self._cfg.ball_context_enabled and self._cfg.ball_context_model_path:
+                if self._ball_context_model is None and not self._ball_context_load_failed:
+                    from src.detection import ball_context as _bc
+                    self._ball_context_model = _bc.load_model(self._cfg.ball_context_model_path)
+                    if self._ball_context_model is None:
+                        self._ball_context_load_failed = True
+                if self._ball_context_model is not None:
+                    from src.detection import ball_context as _bc
+                    for frame in frames:
+                        ann = _bc.annotate_frame(
+                            self._ball_context_model, frame.jpeg_bytes,
+                            conf=self._cfg.ball_context_conf,
+                            imgsz=self._cfg.ball_context_inference_size,
+                            max_dets=self._cfg.ball_context_max_dets,
+                            use_gpu=self._cfg.yolo_use_gpu,
+                        )
+                        ball_annotations.append(ann)
+                        self._ball_context_stats["frames_annotated"] += 1
+                        if ann != "no_ball":
+                            self._ball_context_stats["frames_with_ball"] += 1
+                            self._ball_context_stats["total_dets"] += ann.count("ball@")
             # Build prompt with images. Only prepend the dual-view prefix when
             # ball_crop is active — otherwise the prompt would tell the VLM to
             # expect zoom companions that never arrive, biasing it toward the
@@ -1281,9 +1318,12 @@ class DualPassDetector:
             )
             if self._cfg.ball_crop_enabled:
                 prompt = _DUAL_VIEW_PROMPT_PREFIX + prompt
+            if ball_annotations:
+                from src.detection import ball_context as _bc
+                prompt = _bc.prompt_prefix() + prompt
 
             content: list[dict] = []
-            for frame in frames:
+            for i, frame in enumerate(frames):
                 b64 = base64.b64encode(frame.jpeg_bytes).decode()
                 content.append({
                     "type": "image_url",
@@ -1295,6 +1335,8 @@ class DualPassDetector:
                 label = f"t={frame.timestamp_sec:.1f}s"
                 if getattr(frame, "view_kind", "wide") == "ball_zoom":
                     label += " (ball zoom)"
+                if i < len(ball_annotations):
+                    label += f"  [{ball_annotations[i]}]"
                 content.append({"type": "text", "text": label})
             content.append({"type": "text", "text": prompt})
 
