@@ -1,37 +1,44 @@
 {
   "$schema_version": 1,
-  "run_number": 79,
-  "run_label": "run_79-82 (multi-game v8 c300 + ball_context v9b)",
-  "status": "in_flight",
-  "commit_sha": "798c681",
-  "submitted_at": "2026-05-11T04:47:59Z",
-  "host": "mac",
-  "log_file": "~/soccer-runs/state/multi_game_79.log",
-  "summary_file": "~/soccer-runs/state/multi_game_run_79_summary.json",
-  "games_in_order": ["rush", "game_20", "game_21", "game_22"],
-  "config_change_vs_baseline": {
-    "name": "ball_context (v9b)",
-    "what": "Inject per-frame ball coordinates from v9b YOLO into the 32B classification prompt. Each frame's timestamp label gets a `[ball@(x,y):conf;...]` suffix; a prompt prefix explains the format and tells 32B to treat detections as hints to verify visually.",
-    "config": "BALL_CONTEXT_ENABLED=true, conf=0.05 (high recall), imgsz=1920, max_dets=3"
+  "run_number": "v10-training",
+  "run_label": "v10 LoRA — trajectory-aware continue-train from v8 c300",
+  "status": "training",
+  "host": "llm",
+  "started_at": "2026-05-11T18:51:00Z",
+  "estimated_done_at": "2026-05-12T09:00:00Z",
+  "training_pid": 2868524,
+  "log_file": "~/v10_train.log",
+  "output_dir": "/mnt/transit/soccer-finetune/checkpoints/v10-32b",
+  "dataset": {
+    "path": "/mnt/transit/soccer-finetune/lora_dataset_v10_swift",
+    "train_examples": 12103,
+    "val_examples": 200,
+    "with_ball_pct": 88
   },
-  "v9b_first_in_game_evidence": {
-    "win_idx_50_sample": "stats: 73/255 frames had ball detections (~29% rate)",
-    "per_frame_overhead": "0.54s for 5 frames via MPS on Mac",
-    "annotation_quality": "Multi-candidate per frame, conf range 0.09-0.47"
+  "config": {
+    "base": "v8-32b/merged-bf16-c300 (continue-train, keep v8 gains)",
+    "data": "v10 dataset = v6 + v9b trajectory injected into prompts",
+    "max_steps": 300,
+    "lr": "1e-5",
+    "lora_rank": 64,
+    "freeze_vit": false,
+    "save_steps": 50,
+    "eval_steps": 50
   },
-  "baseline_comparison": {
-    "v8_run_75": {
-      "agg_f1": 0.321,
-      "new_venue_goals": "0/16",
-      "rush_f1": 0.507,
-      "rush_goals": "2/4"
-    }
+  "hypothesis": "Run 79 (Phase 1 coords) and Run 83 (Phase 2 trajectory) both showed v8 interprets ball annotations but doesn't reason over them — never trained with that prompt format. v10 bakes the same trajectory annotations into training data so the model learns to use the [ball-track] block as a discriminator for shot/goal/throw-in/corner.",
+  "phase_results_so_far": {
+    "run_75_baseline":  {"agg_f1": 0.321, "new_venue_goals": "0/16", "rush_goals": "2/4"},
+    "run_79_phase1":    {"agg_f1": 0.310, "new_venue_goals": "1/16", "rush_goals": "2/4"},
+    "run_83_phase2":    {"partial": "game_20 F1=0.289 (goal 1/9), game_22 F1=0.204 (goal 0/5); killed before game_21/rush"}
   },
   "targets": {
-    "hypothesis": "32B has the visual but cannot perceive the 3-5 px ball on new venue. Giving it explicit coordinates should unlock goal/shot classification.",
-    "success_criteria": "agg F1 > 0.40 OR new-venue goal recall > 4/16",
-    "neutral": "agg F1 ~0.32 with same goal recall — 32B ignores the annotations",
-    "regression": "agg F1 < 0.30 — annotations confuse 32B (e.g., it over-fires shot_on_target on every ball detection)"
+    "success_criteria": "new-venue goal recall > 4/16 OR aggregate F1 > 0.40",
+    "regression_threshold": "agg F1 < 0.28 — v10 worse than baseline -> structural issue, abandon trajectory approach"
   },
-  "notes": "Run #79: first test of upstream-signal injection. v9b annotations only — no derived trajectory features yet. If MVP shows signal, Phase 2 adds velocity / zone-entry features."
+  "next_steps_after_training": [
+    "Pick best checkpoint by eval_loss (every 50 steps, total 6 checkpoints)",
+    "FP8 quantize best ckpt: bash scripts/quantize_fp8_llm.py cXXX v10-32b",
+    "Deploy: scripts/run_vllm_fp8_v10.sh cXXX (need to create from v8 template)",
+    "Multi-game eval: scripts/multi_game_eval.sh 87 <commit> 'v10 trajectory-trained'"
+  ]
 }
