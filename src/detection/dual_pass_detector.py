@@ -1297,6 +1297,8 @@ class DualPassDetector:
                         self._ball_context_load_failed = True
                 if self._ball_context_model is not None:
                     from src.detection import ball_context as _bc
+                    import time as _t
+                    _t_bc_start = _t.monotonic()
                     for frame in frames:
                         ann = _bc.annotate_frame(
                             self._ball_context_model, frame.jpeg_bytes,
@@ -1310,6 +1312,12 @@ class DualPassDetector:
                         if ann != "no_ball":
                             self._ball_context_stats["frames_with_ball"] += 1
                             self._ball_context_stats["total_dets"] += ann.count("ball@")
+                    if win_idx < 2 or win_idx % 50 == 0:
+                        log.info("ball_context.window_sample",
+                                 win_idx=win_idx,
+                                 elapsed=round(_t.monotonic() - _t_bc_start, 2),
+                                 annotations=ball_annotations,
+                                 stats=dict(self._ball_context_stats))
             # Build prompt with images. Only prepend the dual-view prefix when
             # ball_crop is active — otherwise the prompt would tell the VLM to
             # expect zoom companions that never arrive, biasing it toward the
