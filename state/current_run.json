@@ -1,44 +1,48 @@
 {
   "$schema_version": 1,
-  "run_number": "v10-training",
-  "run_label": "v10 LoRA — trajectory-aware continue-train from v8 c300",
-  "status": "training",
-  "host": "llm",
-  "started_at": "2026-05-11T18:51:00Z",
-  "estimated_done_at": "2026-05-12T09:00:00Z",
-  "training_pid": 2868524,
-  "log_file": "~/v10_train.log",
-  "output_dir": "/mnt/transit/soccer-finetune/checkpoints/v10-32b",
-  "dataset": {
-    "path": "/mnt/transit/soccer-finetune/lora_dataset_v10_swift",
-    "train_examples": 12103,
-    "val_examples": 200,
-    "with_ball_pct": 88
+  "run_number": 89,
+  "run_label": "v10 c50 disambiguation eval — c50 has best eval_loss but least training",
+  "status": "eval_pending_vllm_swap",
+  "host": "mac",
+  "started_at": "PENDING_VLLM_READY",
+  "estimated_done_at": "2026-05-14T00:30:00Z",
+  "baseline_commit": "1c8c96c",
+  "log_file": "~/soccer-runs/logs/multi_game_89.log",
+  "summary_file": "~/soccer-runs/state/multi_game_run_89_summary.json",
+  "eval_runs": {
+    "89": "game_20 (Celtic)",
+    "90": "game_22 (Spokane Shadow)",
+    "91": "game_21 (East WA Surf)",
+    "92": "rush (baseline confirmation)"
   },
-  "config": {
-    "base": "v8-32b/merged-bf16-c300 (continue-train, keep v8 gains)",
-    "data": "v10 dataset = v6 + v9b trajectory injected into prompts",
-    "max_steps": 300,
-    "lr": "1e-5",
-    "lora_rank": 64,
-    "freeze_vit": false,
-    "save_steps": 50,
-    "eval_steps": 50
+  "model": {
+    "name": "v10 c50 FP8",
+    "served_path": "/mnt/transit/soccer-finetune/checkpoints/v10-32b/fp8-c50",
+    "lora_base": "v8-32b/merged-bf16-c300",
+    "training": "50 steps, lora_rank=64, freeze_vit=false, v9b trajectory injected into prompts",
+    "eval_loss_c50": 0.10199,
+    "selection_reason": "lowest eval_loss among all v10 checkpoints; used as undertrain-disambiguation point"
   },
-  "hypothesis": "Run 79 (Phase 1 coords) and Run 83 (Phase 2 trajectory) both showed v8 interprets ball annotations but doesn't reason over them — never trained with that prompt format. v10 bakes the same trajectory annotations into training data so the model learns to use the [ball-track] block as a discriminator for shot/goal/throw-in/corner.",
+  "v10_eval_loss_curve": {
+    "c50":  0.10199,
+    "c100": 0.10518,
+    "c150": 0.10289,
+    "c200": 0.10386,
+    "c250": 0.10481,
+    "c300": 0.10579
+  },
+  "purpose": "Disambiguate whether Run 85's v10 c150 (agg F1 0.329, 1 precision-clean new-venue goal) is undertrained or overtrained relative to the loss-curve sweet spot. c50 has lowest eval_loss but only 1/3 the trajectory exposure of c150. If c50 > c150 → c150 is overtrained → continue-train with longer warmup. If c50 < c150 → c150 is undertrained → eval c200 (run 93+).",
   "phase_results_so_far": {
     "run_75_baseline":  {"agg_f1": 0.321, "new_venue_goals": "0/16", "rush_goals": "2/4"},
     "run_79_phase1":    {"agg_f1": 0.310, "new_venue_goals": "1/16", "rush_goals": "2/4"},
-    "run_83_phase2":    {"partial": "game_20 F1=0.289 (goal 1/9), game_22 F1=0.204 (goal 0/5); killed before game_21/rush"}
+    "run_83_phase2":    {"partial": "game_20 F1=0.289 (goal 1/9), game_22 F1=0.204 (goal 0/5); killed before game_21/rush"},
+    "run_85_v10_c150":  {"agg_f1": 0.329, "new_venue_goals": "1/23", "rush_goals": "2/4", "signal": "game_20 goal P=1.00 (1 TP / 0 FP)"}
   },
   "targets": {
     "success_criteria": "new-venue goal recall > 4/16 OR aggregate F1 > 0.40",
-    "regression_threshold": "agg F1 < 0.28 — v10 worse than baseline -> structural issue, abandon trajectory approach"
+    "iteration_signals": "If any new-venue game produces a precision-1.0 goal detection (0 FP on goals), v10 is worth iterating on regardless of overall F1. FP8 quant noise is ~0.03 F1, so single-game F1 deltas of that size are within noise.",
+    "decision_after_c50": "If c50 agg F1 > c150 (0.329) AND new-venue goal calls increase, c50 wins → defer c200. If c50 worse, eval c200. If c50 same/marginal, eval c200 anyway to pick a definitive checkpoint."
   },
-  "next_steps_after_training": [
-    "Pick best checkpoint by eval_loss (every 50 steps, total 6 checkpoints)",
-    "FP8 quantize best ckpt: bash scripts/quantize_fp8_llm.py cXXX v10-32b",
-    "Deploy: scripts/run_vllm_fp8_v10.sh cXXX (need to create from v8 template)",
-    "Multi-game eval: scripts/multi_game_eval.sh 87 <commit> 'v10 trajectory-trained'"
-  ]
+  "hypothesis": "v10 c150 was the empirical pick from a non-monotonic eval-loss curve. c50 (lowest loss) tests whether the language model has learned trajectory reasoning by step 50 — if yes, more trajectory exposure beyond c50 is wasted; if no, c50 will collapse on new venue goals (where c150 already barely produces).",
+  "next_run": "TBD pending c50 eval result, then c200 eval (run 93-96)"
 }
