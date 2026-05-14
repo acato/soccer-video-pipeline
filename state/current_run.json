@@ -1,56 +1,42 @@
 {
   "$schema_version": 1,
   "run_number": 93,
-  "run_label": "v10 c200 disambiguation eval — DONE",
-  "status": "done",
-  "host": "mac",
-  "started_at": "2026-05-14T05:49:55Z",
-  "completed_at": "2026-05-14T13:37:00Z",
-  "baseline_commit": "1c8c96c",
-  "log_file": "~/soccer-runs/logs/multi_game_93.log",
-  "summary_file": "~/soccer-runs/state/multi_game_run_93_summary.json",
-  "eval_runs": {
-    "93": "game_20 (Celtic) — F1=0.307, goal P=1.00 R=0.111",
-    "94": "game_22 (Shadow) — F1=0.282, goal P=0 R=0 (2 FP)",
-    "95": "game_21 (Surf) — F1=0.193, goal P=0 R=0 (0 FP)",
-    "96": "rush — F1=0.474, goal P=0.333 R=0.25 (regression)"
+  "run_label": "v10 disambiguation done; v11 pipeline in flight (Path 2)",
+  "status": "v11_dataset_prep_in_flight",
+  "host": "llm",
+  "phase": "v11 dataset prep",
+  "started_at": "2026-05-14T16:30:00Z",
+  "estimated_done_at": "2026-05-15T19:00:00Z",
+  "baseline_commit": "c3c16e1",
+  "log_file": "~/prepare_lora_v11.log",
+  "current_step": {
+    "name": "v11 dataset prep (acceleration features)",
+    "script": "scripts/prepare_lora_v11_dataset.py",
+    "host_path": "/mnt/transit/soccer-finetune/lora_dataset_v11_swift",
+    "expected_wall": "3-6h",
+    "pid": "4101522"
   },
-  "model": {
-    "name": "v10 c200 FP8",
-    "served_path": "/mnt/transit/soccer-finetune/checkpoints/v10-32b/fp8-c200",
-    "eval_loss_c200": 0.10386
+  "v11_pipeline_plan": [
+    {"phase": "dataset prep", "tool": "prepare_lora_v11_dataset.py", "wall": "3-6h", "needs": "GPU 0 (v9b YOLO inference)"},
+    {"phase": "training", "tool": "train_lora_v11.sh full", "wall": "~24h", "needs": "both GPUs (vLLM down)"},
+    {"phase": "merge + quant best checkpoint", "tool": "merge_lora_v11.py + quantize_fp8_llm.py", "wall": "~40 min", "needs": "1 GPU"},
+    {"phase": "single-game F1 spot-check", "tool": "eval_run.py single game (game_20 fastest)", "wall": "~1.5h per checkpoint", "needs": "vLLM"},
+    {"phase": "v11 multi-game eval", "tool": "multi_game_eval.sh 97 c3c16e1 'v11 first eval'", "wall": "~6h", "needs": "vLLM"}
+  ],
+  "background": {
+    "v10_disambiguation_verdict": "c150 wins on goal precision (0 FP new-venue). c50 and c200 lose precision-clean detection.",
+    "path1_hybrid_dead": "Predicted agg F1 0.317 from existing JSONs (worse than both standalones). Memory: hybrid_v10_c150_v8_predicted_dead.md",
+    "hypothesis": "Coordinate trajectory plateaued at 1/16 new-venue goal recall across c50/c150/c200. Acceleration profile (max_decel/accel + direction changes) encodes trajectory SHAPE — sharp deceleration distinguishes goal/save from miss/pass even when ball too small to resolve visually.",
+    "ball_trajectory_changes": "ball_trajectory.py.compute_track now adds 'accel' dict. format_track/prompt_prefix gain include_acceleration=False default (backward compat). v11 dataset prep + inference pass include_acceleration=True."
   },
-  "results": {
-    "aggregated": {"f1": 0.324, "precision": 0.389, "recall": 0.278, "tp": 165, "fn": 429, "fp": 259}
-  },
-  "disambiguation_summary": {
-    "comparison": {
-      "c50":  {"agg_f1": 0.333, "new_venue_goal_fp": 4, "rush_goal_pr": "0.50/0.50"},
-      "c150": {"agg_f1": 0.329, "new_venue_goal_fp": 0, "rush_goal_pr": "0.50/0.50"},
-      "c200": {"agg_f1": 0.324, "new_venue_goal_fp": 2, "rush_goal_pr": "0.33/0.25"}
-    },
-    "verdict": "c150 is the operational champion — only precision-clean checkpoint on new-venue goals (0 FP), preserves rush baseline (F1 0.519, goal P/R 0.50/0.50). c50 has +0.004 agg F1 lift but costs 4 goal FPs. c200 regresses on rush. All within FP8 noise on agg F1.",
-    "key_finding": "v10's trajectory-aware training plateaued at c150. New-venue goal recall is 1/16 across ALL checkpoints. More training (c200) doesn't help; less training (c50) loses goal precision. Coordinate-based trajectory features have hit their ceiling.",
-    "eval_loss_misleading": "c50 had lowest eval_loss (0.10199) but matched c150's F1, while c200 (0.10386, more training) underperformed both. Token-level CE doesn't track event-classification F1."
-  },
-  "recommended_next_steps": [
-    {
-      "priority": 1,
-      "name": "Hybrid v10 c150 + v8 portfolio",
-      "rationale": "Ship the precision win immediately. Route goal/save events through c150 (0 FP new-venue goals, 1.00 P on game_20), everything else through v8 (better recall on majority classes). Captures the iteration signal without any new training.",
-      "effort": "~1 day of routing logic + eval"
-    },
-    {
-      "priority": 2,
-      "name": "v11 LoRA with velocity/acceleration trajectory features",
-      "rationale": "Coordinate-based trajectory has plateaued. Velocity (Δ/frame) and acceleration (Δ²/frame) compress trajectory into shape primitives that may be easier for the LLM to parse than raw (x,y). Goal-vs-shot is mostly an acceleration-profile question.",
-      "effort": "~24h training + 2h quant + 6h eval"
-    },
-    {
-      "priority": 3,
-      "name": "v11 with longer schedule + lower LR (deprioritized)",
-      "rationale": "Run 85/89/93 results suggest the model has already learned what coordinate trajectories can teach. More steps of the same recipe will not break the new-venue goal-recall plateau.",
-      "effort": "~24h training"
-    }
+  "next_phase_after_dataset": "Start train_lora_v11.sh full on llm. Will run vLLM-down ~24h.",
+  "key_files": [
+    "src/detection/ball_trajectory.py (acceleration features)",
+    "src/detection/dual_pass_detector.py (ball_trajectory_acceleration_enabled flag)",
+    "src/api/worker.py (BALL_TRAJECTORY_ACCELERATION_ENABLED env)",
+    "scripts/prepare_lora_v11_dataset.py",
+    "scripts/train_lora_v11.sh",
+    "scripts/merge_lora_v11.py",
+    "scripts/merge_events_portfolio.py (kept for future portfolio experiments)"
   ]
 }
