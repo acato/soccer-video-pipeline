@@ -1,27 +1,27 @@
 {
   "$schema_version": 1,
-  "run_number": 89,
-  "run_label": "v10 c50 disambiguation eval — c50 has best eval_loss but least training",
+  "run_number": 93,
+  "run_label": "v10 c200 disambiguation eval — c200 has 4x trajectory exposure vs c50",
   "status": "eval_pending_vllm_swap",
   "host": "mac",
   "started_at": "PENDING_VLLM_READY",
-  "estimated_done_at": "2026-05-14T00:30:00Z",
+  "estimated_done_at": "2026-05-14T11:30:00Z",
   "baseline_commit": "1c8c96c",
-  "log_file": "~/soccer-runs/logs/multi_game_89.log",
-  "summary_file": "~/soccer-runs/state/multi_game_run_89_summary.json",
+  "log_file": "~/soccer-runs/logs/multi_game_93.log",
+  "summary_file": "~/soccer-runs/state/multi_game_run_93_summary.json",
   "eval_runs": {
-    "89": "game_20 (Celtic)",
-    "90": "game_22 (Spokane Shadow)",
-    "91": "game_21 (East WA Surf)",
-    "92": "rush (baseline confirmation)"
+    "93": "game_20 (Celtic)",
+    "94": "game_22 (Spokane Shadow)",
+    "95": "game_21 (East WA Surf)",
+    "96": "rush (baseline confirmation)"
   },
   "model": {
-    "name": "v10 c50 FP8",
-    "served_path": "/mnt/transit/soccer-finetune/checkpoints/v10-32b/fp8-c50",
+    "name": "v10 c200 FP8",
+    "served_path": "/mnt/transit/soccer-finetune/checkpoints/v10-32b/fp8-c200",
     "lora_base": "v8-32b/merged-bf16-c300",
-    "training": "50 steps, lora_rank=64, freeze_vit=false, v9b trajectory injected into prompts",
-    "eval_loss_c50": 0.10199,
-    "selection_reason": "lowest eval_loss among all v10 checkpoints; used as undertrain-disambiguation point"
+    "training": "200 steps, lora_rank=64, freeze_vit=false, v9b trajectory injected into prompts",
+    "eval_loss_c200": 0.10386,
+    "selection_reason": "more-trained alternative to c150; tests whether longer training improves over the empirical local optimum"
   },
   "v10_eval_loss_curve": {
     "c50":  0.10199,
@@ -31,18 +31,17 @@
     "c250": 0.10481,
     "c300": 0.10579
   },
-  "purpose": "Disambiguate whether Run 85's v10 c150 (agg F1 0.329, 1 precision-clean new-venue goal) is undertrained or overtrained relative to the loss-curve sweet spot. c50 has lowest eval_loss but only 1/3 the trajectory exposure of c150. If c50 > c150 → c150 is overtrained → continue-train with longer warmup. If c50 < c150 → c150 is undertrained → eval c200 (run 93+).",
+  "purpose": "Final disambiguation: is c150 the local F1 optimum, or does more training improve? c50 already shown flat vs c150 (agg F1 0.333 vs 0.329, within noise; lost goal precision on new venues). c200 vs c150 will decide: (a) c200 > c150 → continue-train v11 with longer schedule; (b) c200 ≤ c150 → c150 confirmed local opt → pivot to v11 with richer features OR hybrid (c150 goal/save + v8 everything else).",
   "phase_results_so_far": {
-    "run_75_baseline":  {"agg_f1": 0.321, "new_venue_goals": "0/16", "rush_goals": "2/4"},
-    "run_79_phase1":    {"agg_f1": 0.310, "new_venue_goals": "1/16", "rush_goals": "2/4"},
-    "run_83_phase2":    {"partial": "game_20 F1=0.289 (goal 1/9), game_22 F1=0.204 (goal 0/5); killed before game_21/rush"},
-    "run_85_v10_c150":  {"agg_f1": 0.329, "new_venue_goals": "1/23", "rush_goals": "2/4", "signal": "game_20 goal P=1.00 (1 TP / 0 FP)"}
+    "run_75_v8":          {"agg_f1": 0.321, "new_venue_goals": "0/16", "rush_goals": "2/4"},
+    "run_79_phase1_v8":   {"agg_f1": 0.310, "new_venue_goals": "1/16", "rush_goals": "2/4"},
+    "run_85_v10_c150":    {"agg_f1": 0.329, "new_venue_goals": "1/16 (P=1.00)", "rush_goals": "2/4"},
+    "run_89_v10_c50":     {"agg_f1": 0.333, "new_venue_goals": "1/16 (4 goal FPs)", "rush_goals": "2/4"}
   },
   "targets": {
     "success_criteria": "new-venue goal recall > 4/16 OR aggregate F1 > 0.40",
-    "iteration_signals": "If any new-venue game produces a precision-1.0 goal detection (0 FP on goals), v10 is worth iterating on regardless of overall F1. FP8 quant noise is ~0.03 F1, so single-game F1 deltas of that size are within noise.",
-    "decision_after_c50": "If c50 agg F1 > c150 (0.329) AND new-venue goal calls increase, c50 wins → defer c200. If c50 worse, eval c200. If c50 same/marginal, eval c200 anyway to pick a definitive checkpoint."
+    "iteration_signals": "If c200 keeps c150's precision-clean goal on game_20 AND lifts agg F1 > 0.34, c200 is the new pick. If c200 introduces goal FPs like c50 did, c150 wins.",
+    "decision_after_c200": "Pick best F1 among {c50, c150, c200} that retains precision-1.00 goal detection. Then move to v11 (richer features OR longer schedule) OR hybrid (v10-best for goal/save + v8 for everything else)."
   },
-  "hypothesis": "v10 c150 was the empirical pick from a non-monotonic eval-loss curve. c50 (lowest loss) tests whether the language model has learned trajectory reasoning by step 50 — if yes, more trajectory exposure beyond c50 is wasted; if no, c50 will collapse on new venue goals (where c150 already barely produces).",
-  "next_run": "TBD pending c50 eval result, then c200 eval (run 93-96)"
+  "next_run": "TBD after c200 eval. Three plausible paths: (1) v11 LoRA with velocity/acceleration trajectory features; (2) continue-train v10 with lower LR for 200+ more steps; (3) hybrid v10+v8 portfolio."
 }
