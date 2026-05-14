@@ -45,6 +45,18 @@ _BALL_TRAJECTORY_PROMPT_PREFIX = (
 )
 
 
+_BALL_TRAJECTORY_V11_ACCEL_SUFFIX = (
+    "The `acceleration:` line (v11+) is the strongest discriminator for "
+    "shot-outcome events:\n"
+    "  • goal → max_decel ≤ -0.50/s² (ball decelerates sharply as it hits the net)\n"
+    "  • shot saved → max_decel ≤ -0.50/s² PLUS direction_changes≥1 (GK redirects ball)\n"
+    "  • shot missed → max_decel ≈ 0 (ball continues fast past goal)\n"
+    "  • long pass → moderate deceleration without direction change\n"
+    "Trust the acceleration profile when the visual ball is too small to resolve "
+    "frame-to-frame.\n\n"
+)
+
+
 def _classify_end_zone(x: float, y: float) -> list[str]:
     """Return list of zone tags for a normalized position."""
     zones = []
@@ -71,6 +83,68 @@ def _classify_speed(max_speed: float) -> str:
     if max_speed > 0.05:
         return "moderate"
     return "stationary"
+
+
+def _classify_accel(a: float) -> str:
+    """Acceleration magnitude descriptor — units are normalized-coord per sec².
+
+    Tuned against speed thresholds: |a| ~ Δspeed/Δt; with typical Δt~0.5s
+    a |Δspeed|=0.10 between segments → |a|=0.20/s². So 0.20 is meaningful
+    deceleration, 0.50 is sharp."""
+    abs_a = abs(a)
+    if abs_a > 0.50:
+        return "sharp"
+    if abs_a > 0.20:
+        return "moderate"
+    if abs_a > 0.05:
+        return "slight"
+    return "none"
+
+
+def _accel_profile(velocities: list[dict]) -> dict:
+    """Compute scalar + vector acceleration between consecutive velocity
+    segments. Returns dict with max_decel (most negative speed-change),
+    max_accel (most positive), and a count of significant direction changes
+    (>90° turn between segments).
+    """
+    if len(velocities) < 2:
+        return {
+            "accels": [],
+            "max_decel": 0.0,
+            "max_accel": 0.0,
+            "n_direction_changes": 0,
+        }
+    accels = []
+    n_dir_changes = 0
+    for i in range(len(velocities) - 1):
+        v0, v1 = velocities[i], velocities[i + 1]
+        dt = max(0.1, v1["from"]["t"] - v0["from"]["t"])
+        d_speed = v1["speed"] - v0["speed"]
+        a_speed = d_speed / dt
+        # Direction change: angle between (dx0, dy0) and (dx1, dy1)
+        dx0, dy0 = v0["dx"], v0["dy"]
+        dx1, dy1 = v1["dx"], v1["dy"]
+        mag0 = (dx0 * dx0 + dy0 * dy0) ** 0.5
+        mag1 = (dx1 * dx1 + dy1 * dy1) ** 0.5
+        if mag0 > 0.02 and mag1 > 0.02:
+            cos_theta = (dx0 * dx1 + dy0 * dy1) / (mag0 * mag1)
+            cos_theta = max(-1.0, min(1.0, cos_theta))
+            if cos_theta < 0.0:  # >90° turn
+                n_dir_changes += 1
+        accels.append({
+            "t": v0["from"]["t"],
+            "a_speed": a_speed,
+            "v0_speed": v0["speed"],
+            "v1_speed": v1["speed"],
+        })
+    max_decel = min((a["a_speed"] for a in accels), default=0.0)
+    max_accel = max((a["a_speed"] for a in accels), default=0.0)
+    return {
+        "accels": accels,
+        "max_decel": max_decel,
+        "max_accel": max_accel,
+        "n_direction_changes": n_dir_changes,
+    }
 
 
 def _classify_direction(dx: float, dy: float) -> str:
@@ -129,6 +203,7 @@ def compute_track(per_frame_dets: list[list[dict]], timestamps: list[float]) -> 
     overall_dy = (last["y"] - first["y"]) if first and last else 0.0
 
     end_zones = _classify_end_zone(last["x"], last["y"]) if last else []
+    accel = _accel_profile(velocities)
 
     return {
         "n_with_ball": n_with_ball,
@@ -141,11 +216,19 @@ def compute_track(per_frame_dets: list[list[dict]], timestamps: list[float]) -> 
         "overall_dx": overall_dx,
         "overall_dy": overall_dy,
         "end_zones": end_zones,
+        "accel": accel,
     }
 
 
-def format_track(traj: dict) -> str:
-    """Format trajectory dict as a 2-4 line text summary for the 32B prompt."""
+def format_track(traj: dict, include_acceleration: bool = False) -> str:
+    """Format trajectory dict as a 2-4 line text summary for the 32B prompt.
+
+    When include_acceleration=True (v11+), append an extra line describing
+    deceleration / acceleration / direction changes — the acceleration
+    profile is what distinguishes a shot-on-target hitting the net (sharp
+    decel) from a missed shot (continued speed) or a save (sharp decel +
+    direction change).
+    """
     n_w = traj["n_with_ball"]
     n_t = traj["n_total"]
 
@@ -173,8 +256,19 @@ def format_track(traj: dict) -> str:
         f"max_speed={traj['max_speed']:.2f}/sec ({speed_desc})",
         f"  ended in: {end_zone_str}",
     ]
+    if include_acceleration and traj.get("accel") is not None:
+        a = traj["accel"]
+        decel_desc = _classify_accel(a["max_decel"])
+        accel_desc = _classify_accel(a["max_accel"])
+        lines.append(
+            f"  acceleration: max_decel={a['max_decel']:+.2f}/s² ({decel_desc}), "
+            f"max_accel={a['max_accel']:+.2f}/s² ({accel_desc}), "
+            f"direction_changes={a['n_direction_changes']}"
+        )
     return "\n".join(lines)
 
 
-def prompt_prefix() -> str:
+def prompt_prefix(include_acceleration: bool = False) -> str:
+    if include_acceleration:
+        return _BALL_TRAJECTORY_PROMPT_PREFIX + _BALL_TRAJECTORY_V11_ACCEL_SUFFIX
     return _BALL_TRAJECTORY_PROMPT_PREFIX

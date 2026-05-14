@@ -583,6 +583,11 @@ class DualPassConfig:
     # the window (velocity, direction, end-zone) instead of per-frame coords.
     # Replaces per-frame annotations when enabled.
     ball_trajectory_enabled: bool = False
+    # v11+: also include acceleration profile (max_decel/accel + direction
+    # changes) in the [ball-track] block. Requires a model trained with the
+    # acceleration line in prompts (i.e. v11 LoRA); v10/older models will
+    # ignore the extra line.
+    ball_trajectory_acceleration_enabled: bool = False
 
     # Ball-presence verifier (v9b) — single-class new-venue ball detector.
     # Drops shot.outcome=goal events when v9b finds no ball in any of the
@@ -1335,7 +1340,10 @@ class DualPassDetector:
                         from src.detection import ball_trajectory as _bt
                         traj = _bt.compute_track(
                             per_frame_dets, [f.timestamp_sec for f in frames])
-                        trajectory_summary = _bt.format_track(traj)
+                        trajectory_summary = _bt.format_track(
+                            traj,
+                            include_acceleration=self._cfg.ball_trajectory_acceleration_enabled,
+                        )
 
                     if win_idx < 2 or win_idx % 50 == 0:
                         log.info("ball_context.window_sample",
@@ -1359,7 +1367,14 @@ class DualPassDetector:
                 prompt = _DUAL_VIEW_PROMPT_PREFIX + prompt
             if trajectory_summary is not None:
                 from src.detection import ball_trajectory as _bt
-                prompt = _bt.prompt_prefix() + prompt + "\n\n" + trajectory_summary
+                prompt = (
+                    _bt.prompt_prefix(
+                        include_acceleration=self._cfg.ball_trajectory_acceleration_enabled
+                    )
+                    + prompt
+                    + "\n\n"
+                    + trajectory_summary
+                )
             elif ball_annotations:
                 from src.detection import ball_context as _bc
                 prompt = _bc.prompt_prefix() + prompt
