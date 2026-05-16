@@ -1,42 +1,39 @@
 {
   "$schema_version": 1,
-  "run_number": 93,
-  "run_label": "v10 disambiguation done; v11 pipeline in flight (Path 2)",
-  "status": "v11_dataset_prep_in_flight",
-  "host": "llm",
-  "phase": "v11 dataset prep",
-  "started_at": "2026-05-14T16:30:00Z",
-  "estimated_done_at": "2026-05-15T19:00:00Z",
-  "baseline_commit": "c3c16e1",
-  "log_file": "~/prepare_lora_v11.log",
-  "current_step": {
-    "name": "v11 dataset prep (acceleration features)",
-    "script": "scripts/prepare_lora_v11_dataset.py",
-    "host_path": "/mnt/transit/soccer-finetune/lora_dataset_v11_swift",
-    "expected_wall": "3-6h",
-    "pid": "4101522"
+  "run_number": 97,
+  "run_label": "v11 c150 spot-check on game_20 (acceleration-aware)",
+  "status": "eval_in_flight",
+  "host": "mac",
+  "phase": "v11 single-game spot-check",
+  "started_at": "2026-05-16T06:18:00Z",
+  "estimated_done_at": "2026-05-16T08:00:00Z",
+  "baseline_commit": "097505f",
+  "log_file": "~/soccer-runs/logs/single_game_97.log",
+  "summary_file": "~/soccer-runs/state/multi_game_run_97_summary.json",
+  "model": {
+    "name": "v11 c150 FP8",
+    "served_path": "/mnt/transit/soccer-finetune/checkpoints/v11-32b/fp8-c150",
+    "lora_base": "v8-32b/merged-bf16-c300",
+    "training": "v11: 300 steps, lora_rank=64, freeze_vit=false, acceleration-profile trajectory features in prompts",
+    "eval_loss_c150": 0.10162,
+    "best_by_eval_loss": "yes (v11 winner, also -0.00127 below v10 c150 = 0.10289)"
   },
-  "v11_pipeline_plan": [
-    {"phase": "dataset prep", "tool": "prepare_lora_v11_dataset.py", "wall": "3-6h", "needs": "GPU 0 (v9b YOLO inference)"},
-    {"phase": "training", "tool": "train_lora_v11.sh full", "wall": "~24h", "needs": "both GPUs (vLLM down)"},
-    {"phase": "merge + quant best checkpoint", "tool": "merge_lora_v11.py + quantize_fp8_llm.py", "wall": "~40 min", "needs": "1 GPU"},
-    {"phase": "single-game F1 spot-check", "tool": "eval_run.py single game (game_20 fastest)", "wall": "~1.5h per checkpoint", "needs": "vLLM"},
-    {"phase": "v11 multi-game eval", "tool": "multi_game_eval.sh 97 c3c16e1 'v11 first eval'", "wall": "~6h", "needs": "vLLM"}
-  ],
+  "v11_eval_loss_curve": {
+    "c50":  0.10212,
+    "c100": 0.10415,
+    "c150": 0.10162,
+    "c200": 0.10246,
+    "c250": 0.10439,
+    "c300": 0.10430
+  },
+  "mac_env_changes": {
+    "BALL_TRAJECTORY_ACCELERATION_ENABLED": "true (added for v11)",
+    "celery_restarted": "yes, PID 34525 on commit 097505f"
+  },
+  "spot_check_criterion": "v10 c150 game_20 had F1=0.260, goal P=1.00 R=0.111 (1 TP / 0 FP / 8 FN). If v11 c150 game_20 F1 > 0.30 OR goal recall > 0.222 (≥2 TP goals), escalate to full multi-game eval. Otherwise next: spot-check c200 OR move to different feature representation.",
   "background": {
-    "v10_disambiguation_verdict": "c150 wins on goal precision (0 FP new-venue). c50 and c200 lose precision-clean detection.",
-    "path1_hybrid_dead": "Predicted agg F1 0.317 from existing JSONs (worse than both standalones). Memory: hybrid_v10_c150_v8_predicted_dead.md",
-    "hypothesis": "Coordinate trajectory plateaued at 1/16 new-venue goal recall across c50/c150/c200. Acceleration profile (max_decel/accel + direction changes) encodes trajectory SHAPE — sharp deceleration distinguishes goal/save from miss/pass even when ball too small to resolve visually.",
-    "ball_trajectory_changes": "ball_trajectory.py.compute_track now adds 'accel' dict. format_track/prompt_prefix gain include_acceleration=False default (backward compat). v11 dataset prep + inference pass include_acceleration=True."
-  },
-  "next_phase_after_dataset": "Start train_lora_v11.sh full on llm. Will run vLLM-down ~24h.",
-  "key_files": [
-    "src/detection/ball_trajectory.py (acceleration features)",
-    "src/detection/dual_pass_detector.py (ball_trajectory_acceleration_enabled flag)",
-    "src/api/worker.py (BALL_TRAJECTORY_ACCELERATION_ENABLED env)",
-    "scripts/prepare_lora_v11_dataset.py",
-    "scripts/train_lora_v11.sh",
-    "scripts/merge_lora_v11.py",
-    "scripts/merge_events_portfolio.py (kept for future portfolio experiments)"
-  ]
+    "v10_disambiguation_verdict": "c150 wins on goal precision (0 FP new-venue across 3 games). c50/c200 lose precision-clean detection. All three within FP8 noise on agg F1.",
+    "path1_hybrid_predicted_dead": "Offline merge of Run 71 v8 + Run 85 c150 events → predicted agg F1 0.317 (worse than both standalones).",
+    "v11_hypothesis": "Acceleration profile (max_decel/accel + direction changes) encodes trajectory SHAPE — sharp deceleration distinguishes goal/save from miss/pass even when ball too small to resolve visually."
+  }
 }
