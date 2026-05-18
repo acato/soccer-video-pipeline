@@ -146,7 +146,17 @@ def analyze_batch(ball_model, player_model, img_paths: list[Path]) -> list[dict]
 
 
 def derive_flags(per_frame: list[dict]) -> list[dict]:
-    """Add wide_shot, ball_at_center, one_in_circle, kickoff_setup flags."""
+    """Add wide_shot, ball_at_center, one_in_circle, kickoff_setup flags.
+
+    kickoff_setup (primary trigger) is RELAXED: wide_shot + ball_at_center.
+    The strict "one_in_circle" rule is kept as a SECONDARY flag to upgrade
+    confidence when present — it rarely fires at 5s sampling because the
+    kickoff moment is brief (~5s) and players are usually still settling
+    into halves during the window.
+
+    Reliability comes from the celebration / ball-traversal evidence paths
+    in detect_goals(), not from the per-frame trigger alone.
+    """
     out = []
     for r in per_frame:
         wide = r["total_field"] >= WIDE_SHOT_MIN_PERSONS
@@ -155,16 +165,14 @@ def derive_flags(per_frame: list[dict]) -> list[dict]:
             bx, by, _ = r["ball"]
             ball_center = CENTER_X_LO <= bx <= CENTER_X_HI and CENTER_Y_LO <= by <= CENTER_Y_HI
         one_in_circle = ONE_IN_CIRCLE_MIN <= r.get("in_circle", 0) <= ONE_IN_CIRCLE_MAX
-        # Kickoff setup: tactical shot + ball on center spot + exactly 1 (or 2)
-        # players inside center circle. The one_in_circle rule is the
-        # user-specified discriminator that distinguishes kickoff from
-        # normal midfield play where multiple players cluster near center.
-        kickoff_setup = wide and ball_center and one_in_circle
+        kickoff_setup = wide and ball_center  # relaxed
+        kickoff_setup_strong = kickoff_setup and one_in_circle  # for confidence upgrade
         out.append({**r,
                     "wide_shot": wide,
                     "ball_at_center": ball_center,
                     "one_in_circle": one_in_circle,
                     "kickoff_setup": kickoff_setup,
+                    "kickoff_setup_strong": kickoff_setup_strong,
                     # Backward-compat alias
                     "kickoff_scene": kickoff_setup})
     return out
@@ -380,7 +388,7 @@ def main() -> int:
     for r, f in zip(per_frame_all, flags):
         r.update({k: f[k] for k in ("wide_shot", "ball_at_center",
                                       "one_in_circle", "kickoff_setup",
-                                      "kickoff_scene")})
+                                      "kickoff_setup_strong", "kickoff_scene")})
 
     goals = detect_goals(flags, timestamps, args.interval)
 
