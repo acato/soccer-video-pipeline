@@ -1,24 +1,39 @@
 {
   "$schema_version": 1,
-  "run_number": 97,
-  "run_label": "v11 c150 spot-check on game_20 (acceleration-aware)",
-  "status": "eval_in_flight",
+  "run_number": 98,
+  "run_label": "v11 c150 multi-game eval — DONE",
+  "status": "done",
   "host": "mac",
-  "phase": "v11 single-game spot-check",
-  "started_at": "2026-05-16T06:18:00Z",
-  "estimated_done_at": "2026-05-16T08:00:00Z",
-  "baseline_commit": "097505f",
-  "log_file": "~/soccer-runs/logs/single_game_97.log",
-  "summary_file": "~/soccer-runs/state/multi_game_run_97_summary.json",
+  "started_at": "2026-05-16T10:57:00Z",
+  "completed_at": "2026-05-16T19:39:00Z",
+  "baseline_commit": "c19e26a",
+  "summary_file": "~/soccer-runs/state/multi_game_run_98_summary.json",
   "model": {
     "name": "v11 c150 FP8",
     "served_path": "/mnt/transit/soccer-finetune/checkpoints/v11-32b/fp8-c150",
-    "lora_base": "v8-32b/merged-bf16-c300",
     "training": "v11: 300 steps, lora_rank=64, freeze_vit=false, acceleration-profile trajectory features in prompts",
-    "eval_loss_c150": 0.10162,
-    "best_by_eval_loss": "yes (v11 winner, also -0.00127 below v10 c150 = 0.10289)"
+    "eval_loss_c150": 0.10162
   },
-  "v11_eval_loss_curve": {
+  "results": {
+    "aggregated": {"f1": 0.321, "precision": 0.377, "recall": 0.279, "tp": 166, "fn": 428, "fp": 274},
+    "per_game": {
+      "game_20": {"f1": 0.301, "goal_precision": 1.00, "goal_recall": 0.111, "shot_stop_diving_tp": 1},
+      "game_22": {"f1": 0.264, "goal_precision": 0.00, "goal_recall": 0.00, "goal_fp": 3},
+      "game_21": {"f1": 0.185, "goal_precision": 0.00, "goal_recall": 0.00, "shot_stop_diving_tp": 1},
+      "rush":    {"f1": 0.493, "goal_precision": 0.50, "goal_recall": 0.50}
+    },
+    "new_venue_goal_recall": "1/16 (unchanged from v10 c150)",
+    "new_venue_save_tp": "2 (NEW — v10 c150 had 0)",
+    "new_venue_goal_fps": "3 (REGRESSION — v10 c150 had 0)"
+  },
+  "verdict": {
+    "vs_v10_c150_agg_f1": "-0.008 (within FP8 noise of 0.03)",
+    "vs_v10_c150_goal_precision": "regressed (3 new-venue FP goals vs 0)",
+    "vs_v10_c150_save_detection": "NEW behavior (2 new-venue save TPs)",
+    "structural_finding": "Acceleration features expand classification behavior (saves) but DO NOT break the new-venue goal-recall ceiling (1/16). Per v8 memory, the bottleneck is visual feature extraction at frame_width=1280 — ball too small to perceive at distant cameras. Trajectory features cannot fix what the ViT cannot see.",
+    "production_recommendation": "Keep v10 c150 as production model. v11 not a clear win on agg F1 + lost goal precision on game_22."
+  },
+  "v11_full_eval_loss_curve": {
     "c50":  0.10212,
     "c100": 0.10415,
     "c150": 0.10162,
@@ -26,14 +41,38 @@
     "c250": 0.10439,
     "c300": 0.10430
   },
-  "mac_env_changes": {
-    "BALL_TRAJECTORY_ACCELERATION_ENABLED": "true (added for v11)",
-    "celery_restarted": "yes, PID 34525 on commit 097505f"
+  "v10_full_eval_loss_curve": {
+    "c50":  0.10199,
+    "c100": 0.10518,
+    "c150": 0.10289,
+    "c200": 0.10386,
+    "c250": 0.10481,
+    "c300": 0.10579
   },
-  "spot_check_criterion": "v10 c150 game_20 had F1=0.260, goal P=1.00 R=0.111 (1 TP / 0 FP / 8 FN). If v11 c150 game_20 F1 > 0.30 OR goal recall > 0.222 (≥2 TP goals), escalate to full multi-game eval. Otherwise next: spot-check c200 OR move to different feature representation.",
-  "background": {
-    "v10_disambiguation_verdict": "c150 wins on goal precision (0 FP new-venue across 3 games). c50/c200 lose precision-clean detection. All three within FP8 noise on agg F1.",
-    "path1_hybrid_predicted_dead": "Offline merge of Run 71 v8 + Run 85 c150 events → predicted agg F1 0.317 (worse than both standalones).",
-    "v11_hypothesis": "Acceleration profile (max_decel/accel + direction changes) encodes trajectory SHAPE — sharp deceleration distinguishes goal/save from miss/pass even when ball too small to resolve visually."
-  }
+  "recommended_next_steps": [
+    {
+      "priority": 1,
+      "name": "Score-change detector via scoreboard OCR",
+      "rationale": "Direct attack on the goal-detection problem at the data-source level. If scoreboard regions can be reliably OCR'd, score delta + ~30s context window gives a perfect-recall goal detector regardless of camera quality. This sidesteps the ViT bottleneck entirely.",
+      "effort": "~1 week: scoreboard region detector + OCR pipeline + integration"
+    },
+    {
+      "priority": 2,
+      "name": "Ball-centric crop pipeline",
+      "rationale": "Use v9b trajectory to crop a 512x512 region around the ball, feeding the model a zoomed view alongside the wide view. Addresses the 'ball too small' problem at the ViT input layer.",
+      "effort": "~1 week: crop pipeline + new training data + LoRA retrain"
+    },
+    {
+      "priority": 3,
+      "name": "Higher input resolution (frame_width=1920)",
+      "rationale": "Simplest fix for ball perception — bigger input pixels means more ViT tokens covering the ball. Cost: ~2x inference wall time per game. May not be worth it for marginal F1 lift.",
+      "effort": "~2 days: pipeline reconfig + retrain at 1920px + eval"
+    },
+    {
+      "priority": 4,
+      "name": "Tame v11's save FPs and ship it",
+      "rationale": "v11 found 2 new saves on new venues. With a tighter prompt asking for acceleration-only-when-conf-high, the save detection signal might be salvageable as an additive feature alongside v10 c150.",
+      "effort": "~3 days: hybrid event-list portfolio retest"
+    }
+  ]
 }
