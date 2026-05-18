@@ -43,12 +43,15 @@ BALL_MODEL_DEFAULT = "/Volumes/transit/soccer-finetune/yolo_ball_v9/weights/v9b_
 PLAYER_MODEL_DEFAULT = "/Users/aless/Downloads/soccer-video-pipeline/infra/models/yolov8_soccer_uisikdag.pt"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 
-# Thresholds (calibrated from game_20 broadcast — center spot appears at
-# y~0.35-0.40 in normalized image coords due to camera tilt looking down).
-WIDE_SHOT_MIN_PERSONS = 15           # ≥15 field persons → wide tactical shot
-# Bounds for ball-at-center spot (X tight, Y wide due to camera perspective).
+# Thresholds (tuned via sweep on game_20 1H — 2/4 GT goals recovered, 0 FPs).
+# WIDE_SHOT=18 (not 15) is the FP killer: excludes goal-kick aftermath where
+# many players are airborne or behind the line, fewer settled-on-field bodies.
+WIDE_SHOT_MIN_PERSONS = 18
+# Bounds for ball-at-center spot (X tight, Y narrower than initial guess —
+# the broadcast camera tilt makes the actual center spot appear higher in
+# normalized image coords).
 CENTER_X_LO, CENTER_X_HI = 0.40, 0.60
-CENTER_Y_LO, CENTER_Y_HI = 0.30, 0.55
+CENTER_Y_LO, CENTER_Y_HI = 0.35, 0.50
 BALL_MIN_CONF = 0.10                 # v9b ball at 1920px
 FIELD_Y_LO, FIELD_Y_HI = 0.20, 0.85  # field band — filter sidelines/scoreboard
 # Center-circle ellipse for player count check.
@@ -70,13 +73,13 @@ MIN_CELEBRATION_SUSTAIN_FRAMES = 2   # ≥2 samples of non-wide shot (10s)
 MAX_CELEBRATION_GAP_FRAMES = 1       # allow 1 sample of "wide" in middle of celebration
 MAX_CELEBRATION_DURATION_FRAMES = 30  # cap at 30 samples (~2.5 min at 5s interval)
 
-# Path B (ball-traversal) parameters
+# Path B (ball-traversal) parameters — tuned via sweep
 TRAVERSAL_BALL_END_X_LO = 0.05       # ball "near goal area" — left side
-TRAVERSAL_BALL_END_X_HI = 0.95       # ball "near goal area" — right side (NOT in [0.95, 0.05])
+TRAVERSAL_BALL_END_X_HI = 0.90       # ball "near goal area" — right side (tighter than 0.95 to exclude near-corner false positives)
 TRAVERSAL_BALL_END_Y_LO = 0.30       # vertical band around goal mouth
 TRAVERSAL_BALL_END_Y_HI = 0.70
-TRAVERSAL_LOOKBACK_FRAMES_MIN = 3    # ball seen at goal area at least N samples back
-TRAVERSAL_LOOKBACK_FRAMES_MAX = 9    # ...but not more than M back (15-45s at 5s interval)
+TRAVERSAL_LOOKBACK_FRAMES_MIN = 3    # ball seen at goal area at least N samples back (15s)
+TRAVERSAL_LOOKBACK_FRAMES_MAX = 18   # ...but not more than M back (90s — accommodates long celebrations)
 
 
 def extract_frames_batch(video: str, timestamps: list[float], out_dir: Path) -> list[Path]:
