@@ -61,8 +61,12 @@ ONE_IN_CIRCLE_MIN = 1
 ONE_IN_CIRCLE_MAX = 3
 
 # Pattern timing (in sampled-frame steps after collapse to intervals)
-MIN_KICKOFF_SUSTAIN_FRAMES = 2       # ≥2 consecutive samples of kickoff pattern
-MIN_CELEBRATION_SUSTAIN_FRAMES = 3   # ≥3 consecutive samples of non-wide shot
+MIN_KICKOFF_SUSTAIN_FRAMES = 2       # ≥2 samples of kickoff pattern (with gap tolerance)
+MAX_KICKOFF_GAP_FRAMES = 1           # allow 1 sample of kickoff_setup=False inside the run
+                                     # (v9b ball detector misses many frames; this tolerance
+                                     # keeps "wide+ball_c at t, no ball at t+5s, wide+ball_c at t+10s"
+                                     # together as a single kickoff run)
+MIN_CELEBRATION_SUSTAIN_FRAMES = 2   # ≥2 samples of non-wide shot (10s)
 MAX_CELEBRATION_GAP_FRAMES = 1       # allow 1 sample of "wide" in middle of celebration
 MAX_CELEBRATION_DURATION_FRAMES = 30  # cap at 30 samples (~2.5 min at 5s interval)
 
@@ -179,9 +183,13 @@ def derive_flags(per_frame: list[dict]) -> list[dict]:
 
 
 def find_kickoff_runs(flags: list[dict], timestamps: list[float]) -> list[tuple[int, int, float, float]]:
-    """Find consecutive runs of kickoff_setup=True.
+    """Find runs of kickoff_setup with up to MAX_KICKOFF_GAP_FRAMES tolerated False frames.
 
-    Returns list of (start_idx, end_idx_inclusive, start_t, end_t)."""
+    Returns list of (start_idx, end_idx_inclusive, start_t, end_t).
+
+    Gap tolerance is crucial because v9b often loses the ball between sampled
+    frames during the kickoff setup phase; without tolerance, runs split.
+    """
     runs = []
     i = 0
     n = len(flags)
@@ -190,11 +198,24 @@ def find_kickoff_runs(flags: list[dict], timestamps: list[float]) -> list[tuple[
             i += 1
             continue
         j = i
-        while j + 1 < n and flags[j + 1]["kickoff_setup"]:
-            j += 1
-        if (j - i + 1) >= MIN_KICKOFF_SUSTAIN_FRAMES:
-            runs.append((i, j, timestamps[i], timestamps[j]))
-        i = j + 1
+        last_true = i
+        gap = 0
+        while j + 1 < n:
+            nxt = flags[j + 1]
+            if nxt["kickoff_setup"]:
+                j += 1
+                last_true = j
+                gap = 0
+            elif gap < MAX_KICKOFF_GAP_FRAMES:
+                j += 1
+                gap += 1
+            else:
+                break
+        # True count within [i, last_true]
+        true_count = sum(1 for k in range(i, last_true + 1) if flags[k]["kickoff_setup"])
+        if true_count >= MIN_KICKOFF_SUSTAIN_FRAMES:
+            runs.append((i, last_true, timestamps[i], timestamps[last_true]))
+        i = last_true + 1
     return runs
 
 
@@ -398,8 +419,15 @@ def main() -> int:
             fh.write(json.dumps(g) + "\n")
     print(f"detected {len(goals)} goals via kickoff pattern → {args.out}", file=sys.stderr)
     for g in goals:
-        print(f"  goal @ {g['start_sec']:.1f}s (cel {g['_celebration_start']:.1f}-{g['_celebration_end']:.1f}s, "
-              f"kickoff {g['_kickoff_start']:.1f}-{g['_kickoff_end']:.1f}s)", file=sys.stderr)
+        cs = g.get("_celebration_start")
+        ce = g.get("_celebration_end")
+        cs_str = f"{cs:.1f}" if cs is not None else "-"
+        ce_str = f"{ce:.1f}" if ce is not None else "-"
+        tr = g.get("_traversal_origin")
+        tr_str = f"{tr:.1f}" if tr is not None else "-"
+        print(f"  goal @ {g['start_sec']:.1f}s (cel {cs_str}-{ce_str}, "
+              f"traversal {tr_str}, kickoff {g['_kickoff_start']:.1f}-{g['_kickoff_end']:.1f}s)",
+              file=sys.stderr)
 
     if args.per_frame_out:
         Path(args.per_frame_out).parent.mkdir(parents=True, exist_ok=True)
