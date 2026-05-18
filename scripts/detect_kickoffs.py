@@ -43,22 +43,22 @@ BALL_MODEL_DEFAULT = "/Volumes/transit/soccer-finetune/yolo_ball_v9/weights/v9b_
 PLAYER_MODEL_DEFAULT = "/Users/aless/Downloads/soccer-video-pipeline/infra/models/yolov8_soccer_uisikdag.pt"
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 
-# Thresholds (tuned from game_20 validation; revisit if other games show different distributions)
+# Thresholds (calibrated from game_20 broadcast — center spot appears at
+# y~0.35-0.40 in normalized image coords due to camera tilt looking down).
 WIDE_SHOT_MIN_PERSONS = 15           # ≥15 field persons → wide tactical shot
-# Tight bounds for ball-at-center spot
-CENTER_X_LO, CENTER_X_HI = 0.42, 0.58
-CENTER_Y_LO, CENTER_Y_HI = 0.42, 0.58
+# Bounds for ball-at-center spot (X tight, Y wide due to camera perspective).
+CENTER_X_LO, CENTER_X_HI = 0.40, 0.60
+CENTER_Y_LO, CENTER_Y_HI = 0.30, 0.55
 BALL_MIN_CONF = 0.10                 # v9b ball at 1920px
 FIELD_Y_LO, FIELD_Y_HI = 0.20, 0.85  # field band — filter sidelines/scoreboard
-# Center-circle ellipse for "exactly 1 player inside" check.
-# Real center circle is 9.15m radius on 68m-wide field = ~13% of width.
-# Broadcast camera tilts field, so circle becomes ellipse: wider in X, narrower in Y.
-CIRCLE_X_LO, CIRCLE_X_HI = 0.40, 0.60
-CIRCLE_Y_LO, CIRCLE_Y_HI = 0.43, 0.57
-# Allow 1 OR 2 players inside (sometimes the second player is the central
-# attacker or referee standing very close to the kicker).
+# Center-circle ellipse for player count check.
+# Player bbox centers are at chest height ≈ 0.05 above feet, so the cluster
+# inside the center circle appears at y a bit higher than the ball.
+CIRCLE_X_LO, CIRCLE_X_HI = 0.35, 0.65
+CIRCLE_Y_LO, CIRCLE_Y_HI = 0.25, 0.50
+# Allow 1-3 players inside (kicker + possibly central attacker/referee).
 ONE_IN_CIRCLE_MIN = 1
-ONE_IN_CIRCLE_MAX = 2
+ONE_IN_CIRCLE_MAX = 3
 
 # Pattern timing (in sampled-frame steps after collapse to intervals)
 MIN_KICKOFF_SUSTAIN_FRAMES = 2       # ≥2 consecutive samples of kickoff pattern
@@ -378,7 +378,9 @@ def main() -> int:
 
     flags = derive_flags(per_frame_all)
     for r, f in zip(per_frame_all, flags):
-        r.update({k: f[k] for k in ("wide_shot", "ball_at_center", "kickoff_scene")})
+        r.update({k: f[k] for k in ("wide_shot", "ball_at_center",
+                                      "one_in_circle", "kickoff_setup",
+                                      "kickoff_scene")})
 
     goals = detect_goals(flags, timestamps, args.interval)
 
