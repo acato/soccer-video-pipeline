@@ -2,11 +2,19 @@
 
 Continuous YOLO scan of the video. For each sampled frame:
   - run v9b ball detector → ball position (if any)
-  - run uisikdag player/GK detector → field-player counts
-  - derive: wide_shot (≥15 field persons), ball_at_center (within 0.15 of (0.5,0.5))
+  - run uisikdag player/GK/referee detector → spatial player layout
+  - derive per-frame flags:
+      wide_shot       (≥15 field persons → tactical camera)
+      ball_at_center  (ball within tight box around (0.5, 0.5))
+      one_in_circle   (EXACTLY 1 player inside center-circle ellipse)
+      kickoff_setup   (wide_shot AND ball_at_center AND one_in_circle)
+
+  The "exactly 1 player in center circle" rule is the user-specified
+  discriminator that distinguishes a true kickoff setup from generic
+  midfield play where multiple players cluster near center.
 
 Then look for the transition pattern:
-  celebration (NOT wide_shot for ≥15s)  →  kickoff (wide_shot AND ball_at_center for ≥10s)
+  celebration (NOT wide_shot for ≥15s)  →  kickoff_setup sustained for ≥10s
                                           ─────────────────►
                                           marks a GOAL at start of celebration
 
@@ -37,16 +45,34 @@ FFMPEG = "/opt/homebrew/bin/ffmpeg"
 
 # Thresholds (tuned from game_20 validation; revisit if other games show different distributions)
 WIDE_SHOT_MIN_PERSONS = 15           # ≥15 field persons → wide tactical shot
-CENTER_X_LO, CENTER_X_HI = 0.35, 0.65
-CENTER_Y_LO, CENTER_Y_HI = 0.30, 0.70  # y-band wider because broadcast cameras tilt down
+# Tight bounds for ball-at-center spot
+CENTER_X_LO, CENTER_X_HI = 0.42, 0.58
+CENTER_Y_LO, CENTER_Y_HI = 0.42, 0.58
 BALL_MIN_CONF = 0.10                 # v9b ball at 1920px
 FIELD_Y_LO, FIELD_Y_HI = 0.20, 0.85  # field band — filter sidelines/scoreboard
+# Center-circle ellipse for "exactly 1 player inside" check.
+# Real center circle is 9.15m radius on 68m-wide field = ~13% of width.
+# Broadcast camera tilts field, so circle becomes ellipse: wider in X, narrower in Y.
+CIRCLE_X_LO, CIRCLE_X_HI = 0.40, 0.60
+CIRCLE_Y_LO, CIRCLE_Y_HI = 0.43, 0.57
+# Allow 1 OR 2 players inside (sometimes the second player is the central
+# attacker or referee standing very close to the kicker).
+ONE_IN_CIRCLE_MIN = 1
+ONE_IN_CIRCLE_MAX = 2
 
 # Pattern timing (in sampled-frame steps after collapse to intervals)
 MIN_KICKOFF_SUSTAIN_FRAMES = 2       # ≥2 consecutive samples of kickoff pattern
 MIN_CELEBRATION_SUSTAIN_FRAMES = 3   # ≥3 consecutive samples of non-wide shot
 MAX_CELEBRATION_GAP_FRAMES = 1       # allow 1 sample of "wide" in middle of celebration
 MAX_CELEBRATION_DURATION_FRAMES = 30  # cap at 30 samples (~2.5 min at 5s interval)
+
+# Path B (ball-traversal) parameters
+TRAVERSAL_BALL_END_X_LO = 0.05       # ball "near goal area" — left side
+TRAVERSAL_BALL_END_X_HI = 0.95       # ball "near goal area" — right side (NOT in [0.95, 0.05])
+TRAVERSAL_BALL_END_Y_LO = 0.30       # vertical band around goal mouth
+TRAVERSAL_BALL_END_Y_HI = 0.70
+TRAVERSAL_LOOKBACK_FRAMES_MIN = 3    # ball seen at goal area at least N samples back
+TRAVERSAL_LOOKBACK_FRAMES_MAX = 9    # ...but not more than M back (15-45s at 5s interval)
 
 
 def extract_frames_batch(video: str, timestamps: list[float], out_dir: Path) -> list[Path]:
@@ -86,11 +112,12 @@ def analyze_batch(ball_model, player_model, img_paths: list[Path]) -> list[dict]
             ball_pos = (float(bxywhn[bi][0]), float(bxywhn[bi][1]), float(bconfs[bi]))
 
         p_left = p_right = 0
+        in_circle = 0
         if getattr(pr, "boxes", None) is not None and len(pr.boxes) > 0:
             cls = pr.boxes.cls.cpu().numpy().astype(int)
             xywhn = pr.boxes.xywhn.cpu().numpy()
             for j, c in enumerate(cls):
-                if c not in (1, 2):  # GK or player
+                if c not in (1, 2):  # GK or player (skip referee class 3)
                     continue
                 cx, cy = xywhn[j][0], xywhn[j][1]
                 if not (FIELD_Y_LO <= cy <= FIELD_Y_HI):
@@ -99,22 +126,27 @@ def analyze_batch(ball_model, player_model, img_paths: list[Path]) -> list[dict]
                     p_left += 1
                 else:
                     p_right += 1
+                # "Inside center circle" check
+                if (CIRCLE_X_LO <= cx <= CIRCLE_X_HI and
+                        CIRCLE_Y_LO <= cy <= CIRCLE_Y_HI):
+                    in_circle += 1
 
         results[orig_i] = {
             "ball": ball_pos,
             "p_left": p_left,
             "p_right": p_right,
             "total_field": p_left + p_right,
+            "in_circle": in_circle,
         }
 
     for i, r in enumerate(results):
         if r is None:
-            results[i] = {"ball": None, "p_left": 0, "p_right": 0, "total_field": 0}
+            results[i] = {"ball": None, "p_left": 0, "p_right": 0, "total_field": 0, "in_circle": 0}
     return results
 
 
 def derive_flags(per_frame: list[dict]) -> list[dict]:
-    """Add wide_shot, ball_at_center, kickoff_scene flags per frame."""
+    """Add wide_shot, ball_at_center, one_in_circle, kickoff_setup flags."""
     out = []
     for r in per_frame:
         wide = r["total_field"] >= WIDE_SHOT_MIN_PERSONS
@@ -122,24 +154,35 @@ def derive_flags(per_frame: list[dict]) -> list[dict]:
         if r["ball"]:
             bx, by, _ = r["ball"]
             ball_center = CENTER_X_LO <= bx <= CENTER_X_HI and CENTER_Y_LO <= by <= CENTER_Y_HI
-        out.append({**r, "wide_shot": wide, "ball_at_center": ball_center,
-                    "kickoff_scene": wide and ball_center})
+        one_in_circle = ONE_IN_CIRCLE_MIN <= r.get("in_circle", 0) <= ONE_IN_CIRCLE_MAX
+        # Kickoff setup: tactical shot + ball on center spot + exactly 1 (or 2)
+        # players inside center circle. The one_in_circle rule is the
+        # user-specified discriminator that distinguishes kickoff from
+        # normal midfield play where multiple players cluster near center.
+        kickoff_setup = wide and ball_center and one_in_circle
+        out.append({**r,
+                    "wide_shot": wide,
+                    "ball_at_center": ball_center,
+                    "one_in_circle": one_in_circle,
+                    "kickoff_setup": kickoff_setup,
+                    # Backward-compat alias
+                    "kickoff_scene": kickoff_setup})
     return out
 
 
 def find_kickoff_runs(flags: list[dict], timestamps: list[float]) -> list[tuple[int, int, float, float]]:
-    """Find consecutive runs of kickoff_scene=True.
+    """Find consecutive runs of kickoff_setup=True.
 
     Returns list of (start_idx, end_idx_inclusive, start_t, end_t)."""
     runs = []
     i = 0
     n = len(flags)
     while i < n:
-        if not flags[i]["kickoff_scene"]:
+        if not flags[i]["kickoff_setup"]:
             i += 1
             continue
         j = i
-        while j + 1 < n and flags[j + 1]["kickoff_scene"]:
+        while j + 1 < n and flags[j + 1]["kickoff_setup"]:
             j += 1
         if (j - i + 1) >= MIN_KICKOFF_SUSTAIN_FRAMES:
             runs.append((i, j, timestamps[i], timestamps[j]))
@@ -190,34 +233,80 @@ def find_celebration_before(flags: list[dict], kickoff_start_idx: int) -> tuple[
     return (start_idx, end_idx)
 
 
+def find_ball_traversal_before(flags: list[dict], kickoff_start_idx: int) -> tuple[int, float] | None:
+    """Path B: ball was near goal area in the recent past, now at center.
+
+    Returns (origin_idx, origin_t) where the ball was last seen near goal,
+    or None if no such observation in the lookback window.
+    """
+    lo = max(0, kickoff_start_idx - TRAVERSAL_LOOKBACK_FRAMES_MAX)
+    hi = kickoff_start_idx - TRAVERSAL_LOOKBACK_FRAMES_MIN
+    if hi < lo:
+        return None
+
+    best_origin = None
+    for i in range(hi, lo - 1, -1):
+        ball = flags[i].get("ball")
+        if not ball:
+            continue
+        bx, by, _ = ball
+        # Near either goal area (extreme X), within goal-mouth Y band
+        near_left_goal = bx <= 0.15 and TRAVERSAL_BALL_END_Y_LO <= by <= TRAVERSAL_BALL_END_Y_HI
+        near_right_goal = bx >= 0.85 and TRAVERSAL_BALL_END_Y_LO <= by <= TRAVERSAL_BALL_END_Y_HI
+        if near_left_goal or near_right_goal:
+            best_origin = (i, flags[i].get("t", 0.0))
+            break  # take the most-recent goal-area observation
+    return best_origin
+
+
 def detect_goals(flags: list[dict], timestamps: list[float], interval: float) -> list[dict]:
-    """Apply the celebration → kickoff transition rule to derive goals."""
+    """Derive goals via the kickoff_setup pattern with two evidence paths:
+
+    Path A — celebration close-up before kickoff_setup:
+        marks goal at start of celebration period
+    Path B — ball traversal from goal area to center spot (no close-up needed):
+        marks goal at the time the ball was last near goal area
+    """
     runs = find_kickoff_runs(flags, timestamps)
     goals = []
     for run_i, (k_start, k_end, k_t_start, k_t_end) in enumerate(runs):
+        # Path A: celebration close-up
         cel = find_celebration_before(flags, k_start)
-        if cel is None:
+        # Path B: ball traversal
+        trav = find_ball_traversal_before(flags, k_start)
+
+        if cel is None and trav is None:
             continue
-        c_start, c_end = cel
-        c_t_start = timestamps[c_start]
-        c_t_end = timestamps[c_end]
-        # Goal happens at the START of celebration (the close-up cut)
-        goal_t = c_t_start
+
+        # Prefer Path A timing when available (more precise — close-up cut
+        # coincides closely with the goal). Fall back to Path B.
+        if cel is not None:
+            c_start, c_end = cel
+            goal_t = timestamps[c_start]
+            method_tag = "celebration_cut" if trav is None else "celebration+traversal"
+        else:
+            origin_idx, origin_t = trav
+            goal_t = origin_t
+            method_tag = "ball_traversal"
+
         goals.append({
             "event_type": "goal",
             "start_sec": goal_t,
             "end_sec": goal_t + 2.0,
-            "confidence": 0.70,
+            "confidence": 0.75 if cel is not None else 0.65,
             "reasoning": (
-                f"kickoff-pattern: celebration cut at {c_t_start:.1f}s "
-                f"(duration {c_t_end - c_t_start + interval:.1f}s) followed by "
-                f"kickoff scene at {k_t_start:.1f}-{k_t_end:.1f}s "
-                f"(wide-shot + ball-at-center)"
+                f"kickoff-pattern ({method_tag}): kickoff_setup at "
+                f"{k_t_start:.1f}-{k_t_end:.1f}s "
+                + (f"preceded by celebration {timestamps[cel[0]]:.1f}-{timestamps[cel[1]]:.1f}s "
+                   if cel else "")
+                + (f"with ball at goal area at {trav[1]:.1f}s "
+                   if trav else "")
             ),
             "triage_labels": ["kickoff_pattern"],
-            "_method": "kickoff_pattern_detector",
-            "_celebration_start": c_t_start,
-            "_celebration_end": c_t_end,
+            "_method": f"kickoff_pattern_detector_{method_tag}",
+            "_celebration_start": timestamps[cel[0]] if cel else None,
+            "_celebration_end": timestamps[cel[1]] if cel else None,
+            "_traversal_origin": trav[1] if trav else None,
             "_kickoff_start": k_t_start,
             "_kickoff_end": k_t_end,
         })
