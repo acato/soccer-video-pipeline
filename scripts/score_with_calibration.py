@@ -15,7 +15,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from detect_kickoffs import derive_flags, find_half_starts  # type: ignore  # noqa: E402
+from detect_kickoffs import (  # type: ignore  # noqa: E402
+    derive_flags, find_half_starts, KICKOFF_LAG_AFTER_DENSITY_SECONDS,
+)
 
 GAMES = {
     "game_22": {
@@ -118,26 +120,24 @@ def main():
         gt_1h_game = load_gt_goal_times(cfg["gt_1h"])
         gt_2h_game = load_gt_goal_times(cfg["gt_2h"])
 
-        # Calibrated offsets
-        t1, t2 = calibrate(cfg["frames"])
-        if t1 is None:
-            cal_str = "(no 1H)"
+        # Calibrated offsets — add KICKOFF_LAG to density-anchored transitions
+        # to land on the actual kickoff (measured ~60-70s after camera commit)
+        t1_density, t2_density = calibrate(cfg["frames"])
+        if t1_density is None:
             cal = (0, len(dets), len(gt_1h_game) + len(gt_2h_game))
         else:
-            off_1h = t1
-            hf = (t2 - t1 - cfg["h1_dur"]) if t2 else 200.0  # fallback
-            off_2h = off_1h + cfg["h1_dur"] + hf
+            off_1h = t1_density + KICKOFF_LAG_AFTER_DENSITY_SECONDS
+            if t2_density:
+                off_2h_anchor = t2_density + KICKOFF_LAG_AFTER_DENSITY_SECONDS
+                hf = off_2h_anchor - off_1h - cfg["h1_dur"]
+            else:
+                hf = 200.0  # fallback
+            # 2H event_time is cumulative game-clock. video = event_time +
+            # offset_1H + halftime (since 2H event_time already starts at
+            # period_start_time, the +halftime accounts for the real-time gap).
             gt_video = ([g + off_1h for g in gt_1h_game]
-                        + [g + off_2h - cfg["h1_dur"] for g in gt_2h_game
-                           # 2H event_time is cumulative; subtract period_start
-                           ])
-            # Actually simpler: 2H event_time IS cumulative game-clock
-            # video = event_time + offset_1H + halftime - period_start_time
-            # where period_start_time = h1_dur. So shift = offset_1H + halftime
-            gt_video = [g + off_1h for g in gt_1h_game] + \
-                       [g + off_1h + hf - 0 for g in gt_2h_game]  # 2H event_time already cumulative; offset shift is just +hf relative to 1H
+                        + [g + off_1h + hf for g in gt_2h_game])
             cal = score(dets, gt_video)
-            cal_str = f"{cal[0]}/{cal[1]}/{cal[2]}"
 
         # Old (hand-picked) offsets
         old_off_1h = cfg["old_offset_1h"]
@@ -148,9 +148,10 @@ def main():
         cal_totals = [cal_totals[i] + cal[i] for i in range(3)]
         old_totals = [old_totals[i] + old[i] for i in range(3)]
 
-        t1_str = f"{t1:.0f}" if t1 is not None else "-"
-        t2_str = f"{t2:.0f}" if t2 is not None else "-"
-        hf_str = f"{(t2 - t1 - cfg['h1_dur']):.0f}" if (t1 is not None and t2 is not None) else "-"
+        t1_str = f"{t1_density:.0f}" if t1_density is not None else "-"
+        t2_str = f"{t2_density:.0f}" if t2_density is not None else "-"
+        hf_str = (f"{(t2_density - t1_density - cfg['h1_dur']):.0f}"
+                  if (t1_density is not None and t2_density is not None) else "-")
         print(f"{game:<18} {t1_str:>7} {t2_str:>7} {hf_str:>7}  "
               f"{old[0]}/{old[1]}/{old[2]:<10}  {cal[0]}/{cal[1]}/{cal[2]}")
 

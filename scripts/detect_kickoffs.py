@@ -87,6 +87,13 @@ TRAVERSAL_LOOKBACK_FRAMES_MAX = 18   # ...but not more than M back (90s — acco
 HALF_START_MIN_GAP_SECONDS = 180     # at least 3 min of low activity before kickoff
 HALF_START_MATCH_TOL_SECONDS = 30    # remove any detected "goal" within this of a half start
 
+# The wide_shot density transition leads the actual kickoff by ~60-70s
+# (camera commits to wide BEFORE the ref blows the whistle). Measured by
+# visual spot-check on game_22 (190s actual vs 130s density) and rush
+# (~400s actual vs 330s density). Apply this lag when treating the
+# density-detected transition as the kickoff anchor for offset calibration.
+KICKOFF_LAG_AFTER_DENSITY_SECONDS = 65
+
 
 def extract_frames_batch(video: str, timestamps: list[float], out_dir: Path) -> list[Path]:
     """Extract frames at given timestamps using ffmpeg. Returns paths in order."""
