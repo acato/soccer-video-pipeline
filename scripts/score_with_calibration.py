@@ -22,7 +22,7 @@ from detect_kickoffs import (  # type: ignore  # noqa: E402
 GAMES = {
     "game_22": {
         "frames": "/tmp/kickoff_game_22_frames.jsonl",
-        "dets":   "/tmp/kickoff_game_22.jsonl",
+        "dets":   "/tmp/kickoff_game_22_v6.jsonl",
         "gt_1h":  "/Users/aless/soccer-runs/gt/game22/2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_1st Half.json",
         "gt_2h":  "/Users/aless/soccer-runs/gt/game22/2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_2nd Half.json",
         "h1_dur": 2700,
@@ -30,7 +30,7 @@ GAMES = {
     },
     "game_21": {
         "frames": "/tmp/kickoff_game_21_frames.jsonl",
-        "dets":   "/tmp/kickoff_game_21.jsonl",
+        "dets":   "/tmp/kickoff_game_21_v6.jsonl",
         "gt_1h":  "/Users/aless/soccer-runs/gt/game21/2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_1st Half.json",
         "gt_2h":  "/Users/aless/soccer-runs/gt/game21/2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_2nd Half.json",
         "h1_dur": 2700,
@@ -38,7 +38,7 @@ GAMES = {
     },
     "rush": {
         "frames": "/tmp/kickoff_rush_frames.jsonl",
-        "dets":   "/tmp/kickoff_rush.jsonl",
+        "dets":   "/tmp/kickoff_rush_v6.jsonl",
         "gt_1h":  "/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_1st Half.json",
         "gt_2h":  "/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_2nd Half.json",
         "h1_dur": 2700,

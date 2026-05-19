@@ -63,6 +63,17 @@ CIRCLE_Y_LO, CIRCLE_Y_HI = 0.25, 0.50
 ONE_IN_CIRCLE_MIN = 1
 ONE_IN_CIRCLE_MAX = 3
 
+# Formation-based kickoff trigger (alternative to the ball-based one).
+# At kickoff, all field players are visible, evenly split between halves,
+# and 1-3 are in the center circle. This trigger does NOT require ball
+# detection — useful when v9b misses the small/distant ball at the center
+# spot (the dominant cause of FN goals per the visual spot-check).
+FORMATION_TOTAL_MIN = 18           # all field players visible
+FORMATION_TOTAL_MAX = 26           # cap to filter sideline/spectator over-count
+FORMATION_LR_BALANCE_MAX = 4       # |p_left - p_right| ≤ 4 (even split)
+FORMATION_IN_CIRCLE_MIN = 1
+FORMATION_IN_CIRCLE_MAX = 3
+
 # Pattern timing (in sampled-frame steps after collapse to intervals)
 MIN_KICKOFF_SUSTAIN_FRAMES = 2       # ≥2 samples of kickoff pattern (with gap tolerance)
 MAX_KICKOFF_GAP_FRAMES = 1           # allow 1 sample of kickoff_setup=False inside the run
@@ -185,8 +196,8 @@ def derive_flags(per_frame: list[dict]) -> list[dict]:
             bx, by, _ = r["ball"]
             ball_center = CENTER_X_LO <= bx <= CENTER_X_HI and CENTER_Y_LO <= by <= CENTER_Y_HI
         one_in_circle = ONE_IN_CIRCLE_MIN <= r.get("in_circle", 0) <= ONE_IN_CIRCLE_MAX
-        kickoff_setup = wide and ball_center  # relaxed
-        kickoff_setup_strong = kickoff_setup and one_in_circle  # for confidence upgrade
+        kickoff_setup = wide and ball_center
+        kickoff_setup_strong = kickoff_setup and one_in_circle
         out.append({**r,
                     "wide_shot": wide,
                     "ball_at_center": ball_center,
@@ -281,27 +292,37 @@ def find_celebration_before(flags: list[dict], kickoff_start_idx: int) -> tuple[
 def find_ball_traversal_before(flags: list[dict], kickoff_start_idx: int) -> tuple[int, float] | None:
     """Path B: ball was near goal area in the recent past, now at center.
 
+    Additionally requires at least one NON-wide-shot frame strictly between
+    the traversal origin and the kickoff_setup. This is the broadcast "pause"
+    after a goal (camera cut to ref/scorer/players walking back). Without it,
+    normal continuous wing-to-midfield play also satisfies the geometric
+    traversal pattern and produces FPs (e.g. game_22 video 2655s, visually
+    verified non-goal — see kickoff_wide_density_anchor memory).
+
     Returns (origin_idx, origin_t) where the ball was last seen near goal,
-    or None if no such observation in the lookback window.
+    or None if no such observation in the lookback window OR no non-wide
+    pause separates the origin from the kickoff_setup.
     """
     lo = max(0, kickoff_start_idx - TRAVERSAL_LOOKBACK_FRAMES_MAX)
     hi = kickoff_start_idx - TRAVERSAL_LOOKBACK_FRAMES_MIN
     if hi < lo:
         return None
 
-    best_origin = None
     for i in range(hi, lo - 1, -1):
         ball = flags[i].get("ball")
         if not ball:
             continue
         bx, by, _ = ball
-        # Near either goal area (extreme X), within goal-mouth Y band
         near_left_goal = bx <= 0.15 and TRAVERSAL_BALL_END_Y_LO <= by <= TRAVERSAL_BALL_END_Y_HI
         near_right_goal = bx >= 0.85 and TRAVERSAL_BALL_END_Y_LO <= by <= TRAVERSAL_BALL_END_Y_HI
-        if near_left_goal or near_right_goal:
-            best_origin = (i, flags[i].get("t", 0.0))
-            break  # take the most-recent goal-area observation
-    return best_origin
+        if not (near_left_goal or near_right_goal):
+            continue
+        # Require ≥1 non-wide frame strictly between origin and kickoff_setup
+        has_pause = any(not flags[j]["wide_shot"]
+                        for j in range(i + 1, kickoff_start_idx))
+        if has_pause:
+            return (i, flags[i].get("t", 0.0))
+    return None
 
 
 def find_half_starts(flags: list[dict], timestamps: list[float],
