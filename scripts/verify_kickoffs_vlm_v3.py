@@ -25,7 +25,7 @@ from pathlib import Path
 import requests
 
 VLLM_URL = "http://10.10.2.222:8000/v1/chat/completions"
-MODEL = "qwen3-vl-32b"
+MODEL = "qwen3-vl-32b"  # produce_ensemble_goals.sh patches to -base during swap
 FFMPEG = "/opt/homebrew/bin/ffmpeg"
 
 LABELS = ("active_play", "set_piece", "celebration", "goal",
