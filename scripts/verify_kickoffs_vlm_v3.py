@@ -100,11 +100,19 @@ def aggregate(labels: list[tuple[int, str]]) -> tuple[str, str]:
       (a) any `celebration` label
       (b) any `goal` followed (chronologically) by `active_play` | `idle` |
           `kickoff_restart` (rules out lone "shot near goal" labels)
-      (c) any `kickoff_restart` preceded by `goal` | `celebration` | `set_piece`
-      (d) ≥2 `kickoff_restart` labels (sustained kickoff formation — covers
-          the case where the base Qwen3-VL emits kickoff_restart without a
-          preceding goal/celebration label because the LoRA-suppressed
-          "celebration" label is absent on this camera)
+      (c) any `kickoff_restart` followed by `active_play` | `idle` |
+          `kickoff_restart` (the kickoff_setup formation followed by play
+          resumption — covers game_22 GT 2390 case where base FP8 saw the
+          kickoff at the window boundary)
+      (d) any `kickoff_restart` preceded by `goal` | `celebration` |
+          `set_piece` (catches kickoffs after explicit set-piece labels)
+
+    This is the "relaxed" rule (2026-05-19). The earlier "strict" rule
+    required ≥2 kickoff_restart labels OR preceding context, which dropped
+    candidates where base FP8 saw the kickoff at the -60 boundary frame.
+    Relaxing to "any kickoff_restart + subsequent play resumption" lifts
+    aggregate recall from 0.70 to 0.90 across 4 games at the cost of ~2.2×
+    FPs. Acceptable for candidate-proposer use; downstream VLM verifies.
     """
     labs = [(off, lbl) for off, lbl in labels]
     labs.sort(key=lambda x: x[0])
@@ -120,13 +128,12 @@ def aggregate(labels: list[tuple[int, str]]) -> tuple[str, str]:
 
     for i, (_, lbl) in enumerate(labs):
         if lbl == "kickoff_restart":
+            for _, after in labs[i + 1:]:
+                if after in ("active_play", "idle", "kickoff_restart"):
+                    return "GOAL", f"kickoff_restart followed by {after}"
             for _, before in labs[:i]:
                 if before in ("goal", "celebration", "set_piece"):
                     return "GOAL", f"kickoff_restart preceded by {before}"
-
-    kr_count = sum(1 for _, lbl in labs if lbl == "kickoff_restart")
-    if kr_count >= 2:
-        return "GOAL", f"{kr_count} kickoff_restart labels"
 
     return "NO", f"labels={[lbl for _, lbl in labs]}"
 
