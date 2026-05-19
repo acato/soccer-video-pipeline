@@ -96,14 +96,15 @@ def classify_frame(image_url: str, retries: int = 2) -> str:
 
 
 def aggregate(labels: list[tuple[int, str]]) -> tuple[str, str]:
-    """Tighter aggregation.
-
-    Sequence-aware: needs evidence of (event → reset). Specifically:
-      (a) any `celebration` → GOAL
+    """Sequence-aware aggregation. GOAL if any of:
+      (a) any `celebration` label
       (b) any `goal` followed (chronologically) by `active_play` | `idle` |
-          `kickoff_restart` → GOAL  (rules out lone "shot near goal" labels)
-      (c) any `kickoff_restart` preceded by `goal` | `celebration` |
-          `set_piece` → GOAL
+          `kickoff_restart` (rules out lone "shot near goal" labels)
+      (c) any `kickoff_restart` preceded by `goal` | `celebration` | `set_piece`
+      (d) ≥2 `kickoff_restart` labels (sustained kickoff formation — covers
+          the case where the base Qwen3-VL emits kickoff_restart without a
+          preceding goal/celebration label because the LoRA-suppressed
+          "celebration" label is absent on this camera)
     """
     labs = [(off, lbl) for off, lbl in labels]
     labs.sort(key=lambda x: x[0])
@@ -111,19 +112,21 @@ def aggregate(labels: list[tuple[int, str]]) -> tuple[str, str]:
     if any(lbl == "celebration" for _, lbl in labs):
         return "GOAL", "celebration label present"
 
-    # (b) goal followed by reset
     for i, (_, lbl) in enumerate(labs):
         if lbl == "goal":
             for _, after in labs[i + 1:]:
                 if after in ("active_play", "idle", "kickoff_restart"):
                     return "GOAL", f"goal followed by {after}"
 
-    # (c) kickoff_restart preceded by event
     for i, (_, lbl) in enumerate(labs):
         if lbl == "kickoff_restart":
             for _, before in labs[:i]:
                 if before in ("goal", "celebration", "set_piece"):
                     return "GOAL", f"kickoff_restart preceded by {before}"
+
+    kr_count = sum(1 for _, lbl in labs if lbl == "kickoff_restart")
+    if kr_count >= 2:
+        return "GOAL", f"{kr_count} kickoff_restart labels"
 
     return "NO", f"labels={[lbl for _, lbl in labs]}"
 

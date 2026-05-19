@@ -27,6 +27,7 @@ GAMES = {
         "frames": "/tmp/kickoff_game_22_frames.jsonl",
         "pattern_vlm": "/tmp/kickoff_game_22_vlm_v3.jsonl",
         "formation_vlm": "/tmp/kickoff_game_22_formation_vlm.jsonl",
+        "formation_base": "/tmp/kickoff_game_22_formation_base.jsonl",
         "gt_1h": "/Users/aless/soccer-runs/gt/game22/2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_1st Half.json",
         "gt_2h": "/Users/aless/soccer-runs/gt/game22/2026-04-26_Seattle Reign 2011 GA (U15) vs Spokane Shadow U15 (W)_2nd Half.json",
         "h1_dur": 2700,
@@ -35,6 +36,7 @@ GAMES = {
         "frames": "/tmp/kickoff_game_21_frames.jsonl",
         "pattern_vlm": "/tmp/kickoff_game_21_vlm_v3.jsonl",
         "formation_vlm": "/tmp/kickoff_game_21_formation_vlm.jsonl",
+        "formation_base": "/tmp/kickoff_game_21_formation_base.jsonl",
         "gt_1h": "/Users/aless/soccer-runs/gt/game21/2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_1st Half.json",
         "gt_2h": "/Users/aless/soccer-runs/gt/game21/2026-04-25_Seattle Reign 2011 GA (U15) vs Washington East Surf SC U15 (W)_2nd Half.json",
         "h1_dur": 2700,
@@ -43,6 +45,7 @@ GAMES = {
         "frames": "/tmp/kickoff_rush_frames.jsonl",
         "pattern_vlm": "/tmp/kickoff_rush_vlm_v3.jsonl",
         "formation_vlm": "/tmp/kickoff_rush_formation_vlm.jsonl",
+        "formation_base": "/tmp/kickoff_rush_formation_base.jsonl",
         "gt_1h": "/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_1st Half.json",
         "gt_2h": "/Users/aless/soccer-runs/gt/08 GA (U19) vs Washington Rush U19 (W)_2nd Half.json",
         "h1_dur": 2700,
@@ -124,8 +127,10 @@ def score(dets, gt_video, tol=TOL):
 
 
 def main():
-    print(f"{'game':<10} {'src':<10} {'kept':>5} {'TP':>3} {'FP':>3} {'FN':>3}")
-    totals = {"pattern": [0, 0, 0], "formation": [0, 0, 0], "combined": [0, 0, 0]}
+    print(f"{'game':<10} {'src':<14} {'kept':>5} {'TP':>3} {'FP':>3} {'FN':>3}")
+    totals = {"pattern_v11": [0, 0, 0], "formation_v11": [0, 0, 0],
+              "formation_base": [0, 0, 0], "v11_combined": [0, 0, 0],
+              "best_combined": [0, 0, 0]}
     for game, cfg in GAMES.items():
         gt_1h = load_gt(cfg["gt_1h"])
         gt_2h = load_gt(cfg["gt_2h"])
@@ -142,15 +147,24 @@ def main():
         gt_vid = gt_video_times(gt_1h, gt_2h, off_1h, halftime)
 
         pat = load_confirmed(cfg["pattern_vlm"])
-        form = load_confirmed(cfg["formation_vlm"])
+        form_v11 = load_confirmed(cfg["formation_vlm"])
+        form_base = load_confirmed(cfg["formation_base"])
         pat = filter_game_bounds(pat, off_1h, halftime, cfg["h1_dur"])
-        form = filter_game_bounds(form, off_1h, halftime, cfg["h1_dur"])
-        combined = dedup(pat + form)
+        form_v11 = filter_game_bounds(form_v11, off_1h, halftime, cfg["h1_dur"])
+        form_base = filter_game_bounds(form_base, off_1h, halftime, cfg["h1_dur"])
+        v11_combined = dedup(pat + form_v11)
+        # "best": pattern (v11) for the celebration/goal signals it's strong on,
+        # base formation for the kickoff_restart signals v11 suppresses
+        best_combined = dedup(pat + form_base)
 
-        for label, dets in (("pattern", pat), ("formation", form), ("combined", combined)):
+        for label, dets in (("pattern_v11", pat),
+                            ("formation_v11", form_v11),
+                            ("formation_base", form_base),
+                            ("v11_combined", v11_combined),
+                            ("best_combined", best_combined)):
             tp, fp, fn, pairs = score(dets, gt_vid)
-            print(f"{game:<10} {label:<10} {len(dets):>5} {tp:>3} {fp:>3} {fn:>3}")
-            if label == "combined" and pairs:
+            print(f"{game:<10} {label:<14} {len(dets):>5} {tp:>3} {fp:>3} {fn:>3}")
+            if label == "best_combined" and pairs:
                 for d, g in pairs:
                     print(f"           TP: det {d:.0f} -> GT {g:.0f}")
             totals[label][0] += tp
@@ -158,13 +172,14 @@ def main():
             totals[label][2] += fn
         print()
 
-    print("=" * 50)
-    print(f"{'AGG':<10} {'src':<10} {'':>5} {'TP':>3} {'FP':>3} {'FN':>3} {'P':>5} {'R':>5}")
-    for label in ("pattern", "formation", "combined"):
+    print("=" * 60)
+    print(f"{'AGG':<10} {'src':<14} {'':>5} {'TP':>3} {'FP':>3} {'FN':>3} {'P':>5} {'R':>5}")
+    for label in ("pattern_v11", "formation_v11", "formation_base",
+                  "v11_combined", "best_combined"):
         tp, fp, fn = totals[label]
         prec = tp / max(1, tp + fp)
         rec = tp / max(1, tp + fn)
-        print(f"{'AGG':<10} {label:<10} {'':>5} {tp:>3} {fp:>3} {fn:>3} {prec:>5.2f} {rec:>5.2f}")
+        print(f"{'AGG':<10} {label:<14} {'':>5} {tp:>3} {fp:>3} {fn:>3} {prec:>5.2f} {rec:>5.2f}")
 
 
 if __name__ == "__main__":
