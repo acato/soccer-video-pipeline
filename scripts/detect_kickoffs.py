@@ -81,6 +81,12 @@ TRAVERSAL_BALL_END_Y_HI = 0.70
 TRAVERSAL_LOOKBACK_FRAMES_MIN = 3    # ball seen at goal area at least N samples back (15s)
 TRAVERSAL_LOOKBACK_FRAMES_MAX = 18   # ...but not more than M back (90s — accommodates long celebrations)
 
+# Half-start exclusion — every 1H/2H opening looks identical to a "goal then
+# kickoff" pattern. Without filtering, the half-starts are FP goals in every
+# game. Anchor them by the kickoff_setup run with the longest preceding gap.
+HALF_START_MIN_GAP_SECONDS = 180     # at least 3 min of low activity before kickoff
+HALF_START_MATCH_TOL_SECONDS = 30    # remove any detected "goal" within this of a half start
+
 
 def extract_frames_batch(video: str, timestamps: list[float], out_dir: Path) -> list[Path]:
     """Extract frames at given timestamps using ffmpeg. Returns paths in order."""
@@ -291,13 +297,114 @@ def find_ball_traversal_before(flags: list[dict], kickoff_start_idx: int) -> tup
     return best_origin
 
 
-def detect_goals(flags: list[dict], timestamps: list[float], interval: float) -> list[dict]:
+def find_half_starts(flags: list[dict], timestamps: list[float],
+                     interval: float,
+                     min_gap_seconds: float = 60.0,
+                     density_window_seconds: float = 150.0,
+                     low_density_threshold: float = 0.30,
+                     high_density_threshold: float = 0.40
+                     ) -> tuple[float | None, float | None]:
+    """Identify 1H and 2H opening kickoffs via wide_shot density transitions.
+
+    During active gameplay the broadcast camera stays in a wide tactical
+    view ~60-95% of the time. During pre-game, halftime, and post-game it
+    drops below ~30% (close-ups, replays, idle field shots, scoreboards).
+
+    The two longest LOW-density stretches that are followed by sustained
+    HIGH-density activity are pre-game (its end = 1H kickoff) and halftime
+    (its end = 2H kickoff).
+
+    This is reliable where naive "first kickoff_setup run" fails (ball
+    detector misses the brief opening moment) and where ball-density alone
+    fails (false-positive ball detections during pre-game).
+
+    Returns (t_1h_start, t_2h_start). Either may be None when the scan
+    range does not include the corresponding opening (partial scans).
+    """
+    n = len(flags)
+    if n == 0:
+        return None, None
+
+    window_frames = max(1, int(density_window_seconds / interval))
+    min_low_frames = max(1, int(min_gap_seconds / interval))
+
+    # Rolling wide_shot density at each frame
+    densities = []
+    for i in range(n):
+        lo = max(0, i - window_frames // 2)
+        hi = min(n, i + window_frames // 2 + 1)
+        wide = sum(1 for k in range(lo, hi) if flags[k]["wide_shot"])
+        densities.append(wide / max(1, hi - lo))
+
+    # Runs where density < low threshold (non-game stretches)
+    low_runs = []
+    i = 0
+    while i < n:
+        if densities[i] >= low_density_threshold:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and densities[j + 1] < low_density_threshold:
+            j += 1
+        low_runs.append((i, j, j - i + 1))
+        i = j + 1
+
+    # A candidate "half-kickoff anchor" is the FIRST sustained-high-density
+    # frame after a long low-density run. The density-crossing point (~30%)
+    # is too early — it marks the END of pre-game / halftime non-game footage,
+    # but the actual kickoff is when the camera commits to wide tactical view
+    # (~50%+ sustained). Walk forward to that point.
+    sustain_frames = max(1, int(60 / interval))
+    candidates = []
+    for (s, e, dur) in low_runs:
+        if dur < min_low_frames:
+            continue
+        if e + 1 >= n:
+            continue  # post-game (no subsequent activity)
+        # Walk forward from the end of the low run to the first
+        # sustained-high-density frame
+        anchor_idx = e + 1
+        while anchor_idx < n and densities[anchor_idx] < high_density_threshold:
+            anchor_idx += 1
+        if anchor_idx >= n:
+            continue
+        # Confirm sustained activity for the next ~60s
+        active_after = sum(
+            1 for k in range(anchor_idx, min(n, anchor_idx + sustain_frames * 2))
+            if densities[k] >= high_density_threshold
+        )
+        if active_after >= sustain_frames:
+            candidates.append((dur, timestamps[anchor_idx]))
+
+    # Also handle the case where the scan starts at the actual 1H kickoff
+    # (no pre-game in the scan): the first sustained high-density frame.
+    if densities[0] >= high_density_threshold:
+        candidates.append((float("inf"), timestamps[0]))  # 1H starts at scan start
+
+    if not candidates:
+        return None, None
+    # Sort by time (chronologically), not by duration. The two earliest
+    # candidates are 1H (after pre-game) and 2H (after halftime). Anything
+    # later is likely post-game or weather break — ignore.
+    candidates_by_time = sorted({c[1] for c in candidates})
+    if len(candidates_by_time) >= 2:
+        return candidates_by_time[0], candidates_by_time[1]
+    return candidates_by_time[0], None
+
+
+def detect_goals(flags: list[dict], timestamps: list[float], interval: float,
+                 exclude_half_starts: bool = True) -> list[dict]:
     """Derive goals via the kickoff_setup pattern with two evidence paths:
 
     Path A — celebration close-up before kickoff_setup:
         marks goal at start of celebration period
     Path B — ball traversal from goal area to center spot (no close-up needed):
         marks goal at the time the ball was last near goal area
+
+    When `exclude_half_starts` is True (default), the 1H and 2H opening
+    kickoffs are removed from the goal list — they otherwise produce a FP
+    "goal" in every game because the preceding non-game stretch trips the
+    celebration_cut path.
     """
     runs = find_kickoff_runs(flags, timestamps)
     goals = []
@@ -342,6 +449,14 @@ def detect_goals(flags: list[dict], timestamps: list[float], interval: float) ->
             "_kickoff_start": k_t_start,
             "_kickoff_end": k_t_end,
         })
+
+    if exclude_half_starts:
+        t_1h, t_2h = find_half_starts(flags, timestamps, interval)
+        anchors = [t for t in (t_1h, t_2h) if t is not None]
+        if anchors:
+            goals = [g for g in goals
+                     if not any(abs(g["_kickoff_start"] - a)
+                                <= HALF_START_MATCH_TOL_SECONDS for a in anchors)]
     return goals
 
 
@@ -413,6 +528,10 @@ def main() -> int:
         r.update({k: f[k] for k in ("wide_shot", "ball_at_center",
                                       "one_in_circle", "kickoff_setup",
                                       "kickoff_setup_strong", "kickoff_scene")})
+
+    t_1h, t_2h = find_half_starts(flags, timestamps, args.interval)
+    print(f"half-start calibration: 1H kickoff @ {t_1h}s, 2H kickoff @ {t_2h}s",
+          file=sys.stderr)
 
     goals = detect_goals(flags, timestamps, args.interval)
 
