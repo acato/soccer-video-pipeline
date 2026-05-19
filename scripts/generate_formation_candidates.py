@@ -27,10 +27,11 @@ WIDE_MIN = 18
 TOTAL_MAX = 30
 LR_BALANCE_MAX = 5
 CIRCLE_MIN = 0      # don't require center-circle player (VLM will discriminate)
-CIRCLE_MAX = 5
+CIRCLE_MAX = 15     # YOLO over-counts in_circle on some cameras; loosen and
+                    # let the VLM verifier discriminate kickoff from midfield
 
 # Clustering — group formation frames within this many seconds into one window
-CLUSTER_GAP_SECONDS = 30
+CLUSTER_GAP_SECONDS = 15
 MIN_CLUSTER_FRAMES = 1  # even a single formation frame triggers a candidate
 
 
