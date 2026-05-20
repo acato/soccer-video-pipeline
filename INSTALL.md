@@ -148,13 +148,22 @@ point for continued training:
 
 ### 4d. YOLOv9 ball detector — published
 
-Custom-trained YOLO ball detector for amateur-distance ball detection
-(~22 MB). Published as [acatorcini/yolov9-soccer-ball](https://huggingface.co/acatorcini/yolov9-soccer-ball).
+Custom-trained YOLO ball detector for amateur-distance ball detection.
+Published as [acatorcini/yolov9-soccer-ball](https://huggingface.co/acatorcini/yolov9-soccer-ball).
+Both `.pt` (Ultralytics, AGPL-3.0) and `.onnx` (45 MB, ONNX format usable
+with `onnxruntime` under Apache 2.0) formats are provided.
 
 ```bash
-hf download acatorcini/yolov9-soccer-ball v9b_best.pt \
-  --local-dir infra/models/
+# Ultralytics path (AGPL-3.0 at runtime):
+hf download acatorcini/yolov9-soccer-ball v9b_best.pt --local-dir infra/models/
+
+# ONNX path (no AGPL runtime dependency):
+hf download acatorcini/yolov9-soccer-ball v9b_best.onnx --local-dir infra/models/
 ```
+
+If your project's licensing requires avoiding AGPL runtime dependencies,
+use the ONNX path and load via `onnxruntime`. See the model card on HF
+for inference snippets in both formats.
 
 The path is configurable in `scripts/dense_yolo_filter.py` (`BALL_MODEL_DEFAULT`)
 and at the top of any kickoff script that uses it.
