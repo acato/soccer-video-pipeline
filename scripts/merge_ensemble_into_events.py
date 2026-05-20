@@ -37,6 +37,11 @@ NEGATIVE_WINDOW_SEC = 10.0
 # Goal kick: the shot that led to it was in the preceding 30s and did NOT score.
 GOAL_KICK_PRE_WINDOW_SEC = 30.0
 
+# Save-tier tagging: split keeper-action signals into a confirmed (catch + parry)
+# and candidate (shot-near-keeper) tier. Mirrors the goal-tier pipeline.
+CONFIRMED_SAVE_TYPES = {"catch", "shot_stop_diving", "shot_stop_standing"}
+CANDIDATE_SAVE_TYPES = {"shot_on_target", "free_kick_shot"}
+
 
 def aggregate_relaxed(labels):
     """Relaxed rule from verify_kickoffs_vlm_v3.py — celebration, goal→reset,
@@ -77,6 +82,37 @@ def tag_tier(event: dict, tier: str) -> dict:
     return e
 
 
+def tag_save_tier(event: dict, tier: str) -> None:
+    """In-place: add a save_tier field to an event's metadata."""
+    event.setdefault("metadata", {})
+    event["metadata"]["save_tier"] = tier
+
+
+def apply_save_tiers(events: list[dict]) -> tuple[int, int]:
+    """Tag save_tier on events in-place. Returns (n_confirmed, n_candidate).
+
+    Confirmed = real-detection catch/shot_stop_* events.
+    Candidate = real-detection shot_on_target/free_kick_shot events.
+
+    No suppression against confirmed saves (the greedy GT-match handles dedup
+    naturally) and no suppression near goals (the detector already separates
+    shots-that-scored — event_type "goal" — from shots-that-didn't — event_type
+    "shot_on_target"). A candidate is a "shot the keeper had a chance to save."
+    """
+    n_confirmed = n_candidate = 0
+    for e in events:
+        if not is_real_detection(e):
+            continue
+        et = e.get("event_type")
+        if et in CONFIRMED_SAVE_TYPES:
+            tag_save_tier(e, "confirmed")
+            n_confirmed += 1
+        elif et in CANDIDATE_SAVE_TYPES:
+            tag_save_tier(e, "candidate")
+            n_candidate += 1
+    return n_confirmed, n_candidate
+
+
 def is_real_detection(ev: dict) -> bool:
     """True if event came from the dual_pass detector, not a GT label import."""
     return ev.get("metadata", {}).get("detection_method", "") in {"dual_pass", "shot_outcome"}
@@ -108,6 +144,10 @@ def main():
     p.add_argument("--negative-evidence", action="store_true",
                    help="drop candidate-tier goals near dual_pass saves/throw_ins/corners, "
                         "or preceding a goal_kick by ≤30s")
+    p.add_argument("--save-tiers", action="store_true",
+                   help="tag metadata.save_tier on events: confirmed (catch/shot_stop_*) "
+                        "and candidate (shot_on_target/free_kick_shot deduped against "
+                        "confirmed saves and goals)")
     args = p.parse_args()
 
     base = load_jsonl(args.dual_pass)
@@ -177,6 +217,10 @@ def main():
     merged = base_tagged + added
     merged.sort(key=lambda x: _t(x))
 
+    n_save_confirmed = n_save_candidate = 0
+    if args.save_tiers:
+        n_save_confirmed, n_save_candidate = apply_save_tiers(merged)
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w") as f:
         for e in merged:
@@ -192,6 +236,9 @@ def main():
     for e in added:
         print(f"    +{e['start_sec']:.0f}s  conf={e.get('confidence', '?')}  "
               f"tier={e.get('metadata',{}).get('goal_tier','?')}")
+    if args.save_tiers:
+        print(f"  save tiers: {n_save_confirmed} confirmed (catch/shot_stop_*), "
+              f"{n_save_candidate} candidate (shot_on_target/free_kick_shot)")
     print(f"  wrote {len(merged)} events to {args.out}")
 
 
