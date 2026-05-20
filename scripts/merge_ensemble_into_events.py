@@ -48,6 +48,16 @@ CANDIDATE_SAVE_TYPES = {"shot_on_target", "free_kick_shot"}
 # near the timestamp (avoid double-counting saves we've already caught).
 INFERRED_SAVE_TYPES = {"throw_in", "corner_kick"}
 INFERRED_NEAR_SAVE_WINDOW_SEC = 30.0
+# Throw_in shot-proximity filter: a throw_in qualifies as inferred-save only
+# if a shot-like event was detected within the preceding window. Keeper
+# distributions follow a save/shot; sideline throws don't. corner_kick is
+# exempt — corners always follow a defender deflection.
+SHOT_LIKE_TYPES = {"shot_on_target", "free_kick_shot",
+                   "catch", "shot_stop_diving", "shot_stop_standing",
+                   "corner_kick"}
+# Default window for the throw_in shot-proximity filter. 0 disables. 180s is
+# lossless on the 4-game eval (preserves all 55 union TPs while cutting 9 FPs).
+DEFAULT_THROW_IN_PRECEDING_SHOT_WINDOW_SEC = 180.0
 
 
 def aggregate_relaxed(labels):
@@ -95,7 +105,9 @@ def tag_save_tier(event: dict, tier: str) -> None:
     event["metadata"]["save_tier"] = tier
 
 
-def apply_save_tiers(events: list[dict]) -> tuple[int, int, int]:
+def apply_save_tiers(events: list[dict],
+                     throw_in_shot_window_sec: float = DEFAULT_THROW_IN_PRECEDING_SHOT_WINDOW_SEC,
+                     ) -> tuple[int, int, int]:
     """Tag save_tier on events in-place. Returns (confirmed, candidate, inferred).
 
     Confirmed = real-detection catch/shot_stop_* events.
@@ -129,18 +141,35 @@ def apply_save_tiers(events: list[dict]) -> tuple[int, int, int]:
             if t is not None:
                 save_times.append(t)
 
-    # Pass 2: tag inferred where no confirmed/candidate save is near.
+    # Collect shot-like event times (for throw_in qualification — keeper
+    # distributions follow a shot, sideline throws don't).
+    shot_like_times = sorted(
+        _t(e) for e in events
+        if is_real_detection(e) and e.get("event_type") in SHOT_LIKE_TYPES
+        and _t(e) is not None
+    )
+
+    # Pass 2: tag inferred where no confirmed/candidate save is near AND, for
+    # throw_in, a shot-like event preceded it within the window.
     save_times.sort()
     for e in events:
         if not is_real_detection(e):
             continue
-        if e.get("event_type") not in INFERRED_SAVE_TYPES:
+        et = e.get("event_type")
+        if et not in INFERRED_SAVE_TYPES:
             continue
         t = _t(e)
         if t is None:
             continue
         if any(abs(t - st) <= INFERRED_NEAR_SAVE_WINDOW_SEC for st in save_times):
             continue
+        if et == "throw_in" and throw_in_shot_window_sec > 0:
+            has_preceding_shot = any(
+                0 <= (t - st) <= throw_in_shot_window_sec
+                for st in shot_like_times
+            )
+            if not has_preceding_shot:
+                continue
         tag_save_tier(e, "inferred")
         n_inferred += 1
     return n_confirmed, n_candidate, n_inferred
@@ -181,6 +210,10 @@ def main():
                    help="tag metadata.save_tier on events: confirmed (catch/shot_stop_*) "
                         "and candidate (shot_on_target/free_kick_shot deduped against "
                         "confirmed saves and goals)")
+    p.add_argument("--throw-in-shot-window-sec", type=float,
+                   default=DEFAULT_THROW_IN_PRECEDING_SHOT_WINDOW_SEC,
+                   help="if >0, require a shot-like event within this many seconds "
+                        "before each throw_in for it to qualify as inferred save")
     args = p.parse_args()
 
     base = load_jsonl(args.dual_pass)
@@ -252,7 +285,8 @@ def main():
 
     n_save_confirmed = n_save_candidate = n_save_inferred = 0
     if args.save_tiers:
-        n_save_confirmed, n_save_candidate, n_save_inferred = apply_save_tiers(merged)
+        n_save_confirmed, n_save_candidate, n_save_inferred = apply_save_tiers(
+            merged, throw_in_shot_window_sec=args.throw_in_shot_window_sec)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w") as f:
