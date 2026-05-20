@@ -59,6 +59,14 @@ SHOT_LIKE_TYPES = {"shot_on_target", "free_kick_shot",
 # lossless on the 4-game eval (preserves all 55 union TPs while cutting 9 FPs).
 DEFAULT_THROW_IN_PRECEDING_SHOT_WINDOW_SEC = 180.0
 
+# Shot-tier tagging. Mirrors save_tier; an event can carry both fields.
+# confirmed = directly-shot signals
+# candidate = signals that IMPLY a recent shot (necessary-not-sufficient per
+#             spatial-setup principle; never auto-promote alone)
+SHOT_CONFIRMED_TYPES = {"goal", "shot_on_target", "free_kick_shot"}
+SHOT_CANDIDATE_TYPES = {"catch", "shot_stop_diving", "shot_stop_standing",
+                        "corner_kick", "goal_kick"}
+
 
 def aggregate_relaxed(labels):
     """Relaxed rule from verify_kickoffs_vlm_v3.py — celebration, goal→reset,
@@ -103,6 +111,37 @@ def tag_save_tier(event: dict, tier: str) -> None:
     """In-place: add a save_tier field to an event's metadata."""
     event.setdefault("metadata", {})
     event["metadata"]["save_tier"] = tier
+
+
+def tag_shot_tier(event: dict, tier: str) -> None:
+    """In-place: add a shot_tier field to an event's metadata."""
+    event.setdefault("metadata", {})
+    event["metadata"]["shot_tier"] = tier
+
+
+def apply_shot_tiers(events: list[dict]) -> tuple[int, int]:
+    """Tag shot_tier on real-detection events. Returns (confirmed, candidate).
+
+    confirmed = goal + shot_on_target + free_kick_shot (direct shot signals)
+    candidate = catch + shot_stop_* + corner_kick + goal_kick (necessary-not-
+                sufficient inferences — a save/corner/goal-kick implies a
+                recent shot but the inverse isn't true)
+
+    An event may carry shot_tier alongside save_tier / goal_tier — fields are
+    orthogonal.
+    """
+    n_confirmed = n_candidate = 0
+    for e in events:
+        if not is_real_detection(e):
+            continue
+        et = e.get("event_type")
+        if et in SHOT_CONFIRMED_TYPES:
+            tag_shot_tier(e, "confirmed")
+            n_confirmed += 1
+        elif et in SHOT_CANDIDATE_TYPES:
+            tag_shot_tier(e, "candidate")
+            n_candidate += 1
+    return n_confirmed, n_candidate
 
 
 def apply_save_tiers(events: list[dict],
@@ -214,6 +253,10 @@ def main():
                    default=DEFAULT_THROW_IN_PRECEDING_SHOT_WINDOW_SEC,
                    help="if >0, require a shot-like event within this many seconds "
                         "before each throw_in for it to qualify as inferred save")
+    p.add_argument("--shot-tiers", action="store_true",
+                   help="tag metadata.shot_tier: confirmed (goal/shot_on_target/"
+                        "free_kick_shot) and candidate (catch/shot_stop_*/"
+                        "corner_kick/goal_kick — necessary-not-sufficient)")
     args = p.parse_args()
 
     base = load_jsonl(args.dual_pass)
@@ -288,6 +331,10 @@ def main():
         n_save_confirmed, n_save_candidate, n_save_inferred = apply_save_tiers(
             merged, throw_in_shot_window_sec=args.throw_in_shot_window_sec)
 
+    n_shot_confirmed = n_shot_candidate = 0
+    if args.shot_tiers:
+        n_shot_confirmed, n_shot_candidate = apply_shot_tiers(merged)
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w") as f:
         for e in merged:
@@ -307,6 +354,9 @@ def main():
         print(f"  save tiers: {n_save_confirmed} confirmed (catch/shot_stop_*), "
               f"{n_save_candidate} candidate (shot_on_target/free_kick_shot), "
               f"{n_save_inferred} inferred (throw_in/corner_kick w/o nearby save)")
+    if args.shot_tiers:
+        print(f"  shot tiers: {n_shot_confirmed} confirmed (goal/shot_on_target/"
+              f"free_kick_shot), {n_shot_candidate} candidate (saves/corners/goal_kicks)")
     print(f"  wrote {len(merged)} events to {args.out}")
 
 

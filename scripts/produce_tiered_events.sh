@@ -58,5 +58,6 @@ for game in "${GAMES[@]}"; do
     --relaxed-aggregation \
     --negative-evidence \
     --save-tiers \
+    --shot-tiers \
     --out "$out"
 done
