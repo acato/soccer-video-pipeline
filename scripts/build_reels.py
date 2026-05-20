@@ -53,10 +53,13 @@ def _t(e):
     return e.get("start_sec", e.get("timestamp_start"))
 
 
-# Keeper reel skips throw_in even when tagged save_tier=inferred — sideline
-# throws dominate that tier and aren't keeper-relevant. Corner_kick inferred
-# stays in (defender deflection → corner is a real save proxy).
-KEEPER_REEL_EXCLUDE_TYPES = {"throw_in"}
+# Keeper reel skips event types that are mostly non-keeper noise:
+#   throw_in       — sideline restart, rarely the moment after a save
+#   free_kick_shot — detector fires on ANY free-kick motion including
+#                    defender clearances from the back; high FP, low TP/FP
+#                    yield (-40 FPs per TP lost on 4-game eval)
+# corner_kick inferred stays in — every corner means a defender deflection.
+KEEPER_REEL_EXCLUDE_TYPES = {"throw_in", "free_kick_shot"}
 
 
 def select_events(events: list[dict], reel: str) -> list[dict]:
