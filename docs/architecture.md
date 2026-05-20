@@ -4,7 +4,7 @@ This document describes the production detection pipeline as it stands today:
 a multi-stage chain that converts a raw soccer match video into per-game
 **keeper** and **highlights** reels with high recall on the events that matter.
 
-If you're trying to install and run the system, see [INSTALL.md](INSTALL.md)
+If you're trying to install and run the system, see [install.md](install.md)
 instead.
 
 ---

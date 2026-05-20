@@ -5,7 +5,7 @@ get the models in place, run the detection chain, and produce keeper +
 highlights reels.
 
 For the high-level architecture of what you'll be running, see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[architecture.md](architecture.md).
 
 ---
 
@@ -141,10 +141,13 @@ hf download acatorcini/qwen3-vl-32b-soccer-v11-fp8 \
 Or just reference it by HF ID in the vLLM serve command (vLLM downloads
 on first launch — see §5).
 
-**To train your own from scratch**: see `docs/fine-tuning-pipeline.md`.
-The LoRA adapter alone (2.27 GB) is also published, useful as a starting
-point for continued training:
-[acatorcini/qwen3-vl-32b-soccer-v11-lora](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-lora).
+**To continue training or merge against a different base**: the LoRA
+adapter is also published as a separate artifact:
+[acatorcini/qwen3-vl-32b-soccer-v11-lora](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-lora)
+(2.27 GB). A full from-scratch training runbook is not in-tree;
+`docs/legacy/fine-tuning-pipeline.md` preserves the 8B-era design notes
+that informed the v11 32B run, but the v11 training scripts and data
+live outside this repo.
 
 ### 4d. YOLOv9 ball detector — published
 
@@ -248,7 +251,7 @@ If you're using a shared mount for the videos + reels (e.g., NAS), set
 
 ## 7. Process a video — step by step
 
-The pipeline runs in five stages (see [ARCHITECTURE.md §1](ARCHITECTURE.md#1-end-to-end-picture)).
+The pipeline runs in five stages (see [architecture.md §1](architecture.md#1-end-to-end-picture)).
 Each stage's outputs are cached in `/tmp/` so you can re-run later stages
 without re-doing the expensive ones.
 
