@@ -53,7 +53,7 @@ GAMES = {
 }
 
 TOL = 90.0
-DEDUP_WINDOW = 30.0  # merge confirmed detections within 30s of each other
+DEDUP_WINDOW = 60.0  # merge dets within 60s; game_20 has 65s-spaced GTs so stay <65
 
 
 def load_gt(path):

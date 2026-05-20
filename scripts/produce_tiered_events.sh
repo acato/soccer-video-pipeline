@@ -49,5 +49,7 @@ for game in "${GAMES[@]}"; do
   $PY $SCRIPTS/merge_ensemble_into_events.py \
     --dual-pass "$dual_pass" \
     $ensemble_args \
+    --relaxed-aggregation \
+    --negative-evidence \
     --out "$out"
 done
