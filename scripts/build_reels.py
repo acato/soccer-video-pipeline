@@ -53,13 +53,22 @@ def _t(e):
     return e.get("start_sec", e.get("timestamp_start"))
 
 
+# Keeper reel skips throw_in even when tagged save_tier=inferred — sideline
+# throws dominate that tier and aren't keeper-relevant. Corner_kick inferred
+# stays in (defender deflection → corner is a real save proxy).
+KEEPER_REEL_EXCLUDE_TYPES = {"throw_in"}
+
+
 def select_events(events: list[dict], reel: str) -> list[dict]:
     out = []
     for e in events:
         md = e.get("metadata", {}) or {}
         if reel == "keeper":
-            if md.get("goal_tier") or md.get("save_tier"):
-                out.append(e)
+            if not (md.get("goal_tier") or md.get("save_tier")):
+                continue
+            if e.get("event_type") in KEEPER_REEL_EXCLUDE_TYPES:
+                continue
+            out.append(e)
         elif reel == "highlights":
             if md.get("shot_tier"):
                 out.append(e)
