@@ -104,66 +104,60 @@ python -m pytest tests/unit/ -m unit -q
 
 ## 4. Download or build models
 
-The pipeline needs four model artifacts. Two are public; two are private to
-this project.
+The pipeline needs four model artifacts. All are now published on
+HuggingFace Hub.
 
-### 4a. Public — `Qwen/Qwen3-VL-32B-Instruct-FP8`
+### 4a. `Qwen/Qwen3-VL-32B-Instruct-FP8` (public base)
 
 The base model for formation verification (stage 3b). Downloaded
 automatically by vLLM on first launch, or pull explicitly:
 
 ```bash
-huggingface-cli download Qwen/Qwen3-VL-32B-Instruct-FP8 --local-dir ~/models/qwen3-vl-32b-fp8
+hf download Qwen/Qwen3-VL-32B-Instruct-FP8 --local-dir ~/models/qwen3-vl-32b-fp8
 ```
 
-### 4b. Public — YOLOv8 soccer player detector
+### 4b. YOLOv8 soccer player detector
 
 ```bash
 mkdir -p infra/models
-wget -O infra/models/yolov8_soccer_uisikdag.pt \
-  https://github.com/uisikdag/weed_soccer_models/raw/main/models/yolov8_soccer_v2.pt
+# Either obtain from a soccer-fine-tuned YOLOv8 source like:
+#   github.com/uisikdag/weed_soccer_models
+# Or train your own. Place at:
+ls infra/models/yolov8_soccer_uisikdag.pt
 ```
 
-(URL is illustrative — the actual public weights are mirrored at
-[github.com/uisikdag/weed_soccer_models](https://github.com/uisikdag/weed_soccer_models)
-or any equivalent soccer-fine-tuned YOLOv8 checkpoint.)
+### 4c. **v11 LoRA-merged FP8** (Qwen3-VL-32B) — published
 
-### 4c. Private — **v11 LoRA-merged FP8** (Qwen3-VL-32B)
+The custom dual-pass classifier. ~34 GB on disk. Published as
+[acatorcini/qwen3-vl-32b-soccer-v11-fp8](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-fp8).
 
-The custom dual-pass classifier. Approximate size: 34 GB on disk.
+Pull explicitly (one-time, ~30 min on a fast link):
 
-**To obtain**: contact the repo owner. The model is not yet published to
-HuggingFace Hub (planned). For now, place the FP8-merged checkpoint at:
-
-```
-/mnt/transit/soccer-finetune/checkpoints/v11-32b/fp8-c150/
-├── config.json
-├── generation_config.json
-├── model-00001-of-00008.safetensors
-├── ...
-├── model-00008-of-00008.safetensors
-├── model.safetensors.index.json
-├── preprocessor_config.json
-├── recipe.yaml                       ← FP8 quantization recipe
-├── tokenizer_config.json
-├── tokenizer.json
-└── video_preprocessor_config.json
+```bash
+hf download acatorcini/qwen3-vl-32b-soccer-v11-fp8 \
+  --local-dir ~/models/qwen3-vl-32b-soccer-v11-fp8
 ```
 
-**To train your own from scratch**: see `docs/fine-tuning-pipeline.md`. The
-training corpus is a labeled set of 10,000+ event clips with classifications.
-A run takes ~24 hours on 2× A100.
+Or just reference it by HF ID in the vLLM serve command (vLLM downloads
+on first launch — see §5).
 
-### 4d. Private — YOLOv9 ball detector (`v9b_best.pt`)
+**To train your own from scratch**: see `docs/fine-tuning-pipeline.md`.
+The LoRA adapter alone (2.27 GB) is also published, useful as a starting
+point for continued training:
+[acatorcini/qwen3-vl-32b-soccer-v11-lora](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-lora).
 
-Custom-trained YOLO model for ball detection at amateur-soccer camera
-distances. Place at:
+### 4d. YOLOv9 ball detector — published
 
+Custom-trained YOLO ball detector for amateur-distance ball detection
+(~22 MB). Published as [acatorcini/yolov9-soccer-ball](https://huggingface.co/acatorcini/yolov9-soccer-ball).
+
+```bash
+hf download acatorcini/yolov9-soccer-ball v9b_best.pt \
+  --local-dir infra/models/
 ```
-/Volumes/transit/soccer-finetune/yolo_ball_v9/weights/v9b_best.pt
-```
 
-Path is configurable in `scripts/dense_yolo_filter.py` (`BALL_MODEL_DEFAULT`).
+The path is configurable in `scripts/dense_yolo_filter.py` (`BALL_MODEL_DEFAULT`)
+and at the top of any kickoff script that uses it.
 
 ---
 
@@ -174,7 +168,7 @@ ssh inference-host
 source ~/vllm-venv/bin/activate
 
 # Stage A — v11 LoRA-merged FP8 (for the dual-pass detector)
-vllm serve /mnt/transit/soccer-finetune/checkpoints/v11-32b/fp8-c150 \
+vllm serve acatorcini/qwen3-vl-32b-soccer-v11-fp8 \
   --tensor-parallel-size 2 \
   --max-model-len 16384 \
   --gpu-memory-utilization 0.92 \
@@ -185,6 +179,9 @@ vllm serve /mnt/transit/soccer-finetune/checkpoints/v11-32b/fp8-c150 \
   --served-model-name qwen3-vl-32b \
   --quantization compressed-tensors
 ```
+
+> First launch downloads ~34 GB from HuggingFace Hub (cached to
+> `~/.cache/huggingface/hub/`). Subsequent launches are instant.
 
 Wait until you see `Uvicorn running on http://0.0.0.0:8000`. Verify:
 
@@ -203,7 +200,7 @@ pointed at the **base** Qwen FP8 for formation verification:
 
 ```bash
 # Stage B — base FP8 for formation verification (run AFTER stage A completes)
-vllm serve ~/models/qwen3-vl-32b-fp8 \
+vllm serve Qwen/Qwen3-VL-32B-Instruct-FP8 \
   --tensor-parallel-size 2 \
   --max-model-len 16384 \
   --gpu-memory-utilization 0.92 \

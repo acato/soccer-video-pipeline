@@ -90,10 +90,13 @@ instead.
 
 | Role | Model | Distribution |
 |------|-------|--------------|
-| Dual-pass VLM (primary) | Qwen3-VL-32B-FP8 + **v11 LoRA** (LoRA-merged FP8) | Private — see [INSTALL.md §4](INSTALL.md#4-download-or-build-models) for how to obtain or train |
-| Formation verifier | `Qwen/Qwen3-VL-32B-Instruct-FP8` (base, no LoRA) | Public on HuggingFace |
-| YOLO player detector | `yolov8_soccer_uisikdag` | Public — soccer-specialized YOLOv8 |
-| YOLO ball detector | `v9b_best.pt` (custom YOLOv9 fine-tune) | Private — see [INSTALL.md §4](INSTALL.md#4-download-or-build-models) |
+| Dual-pass VLM (primary) | Qwen3-VL-32B-FP8 + **v11 LoRA** (LoRA-merged FP8) | [acatorcini/qwen3-vl-32b-soccer-v11-fp8](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-fp8) (HuggingFace, ~34 GB) |
+| Formation verifier | `Qwen/Qwen3-VL-32B-Instruct-FP8` (base, no LoRA) | [Qwen/Qwen3-VL-32B-Instruct-FP8](https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct-FP8) (HuggingFace, public) |
+| YOLO player detector | `yolov8_soccer_uisikdag` | Soccer-specialized YOLOv8 ([github.com/uisikdag](https://github.com/uisikdag/weed_soccer_models) or similar) |
+| YOLO ball detector | `v9b_best.pt` (custom YOLOv9 fine-tune) | [acatorcini/yolov9-soccer-ball](https://huggingface.co/acatorcini/yolov9-soccer-ball) (HuggingFace, ~22 MB) |
+
+The LoRA adapter alone (2.27 GB, for custom merges or continued training) is
+also published as [acatorcini/qwen3-vl-32b-soccer-v11-lora](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-lora).
 
 The pipeline runs **both** v11 LoRA and base FP8 on the same Qwen architecture
 but at different points: the LoRA-merged checkpoint handles the dual-pass event
