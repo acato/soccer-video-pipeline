@@ -41,6 +41,13 @@ GOAL_KICK_PRE_WINDOW_SEC = 30.0
 # and candidate (shot-near-keeper) tier. Mirrors the goal-tier pipeline.
 CONFIRMED_SAVE_TYPES = {"catch", "shot_stop_diving", "shot_stop_standing"}
 CANDIDATE_SAVE_TYPES = {"shot_on_target", "free_kick_shot"}
+# Inferred saves: types that frequently FOLLOW an unrecorded save
+#   throw_in    — keeper catches then throws ball back into play
+#   corner_kick — defender/keeper parries, ball goes over endline
+# Only tag as "inferred" when no confirmed/candidate save event is already
+# near the timestamp (avoid double-counting saves we've already caught).
+INFERRED_SAVE_TYPES = {"throw_in", "corner_kick"}
+INFERRED_NEAR_SAVE_WINDOW_SEC = 30.0
 
 
 def aggregate_relaxed(labels):
@@ -88,18 +95,23 @@ def tag_save_tier(event: dict, tier: str) -> None:
     event["metadata"]["save_tier"] = tier
 
 
-def apply_save_tiers(events: list[dict]) -> tuple[int, int]:
-    """Tag save_tier on events in-place. Returns (n_confirmed, n_candidate).
+def apply_save_tiers(events: list[dict]) -> tuple[int, int, int]:
+    """Tag save_tier on events in-place. Returns (confirmed, candidate, inferred).
 
     Confirmed = real-detection catch/shot_stop_* events.
     Candidate = real-detection shot_on_target/free_kick_shot events.
-
-    No suppression against confirmed saves (the greedy GT-match handles dedup
-    naturally) and no suppression near goals (the detector already separates
-    shots-that-scored — event_type "goal" — from shots-that-didn't — event_type
-    "shot_on_target"). A candidate is a "shot the keeper had a chance to save."
+    Inferred  = real-detection throw_in/corner_kick events that have no
+                confirmed/candidate save within ±INFERRED_NEAR_SAVE_WINDOW_SEC.
+                These are "save aftermath" events — keeper distribution throw,
+                or defender deflection → corner.
     """
-    n_confirmed = n_candidate = 0
+    def _t(e):
+        return e.get("start_sec", e.get("timestamp_start"))
+
+    n_confirmed = n_candidate = n_inferred = 0
+    save_times: list[float] = []  # confirmed + candidate, populated in pass 1
+
+    # Pass 1: tag confirmed + candidate, collect their times.
     for e in events:
         if not is_real_detection(e):
             continue
@@ -107,10 +119,31 @@ def apply_save_tiers(events: list[dict]) -> tuple[int, int]:
         if et in CONFIRMED_SAVE_TYPES:
             tag_save_tier(e, "confirmed")
             n_confirmed += 1
+            t = _t(e)
+            if t is not None:
+                save_times.append(t)
         elif et in CANDIDATE_SAVE_TYPES:
             tag_save_tier(e, "candidate")
             n_candidate += 1
-    return n_confirmed, n_candidate
+            t = _t(e)
+            if t is not None:
+                save_times.append(t)
+
+    # Pass 2: tag inferred where no confirmed/candidate save is near.
+    save_times.sort()
+    for e in events:
+        if not is_real_detection(e):
+            continue
+        if e.get("event_type") not in INFERRED_SAVE_TYPES:
+            continue
+        t = _t(e)
+        if t is None:
+            continue
+        if any(abs(t - st) <= INFERRED_NEAR_SAVE_WINDOW_SEC for st in save_times):
+            continue
+        tag_save_tier(e, "inferred")
+        n_inferred += 1
+    return n_confirmed, n_candidate, n_inferred
 
 
 def is_real_detection(ev: dict) -> bool:
@@ -217,9 +250,9 @@ def main():
     merged = base_tagged + added
     merged.sort(key=lambda x: _t(x))
 
-    n_save_confirmed = n_save_candidate = 0
+    n_save_confirmed = n_save_candidate = n_save_inferred = 0
     if args.save_tiers:
-        n_save_confirmed, n_save_candidate = apply_save_tiers(merged)
+        n_save_confirmed, n_save_candidate, n_save_inferred = apply_save_tiers(merged)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w") as f:
@@ -238,7 +271,8 @@ def main():
               f"tier={e.get('metadata',{}).get('goal_tier','?')}")
     if args.save_tiers:
         print(f"  save tiers: {n_save_confirmed} confirmed (catch/shot_stop_*), "
-              f"{n_save_candidate} candidate (shot_on_target/free_kick_shot)")
+              f"{n_save_candidate} candidate (shot_on_target/free_kick_shot), "
+              f"{n_save_inferred} inferred (throw_in/corner_kick w/o nearby save)")
     print(f"  wrote {len(merged)} events to {args.out}")
 
 
