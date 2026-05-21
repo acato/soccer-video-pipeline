@@ -273,24 +273,20 @@ cost proportionally more time.
 
 ### Stage 2 — Dual-pass VLM event detection
 
-The most expensive stage; depends on inference host throughput.
-
-The legacy worker (`src/api/worker.py`) handles this via Celery. For
-out-of-band runs, use:
+The most expensive stage; depends on inference host throughput. Expect
+~30-60 minutes per match against a 2× RTX 3090 inference host.
 
 ```bash
-# Submit to a running worker (if you have one):
-.venv/bin/python infra/scripts/pipeline_cli.py submit "$SOURCE_VIDEOS_DIR/my_game.mp4" \
-  --reel keeper,highlights
-
-# Wait for completion, then events land at:
-# /tmp/soccer-pipeline/<job_id>/events.jsonl
+.venv/bin/python scripts/run_dual_pass.py \
+  --video "$SOURCE_VIDEOS_DIR/my_game.mp4" \
+  --out-dir "$WORKING_DIR/my_game" \
+  --vllm-url "$VLLM_URL"
 ```
 
-Without the Celery worker, you can invoke the detector directly (see
-`src/detection/dual_pass_detector.py`).
-
-Expect ~30-60 minutes per match against a 2× RTX 3090 inference host.
+Output: `$WORKING_DIR/my_game/events.jsonl` — the event stream used by
+all downstream stages. The script reads optional knobs from environment
+variables (see `infra/.env.example`) or `src/detection/dual_pass_detector.py:DualPassConfig`
+for the full list.
 
 ### Stage 3a — pattern_v11 kickoff detector
 
@@ -403,27 +399,7 @@ Determine them by visual inspection or by using
 
 ---
 
-## 10. What the legacy API path does differently
-
-`src/api/` + `src/api/worker.py` implement a Celery-based API for submitting
-jobs and downloading reels. It exists for production deployments where a
-non-technical user submits videos through a web UI.
-
-The legacy path goes:
-1. `POST /jobs` → Celery worker → dual_pass detector → events.jsonl
-2. Events → `src/segmentation/clipper.py` → ClipBoundary list
-3. ClipBoundary list → `src/assembly/composer.py` → reels
-
-The scripts path described in §7 reuses step 1 then diverges. Long-term
-plan is to fold the kickoff ensemble + tiering into the API worker so
-that the legacy path produces the same quality reels.
-
-For now, if you want the production-quality reels (recall 0.96 saves,
-1.00 goals), use the scripts path.
-
----
-
-## 11. Re-running just the cheap stages
+## 10. Re-running just the cheap stages
 
 The cost gradient across stages is steep:
 

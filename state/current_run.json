@@ -52,24 +52,18 @@
   "recommended_next_steps": [
     {
       "priority": 1,
-      "name": "Score-change detector via scoreboard OCR",
-      "rationale": "Direct attack on the goal-detection problem at the data-source level. If scoreboard regions can be reliably OCR'd, score delta + ~30s context window gives a perfect-recall goal detector regardless of camera quality. This sidesteps the ViT bottleneck entirely.",
-      "effort": "~1 week: scoreboard region detector + OCR pipeline + integration"
-    },
-    {
-      "priority": 2,
       "name": "Ball-centric crop pipeline",
-      "rationale": "Use v9b trajectory to crop a 512x512 region around the ball, feeding the model a zoomed view alongside the wide view. Addresses the 'ball too small' problem at the ViT input layer.",
+      "rationale": "Use v9b trajectory to crop a 512x512 region around the ball, feeding the model a zoomed view alongside the wide view. Addresses the 'ball too small' problem at the ViT input layer — the structural bottleneck per v8/v11 evals.",
       "effort": "~1 week: crop pipeline + new training data + LoRA retrain"
     },
     {
-      "priority": 3,
+      "priority": 2,
       "name": "Higher input resolution (frame_width=1920)",
       "rationale": "Simplest fix for ball perception — bigger input pixels means more ViT tokens covering the ball. Cost: ~2x inference wall time per game. May not be worth it for marginal F1 lift.",
       "effort": "~2 days: pipeline reconfig + retrain at 1920px + eval"
     },
     {
-      "priority": 4,
+      "priority": 3,
       "name": "Tame v11's save FPs and ship it",
       "rationale": "v11 found 2 new saves on new venues. With a tighter prompt asking for acceleration-only-when-conf-high, the save detection signal might be salvageable as an additive feature alongside v10 c150.",
       "effort": "~3 days: hybrid event-list portfolio retest"

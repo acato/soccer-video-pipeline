@@ -1,8 +1,5 @@
 # Core
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
 pydantic>=2.7.0
-pydantic-settings>=2.2.0
 structlog>=24.1.0
 
 # Video I/O
@@ -10,32 +7,21 @@ ffmpeg-python>=0.2.0
 opencv-python-headless>=4.9.0
 
 # ML / CV
-ultralytics>=8.2.0          # YOLOv8
+ultralytics>=8.2.0          # YOLOv8 / YOLOv9 (AGPL — used at training/export time)
+onnxruntime>=1.18.0         # Apache 2.0 inference path for exported .onnx models
 torch>=2.2.0
 torchvision>=0.17.0
 
-# Tracking
-# ByteTrack — install from source or use boxmot:
-boxmot>=10.0.0
+# HuggingFace Hub (model downloads + publishing)
+huggingface_hub>=0.24.0
 
-# Job queue
-celery[redis]>=5.3.6
-redis>=5.0.0
-flower>=2.0.1
-
-# VLM classification (Claude API)
-anthropic>=0.42.0           # Claude API client for VLM save verification
-
-# Audio analysis (Phase 1 — whistle/energy detection)
-librosa>=0.10.0
-soundfile>=0.12.0
+# HTTP (vLLM client)
+httpx>=0.27.0
 
 # Utilities
-watchdog>=4.0.0             # NAS directory watching
-tenacity>=8.3.0             # Retry logic
-httpx>=0.27.0               # Async HTTP client
-python-multipart>=0.0.9     # FastAPI file uploads
-aiofiles>=23.2.1
+tenacity>=8.3.0             # retry on transient errors
+numpy>=1.26.0
+pillow>=10.0.0
 
 # Testing
 pytest>=8.1.0

@@ -256,26 +256,51 @@ the same volume is accessible as `/mnt/transit/`.
 
 ---
 
-## 7. Two pipelines in this repo
+## 7. Source layout
 
-The repo contains code for **two different pipelines**:
+```
+src/detection/                     Dual-pass event detector + dependencies
+  ├── dual_pass_detector.py        DualPassConfig + DualPassDetector
+  ├── frame_sampler.py             ffmpeg-based frame extraction
+  ├── triage_scanner.py            8B triage scan helper
+  ├── models.py                    Event, EventType, Detection, BoundingBox
+  ├── ball_trajectory.py           Ball-motion features for v10/v11 LoRA prompts
+  ├── ball_context.py              Per-frame ball-position annotation for prompts
+  ├── ball_presence_verifier.py    YOLO ball-presence gate
+  ├── kickoff_verifier.py          YOLO kickoff-frame verifier
+  └── yolo_grounding.py            YOLO trajectory feature extraction
 
-1. **The legacy API/worker pipeline** (`src/api/`, `src/detection/`, Celery
-   worker, FastAPI). Submit a video via `POST /jobs`, get reels via a job ID.
-   This is the path described in the original README and `docs/architecture.md`.
+scripts/                           Pipeline runners + analysis
+  ├── run_dual_pass.py             CLI wrapper for Stage 2
+  ├── detect_kickoffs.py           Stage 1 + Stage 3a (YOLO grounding +
+  │                                kickoff_pattern detector)
+  ├── generate_formation_candidates.py   Stage 3b candidate generator
+  ├── verify_kickoffs_vlm_v3.py    Stage 3b VLM verifier
+  ├── merge_ensemble_into_events.py      Stage 4 (merge + tier tagging)
+  ├── build_reels.py               Stage 5 (clip extraction + concatenation)
+  ├── produce_tiered_events.sh     Stage-4 orchestrator across multiple games
+  ├── score_*.py                   GT scoring against transit-format JSON
+  └── prepare_lora_*.py            LoRA training dataset prep (offline use)
 
-2. **The current production scripts pipeline** (`scripts/`). The path
-   documented above. Run via shell + Python scripts; no API, no Celery.
-   This is what produced the 4-game eval results.
+infra/
+  ├── .env.example                 Environment-variable template
+  └── models/
+      ├── download_models.sh       Pulls YOLO weights from HF Hub
+      └── (placed model weights)
 
-The dual-pass detector (stage 2 in the diagram) is shared between the two
-pipelines — both invoke the same `src/detection/dual_pass_detector.py` and
-write to `/tmp/soccer-pipeline/<job_id>/events.jsonl`. After that, the
-pipelines diverge: legacy goes to `src/segmentation/clipper.py` and
-`src/assembly/composer.py`, while the current path uses the `scripts/`
-chain described above.
+tests/
+  ├── conftest.py                  Shared fixtures (event-log helpers)
+  └── unit/                        Pure unit tests (113 passing)
 
-Long-term, the kickoff ensemble + tiering + reel builder will be folded
-back into the API/worker path so jobs submitted via the REST API benefit
-from the same recall/precision pipeline. For now, use the scripts path
-for any new work.
+docs/
+  ├── install.md                   This guide
+  ├── architecture.md              You are here
+  ├── pipeline_status.md           Current detection numbers + known limits
+  ├── vllm-gpu-orchestration.md    Multi-GPU vLLM deployment notes
+  ├── adr/                         Architecture decision records (historical)
+  └── legacy/                      Archived pre-current-pipeline references
+```
+
+The dual-pass detector is the only `src/` code on the production hot path;
+everything else lives in `scripts/`. Detection chains are JSONL files
+between stages, so re-running any stage in isolation is cheap.
