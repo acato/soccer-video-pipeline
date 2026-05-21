@@ -297,8 +297,7 @@ docs/
   ├── architecture.md              You are here
   ├── pipeline_status.md           Current detection numbers + known limits
   ├── vllm-gpu-orchestration.md    Multi-GPU vLLM deployment notes
-  ├── adr/                         Architecture decision records (historical)
-  └── legacy/                      Archived pre-current-pipeline references
+  └── adr/                         Architecture decision records (historical)
 ```
 
 The dual-pass detector is the only `src/` code on the production hot path;

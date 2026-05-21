@@ -144,10 +144,8 @@ on first launch — see §5).
 **To continue training or merge against a different base**: the LoRA
 adapter is also published as a separate artifact:
 [acatorcini/qwen3-vl-32b-soccer-v11-lora](https://huggingface.co/acatorcini/qwen3-vl-32b-soccer-v11-lora)
-(2.27 GB). A full from-scratch training runbook is not in-tree;
-`docs/legacy/fine-tuning-pipeline.md` preserves the 8B-era design notes
-that informed the v11 32B run, but the v11 training scripts and data
-live outside this repo.
+(2.27 GB). A from-scratch training runbook is not in-tree — the v11
+training scripts and data live outside this repo.
 
 ### 4d. YOLOv9 ball detector — published
 

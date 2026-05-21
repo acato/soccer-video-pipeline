@@ -46,7 +46,6 @@ Single-workstation deployments work if you have ≥48 GB VRAM.
 - **[docs/architecture.md](docs/architecture.md)** — system design, model dependencies, tier semantics, key decisions
 - **[docs/pipeline_status.md](docs/pipeline_status.md)** — current detection performance + known limits
 - **[docs/vllm-gpu-orchestration.md](docs/vllm-gpu-orchestration.md)** — vLLM deployment on multi-GPU hosts
-- **[docs/legacy/](docs/legacy/)** — archived design docs, runbooks, and pre-current-pipeline references (kept for historical context)
 
 ## Models
 
