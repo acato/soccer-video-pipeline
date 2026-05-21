@@ -5,15 +5,15 @@ from pathlib import Path
 TOL = 90.0
 
 GAMES = {
-    "game_20": ("/tmp/kickoff_game_20_tiered_relaxed.jsonl",
+    "game_20": ("/tmp/kickoff_game_20_tiered_events.jsonl",
                 [g + 100 for g in [1072.2, 1137.0, 1639.2, 2314.2]] +
                 [g + 775 for g in [2442.0, 3106.4, 3596.0, 3976.8, 4065.2]]),
-    "game_22": ("/tmp/kickoff_game_22_tiered_relaxed.jsonl",
+    "game_22": ("/tmp/kickoff_game_22_tiered_events.jsonl",
                 [g + 195 for g in [1559.7, 2195.4]] +
                 [g + 195 + 690 for g in [3734.7, 4853.3, 5066.6]]),
-    "game_21": ("/tmp/kickoff_game_21_tiered_relaxed.jsonl",
+    "game_21": ("/tmp/kickoff_game_21_tiered_events.jsonl",
                 [g + 65 for g in [1578.6, 2008.6]]),
-    "rush": ("/tmp/kickoff_rush_tiered_relaxed.jsonl",
+    "rush": ("/tmp/kickoff_rush_tiered_events.jsonl",
              [g + 418 for g in [383.1, 647.0]] +
              [g + 418 + 770 for g in [3038.4, 3263.5]]),
 }

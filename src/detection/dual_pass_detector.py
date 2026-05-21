@@ -326,6 +326,12 @@ costly and must be avoided.
 If you see only normal open play with no notable event, return: \
 {{"event_type": "none", "start_sec": {start}, "end_sec": {end}, \
 "confidence": 0.9, "reasoning": "open play (throw-in/catch/corner checks negative)"}}
+
+CRITICAL OUTPUT FORMAT — your entire response MUST be ONLY the JSON \
+array, starting with `[` and ending with `]`. NO prose before. NO prose \
+after. NO markdown headers. NO "Frame-by-frame analysis:" preamble. NO \
+explanatory text outside the JSON. The downstream parser will fail on \
+any non-JSON content. Begin your response with `[` and end with `]`.
 """
 
 
@@ -1397,9 +1403,20 @@ class DualPassDetector:
                 content.append({"type": "text", "text": label})
             content.append({"type": "text", "text": prompt})
 
+            messages = [{"role": "user", "content": content}]
+            # When PREFILL_JSON_ARRAY=true, prefill the assistant turn with
+            # "[" so the model's next token must continue a JSON array. This
+            # is the Anthropic "prefill" trick — defeats Sonnet's tendency
+            # to write prose before the structured output. The LoRA path
+            # leaves this off (default) since the LoRA was trained without
+            # a prefill expectation.
+            _prefill = os.environ.get("PREFILL_JSON_ARRAY", "").lower() in ("1", "true", "yes")
+            if _prefill:
+                messages.append({"role": "assistant", "content": "["})
+
             payload = {
                 "model": model,
-                "messages": [{"role": "user", "content": content}],
+                "messages": messages,
                 "max_tokens": 800,
                 "temperature": 0,
             }
@@ -1417,6 +1434,11 @@ class DualPassDetector:
 
                 if r.status_code == 200:
                     text = r.json()["choices"][0]["message"]["content"].strip()
+                    # When prefilling with "[", the model returns the content
+                    # AFTER the prefill — re-add the leading "[" so the JSON
+                    # parser sees a complete array.
+                    if _prefill and not text.startswith("["):
+                        text = "[" + text
 
                     # Parse into events
                     tmp_window = CandidateWindow(
