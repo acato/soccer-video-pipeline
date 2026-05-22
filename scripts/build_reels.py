@@ -21,6 +21,32 @@ import tempfile
 from pathlib import Path
 
 GAMES = {
+    # 2011 GA — full season set
+    "game_04": {
+        "source": "/Users/aless/soccer-working/2026-01-18-reign-u15-vs-wwsurf.mp4",
+        "tiered": "/tmp/kickoff_game_04_tiered_events.jsonl",
+        "label": "WW Surf vs Reign 2026-01-18",
+    },
+    "game_10": {
+        "source": "/Users/aless/soccer-working/2026-02-07-reign-u15-vs-rush.mp4",
+        "tiered": "/tmp/kickoff_game_10_tiered_events.jsonl",
+        "label": "Washington Rush vs Reign 2026-02-07",
+    },
+    "game_16": {
+        "source": "/Users/aless/soccer-working/2026-03-07-ga-vs-columbia-premier.mp4",
+        "tiered": "/tmp/kickoff_game_16_tiered_events.jsonl",
+        "label": "Columbia Premier vs Reign 2026-03-07",
+    },
+    "game_18": {
+        "source": "/Volumes/transit/Games/18/1773550996606_seattle-reign-academy-2011-ga-vs-westside-metros-2011-ga-seattle-reign-academy-2011-ga-vs-ws-metros-85985259-4639-47c6-899f-76080b93eb9b-1773555300.926346-encoded.mp4",
+        "tiered": "/tmp/kickoff_game_18_tiered_events.jsonl",
+        "label": "Westside Metros vs Reign 2026-03-14",
+    },
+    "game_19": {
+        "source": "/Volumes/transit/Games/19/1773631328983_seattle-reign-academy-2011-ga-vs-oregon-premier-2011-ga-seattle-reign-academy-2011-ga-vs-oregon-premier-2011-ga-1aa48cf7-b31f-41c9-aa17-cef4b4c22267-1773632512.672041-encoded.mp4",
+        "tiered": "/tmp/kickoff_game_19_tiered_events.jsonl",
+        "label": "Oregon Premier vs Reign 2026-03-15",
+    },
     "game_20": {
         "source": "/Users/aless/soccer-working/2026-04-18 Celtic - Reign GA 11.mp4",
         "tiered": "/tmp/kickoff_game_20_tiered_events.jsonl",
