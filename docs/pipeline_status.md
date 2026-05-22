@@ -100,6 +100,12 @@ Per-game reel durations (after exclusions):
 
 ## What's known to fail
 
+- **Cameras that crop out the goal mouths.** Empirically confirmed on
+  game_18 (Westside Metros 2026-03-14): the camera framing excluded both
+  goal areas, so the detector saw zero catches, no real shots-on-target,
+  and no celebration cuts. The pipeline assumes both goals are in the
+  camera's coverage. If they aren't, keeper-reel output collapses to
+  ~all FPs from midfield activity.
 - **game_20 has 2 truly silent parries** (no detector event of any type
   within ±60s). They appear in neither tier. Hard ceiling unless a new
   visual save-pattern detector is built.
